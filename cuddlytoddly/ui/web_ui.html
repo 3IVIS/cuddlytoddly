@@ -1,0 +1,1668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cuddlytoddly</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #f5f6f8;
+  --surface:    #ffffff;
+  --surface2:   #f0f1f4;
+  --surface3:   #e6e8ec;
+
+  --border:     #d4d7dd;
+  --border2:    #c7cbd3;
+
+  --text:       #1e1f22;
+  --text-muted: #6b7078;
+  --text-dim:   #8a9099;
+
+  --accent:     #4f6df5;
+  --accent-glow:#4f6df522;
+
+  --s-pending:  #9aa0aa;
+  --s-ready:    #3b82f6;
+  --s-running:  #d89a3c;
+  --s-done:     #2f9e6f;
+  --s-failed:   #d35a5a;
+  --s-expanded: #8b5cf6;
+
+  --t-goal:     #7b61d9;
+  --t-task:     #4db7e5;
+  --t-reflect:  #5fbf8f;
+  --t-step:     #9aa0aa;
+
+  --toolbar-h:  52px;
+  --panel-w:    340px;
+  --radius:     8px;
+}
+
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────── */
+#toolbar {
+  height: var(--toolbar-h);
+  min-height: var(--toolbar-h);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  z-index: 10;
+}
+
+#toolbar-brand {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.3px;
+  white-space: nowrap;
+}
+
+#toolbar-goal {
+  font-size: 12px;
+  color: var(--text-dim);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 10px;
+  border-left: 1px solid var(--border2);
+  background: none;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+}
+#toolbar-goal:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+#toolbar-counts {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.count-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  transition: opacity 0.2s;
+}
+.count-pill.has-value { opacity: 1; }
+.count-pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+
+#toolbar-activity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0 10px;
+  border-left: 1px solid var(--border2);
+  border-right: 1px solid var(--border2);
+}
+
+.spinner {
+  width: 10px; height: 10px;
+  border: 2px solid var(--s-running);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.toolbar-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.toolbar-btn:hover { background: var(--surface3); color: var(--text); border-color: var(--border2); }
+.toolbar-btn.active { background: var(--s-running); color: #0b1120; border-color: var(--s-running); font-weight: 600; }
+.toolbar-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.toolbar-btn.primary:hover { filter: brightness(1.1); }
+
+#conn-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--s-failed); flex-shrink: 0;
+  transition: background 0.3s;
+}
+#conn-dot.ok { background: var(--s-done); }
+
+/* ── Canvas ──────────────────────────────────────────────────────────── */
+#canvas-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+#dag-canvas {
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+#dag-canvas:active { cursor: grabbing; }
+
+.node-g { cursor: pointer; }
+.node-g .node-hit { fill: transparent; }
+.node-g .bg { transition: filter 0.15s; }
+.node-g:hover .bg { filter: brightness(1.15); }
+.node-g.selected .bg { filter: brightness(1.2); }
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+.node-running .status-ring { animation: pulse-glow 1.2s ease-in-out infinite; }
+
+.edge-path {
+  fill: none;
+  stroke: var(--border2);
+  stroke-width: 1.5;
+  marker-end: url(#arrowhead);
+  transition: stroke 0.3s;
+}
+
+/* ── Zoom controls ───────────────────────────────────────────────────── */
+#zoom-controls {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.zoom-btn {
+  width: 28px; height: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  color: var(--text-dim);
+  border-radius: 6px;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.zoom-btn:hover { background: var(--surface2); color: var(--text); }
+
+/* ── Info Panel ──────────────────────────────────────────────────────── */
+#info-panel {
+  position: absolute;
+  bottom: 16px; right: 16px;
+  width: var(--panel-w);
+  max-height: calc(100vh - var(--toolbar-h) - 32px);
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: opacity 0.2s;
+  z-index: 20;
+}
+#info-panel.hidden { display: none; }
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.panel-node-id {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.panel-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.panel-close:hover { background: var(--surface3); color: var(--text); }
+
+.panel-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.panel-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  color: var(--text-dim);
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.panel-btn:hover { background: var(--surface3); color: var(--text); }
+.panel-btn.danger { border-color: #7f1d1d; color: #fca5a5; }
+.panel-btn.danger:hover { background: #7f1d1d; color: #fef2f2; }
+
+.panel-body {
+  overflow-y: auto;
+  padding: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.panel-body::-webkit-scrollbar { width: 4px; }
+.panel-body::-webkit-scrollbar-track { background: transparent; }
+.panel-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+.info-row {
+  margin-bottom: 12px;
+}
+.info-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+.info-value {
+  color: var(--text-dim);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.info-value.prominent { color: var(--text); font-size: 13px; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+}
+
+.dep-tag {
+  display: inline-block;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  margin: 2px 2px 2px 0;
+  transition: all 0.15s;
+}
+.dep-tag:hover { background: var(--surface3); color: var(--accent); border-color: var(--accent); }
+
+.result-box {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.result-box::-webkit-scrollbar { width: 3px; }
+.result-box::-webkit-scrollbar-thumb { background: var(--border2); }
+
+.step-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.step-item:last-child { border-bottom: none; }
+.step-icon { flex-shrink: 0; padding-top: 1px; }
+.step-desc { color: var(--text-dim); line-height: 1.4; }
+.step-result { color: var(--text-muted); font-size: 10px; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+
+/* ── Modal ───────────────────────────────────────────────────────────── */
+#modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(2px);
+}
+#modal-overlay.hidden { display: none; }
+
+#modal {
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  width: 460px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.modal-close {
+  background: none; border: none;
+  color: var(--text-muted); cursor: pointer;
+  font-size: 16px; padding: 2px 5px;
+  border-radius: 4px; line-height: 1;
+}
+.modal-close:hover { background: var(--surface2); color: var(--text); }
+
+.modal-body {
+  padding: 18px;
+  overflow-y: auto;
+  flex: 1;
+}
+.modal-body::-webkit-scrollbar { width: 4px; }
+.modal-body::-webkit-scrollbar-thumb { background: var(--border2); }
+
+.form-group { margin-bottom: 14px; }
+.form-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+.form-input, .form-select, .form-textarea {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 5px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+  border-color: var(--accent);
+}
+.form-select { cursor: pointer; }
+.form-select option { background: var(--surface2); }
+.form-textarea { resize: vertical; min-height: 70px; line-height: 1.5; }
+.form-hint { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+
+.radio-group { display: flex; flex-direction: column; gap: 8px; }
+.radio-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.radio-item:hover { border-color: var(--border2); background: var(--surface3); }
+.radio-item input { margin-top: 2px; accent-color: var(--accent); flex-shrink: 0; }
+.radio-item-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.radio-item-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+.modal-footer {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.btn {
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.btn-ghost { background: var(--surface2); border-color: var(--border2); color: var(--text-dim); }
+.btn-ghost:hover { background: var(--surface3); color: var(--text); }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { filter: brightness(1.1); }
+.btn-danger { background: #7f1d1d; border-color: #991b1b; color: #fef2f2; }
+.btn-danger:hover { background: #991b1b; }
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+#toast {
+  position: fixed;
+  bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 12px;
+  color: var(--text);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  z-index: 200;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+#toast.hidden { opacity: 0; }
+
+/* ── Empty state ─────────────────────────────────────────────────────── */
+#empty-state {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 8px;
+  color: var(--text-muted); font-size: 13px; pointer-events: none;
+}
+#empty-state.hidden { display: none; }
+#empty-state .big { font-size: 32px; opacity: 0.3; }
+
+/* ── Switch-goal modal ───────────────────────────────────────────────── */
+#switch-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+  opacity: 1; transition: opacity 0.2s;
+}
+#switch-overlay.hidden { display: none; }
+
+#switch-shell {
+  width: 600px;
+  max-width: calc(100vw - 32px);
+  background: #111827;
+  border: 1px solid #2e3f58;
+  border-radius: 10px;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.7);
+  overflow: hidden;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #e2e8f0;
+}
+#switch-shell-header {
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid #1f2d42;
+  background: #1e2a3d;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.sw-brand { font-size: 15px; font-weight: 700; color: #6366f1; letter-spacing: -0.3px; }
+.sw-close  {
+  background: none; border: none; color: #64748b;
+  font-size: 18px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+}
+.sw-close:hover { color: #e2e8f0; background: #263350; }
+
+.sw-tabs { display: flex; border-bottom: 1px solid #1f2d42; background: #1e2a3d; }
+.sw-tab  {
+  flex: 1; padding: 10px 12px; font-size: 12px; font-weight: 500;
+  color: #64748b; cursor: pointer; border-bottom: 2px solid transparent;
+  transition: all 0.15s; text-align: center; user-select: none;
+  background: none; border-top: none; border-right: none; border-left: none;
+  font-family: inherit;
+}
+.sw-tab:hover { color: #94a3b8; }
+.sw-tab.active { color: #6366f1; border-bottom-color: #6366f1; background: #111827; }
+
+.sw-pane { display: none; padding: 22px; }
+.sw-pane.active { display: block; }
+
+.sw-runs-list {
+  max-height: 260px; overflow-y: auto;
+  border: 1px solid #1f2d42; border-radius: 6px;
+}
+.sw-runs-list::-webkit-scrollbar { width: 4px; }
+.sw-runs-list::-webkit-scrollbar-thumb { background: #2e3f58; }
+.sw-run-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px; border-bottom: 1px solid #1f2d42;
+  cursor: pointer; transition: background 0.12s;
+}
+.sw-run-item:last-child { border-bottom: none; }
+.sw-run-item:hover { background: #1e2a3d; }
+.sw-run-item.selected { background: #263350; }
+.sw-run-dot { width: 8px; height: 8px; border-radius: 50%; background: #6366f1; flex-shrink: 0; }
+.sw-run-goal {
+  flex: 1; font-size: 13px; font-weight: 500; color: #e2e8f0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sw-run-meta { font-size: 10px; color: #64748b; white-space: nowrap; text-align: right; }
+.sw-empty { padding: 28px 16px; text-align: center; color: #64748b; font-size: 12px; }
+
+.sw-label {
+  display: block; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: #64748b; margin-bottom: 6px;
+}
+.sw-input {
+  width: 100%; background: #1e2a3d; border: 1px solid #2e3f58;
+  border-radius: 6px; padding: 10px 12px; color: #e2e8f0;
+  font-size: 13px; font-family: inherit; outline: none;
+  transition: border-color 0.15s;
+}
+.sw-input:focus { border-color: #6366f1; }
+.sw-textarea {
+  width: 100%; background: #1e2a3d; border: 1px solid #2e3f58;
+  border-radius: 6px; padding: 10px 12px; color: #e2e8f0;
+  font-size: 12px; font-family: 'SF Mono','Fira Code',monospace;
+  line-height: 1.6; outline: none; resize: vertical; min-height: 160px;
+  transition: border-color 0.15s;
+}
+.sw-textarea:focus { border-color: #6366f1; }
+.sw-hint { font-size: 11px; color: #64748b; margin-top: 5px; line-height: 1.5; }
+.sw-error { color: #ef4444; font-size: 12px; margin-top: 8px; min-height: 16px; }
+
+.sw-footer {
+  padding: 14px 22px; border-top: 1px solid #1f2d42;
+  display: flex; justify-content: flex-end; gap: 8px;
+  background: #111827;
+}
+.sw-btn {
+  padding: 8px 18px; border-radius: 6px; font-size: 13px;
+  font-family: inherit; cursor: pointer; border: 1px solid transparent;
+  transition: all 0.15s;
+}
+.sw-btn-ghost { background: #1e2a3d; border-color: #2e3f58; color: #94a3b8; }
+.sw-btn-ghost:hover { background: #263350; color: #e2e8f0; }
+.sw-btn-primary { background: #6366f1; color: #fff; font-weight: 600; }
+.sw-btn-primary:hover { filter: brightness(1.1); }
+.sw-btn-primary:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+
+.sw-loading {
+  display: none; flex-direction: column; align-items: center;
+  justify-content: center; gap: 14px; padding: 44px 24px;
+}
+.sw-loading.show { display: flex; }
+.sw-spinner {
+  width: 26px; height: 26px; border: 3px solid #2e3f58;
+  border-top-color: #6366f1; border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.sw-loading-msg { color: #94a3b8; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<!-- ── Toolbar ──────────────────────────────────────────────────────────── -->
+<div id="toolbar">
+  <span id="toolbar-brand">cuddlytoddly</span>
+  <button id="toolbar-goal" onclick="openSwitchModal()" title="Switch goal"></button>
+  <div id="toolbar-counts">
+    <div class="count-pill" id="pill-pending">
+      <div class="dot" style="background:var(--s-pending)"></div>
+      <span id="cnt-pending">0</span> pending
+    </div>
+    <div class="count-pill" id="pill-ready">
+      <div class="dot" style="background:var(--s-ready)"></div>
+      <span id="cnt-ready">0</span> ready
+    </div>
+    <div class="count-pill" id="pill-running">
+      <div class="dot" style="background:var(--s-running)"></div>
+      <span id="cnt-running">0</span> running
+    </div>
+    <div class="count-pill" id="pill-done">
+      <div class="dot" style="background:var(--s-done)"></div>
+      <span id="cnt-done">0</span> done
+    </div>
+    <div class="count-pill" id="pill-failed">
+      <div class="dot" style="background:var(--s-failed)"></div>
+      <span id="cnt-failed">0</span> failed
+    </div>
+  </div>
+  <div class="count-pill" id="pill-tokens">
+    <div class="dot" style="background:var(--accent)"></div>
+    <span id="cnt-tokens">0</span> tokens
+  </div>
+  <div id="toolbar-activity"><span id="activity-text" style="color:var(--text-muted)">idle</span></div>
+
+  <button class="toolbar-btn" id="btn-llm-toggle" onclick="toggleLLM()">⏸ Pause LLM</button>
+  <button class="toolbar-btn" onclick="addNodePrompt()">＋ Add Node</button>
+  <button class="toolbar-btn primary" onclick="exportMD()">↓ Export</button>
+  <div id="conn-dot" title="WebSocket connection"></div>
+</div>
+
+<!-- ── Canvas ───────────────────────────────────────────────────────────── -->
+<div id="canvas-wrap">
+  <svg id="dag-canvas"></svg>
+
+  <div id="empty-state">
+    <div class="big">◎</div>
+    <div>Waiting for graph data…</div>
+  </div>
+
+  <div id="zoom-controls">
+    <button class="zoom-btn" onclick="zoomIn()" title="Zoom in">+</button>
+    <button class="zoom-btn" onclick="zoomReset()" title="Fit to screen" style="font-size:11px">⊡</button>
+    <button class="zoom-btn" onclick="zoomOut()" title="Zoom out">−</button>
+  </div>
+</div>
+
+<!-- ── Info Panel ────────────────────────────────────────────────────────── -->
+<div id="info-panel" class="hidden">
+  <div class="panel-header" id="panel-drag-handle">
+    <span class="panel-node-id" id="panel-title">—</span>
+    <button class="panel-close" onclick="closePanel()">✕</button>
+  </div>
+  <div class="panel-actions" id="panel-actions"></div>
+  <div class="panel-body" id="panel-body"></div>
+</div>
+
+<!-- ── Modal ─────────────────────────────────────────────────────────────── -->
+<div id="modal-overlay" class="hidden" onclick="overlayClick(event)">
+  <div id="modal">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-title">—</span>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<!-- ── Toast ─────────────────────────────────────────────────────────────── -->
+<div id="toast" class="hidden"></div>
+
+<script>
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const STATUS_COLOR = {
+  pending:        'var(--s-pending)',
+  ready:          'var(--s-ready)',
+  running:        'var(--s-running)',
+  done:           'var(--s-done)',
+  failed:         'var(--s-failed)',
+  to_be_expanded: 'var(--s-expanded)',
+};
+const STATUS_COLOR_HEX = {
+  pending: '#475569', ready: '#3b82f6', running: '#f59e0b',
+  done: '#10b981', failed: '#ef4444', to_be_expanded: '#8b5cf6',
+};
+const TYPE_ICON  = { goal: '◎', task: '▣', reflection: '◈', execution_step: '·' };
+const TYPE_COLOR = { goal: '#a78bfa', task: '#7dd3fc', reflection: '#86efac', execution_step: '#475569' };
+const NODE_W = 210, NODE_H = 54;
+
+// ── State ────────────────────────────────────────────────────────────────────
+
+let nodes = {};        // current snapshot
+let selectedId = null;
+let paused = false;
+let firstRender = true;
+let currentG = null;   // last dagre graph
+let ws, reconnectTimer;
+let modalSubmitFn = null;
+let modalMode = null;
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => {
+    document.getElementById('conn-dot').classList.add('ok');
+    clearTimeout(reconnectTimer);
+  };
+  ws.onclose = () => {
+    document.getElementById('conn-dot').classList.remove('ok');
+    reconnectTimer = setTimeout(connect, 2500);
+  };
+  ws.onmessage = e => handleMessage(JSON.parse(e.data));
+  ws.onerror = () => ws.close();
+}
+
+function handleMessage(data) {
+  if (data.type !== 'snapshot') return;
+
+  nodes = data.nodes || {};
+  paused = data.paused || false;
+
+  if (data.tokens) {
+    const t = data.tokens.total;
+    document.getElementById('cnt-tokens').textContent =
+      t >= 1_000_000 ? `${(t/1_000_000).toFixed(1)}M`
+      : t >= 1_000   ? `${(t/1_000).toFixed(1)}K`
+      : t;
+  }
+
+  // Toolbar counts
+  const counts = (data.status && data.status.by_status) || {};
+  for (const st of ['pending','ready','running','done','failed']) {
+    document.getElementById(`cnt-${st}`).textContent = counts[st] || 0;
+  }
+
+  // Goal description in toolbar (now a button)
+  const goal = Object.values(nodes).find(n => n.node_type === 'goal');
+  const goalDesc = goal?.metadata?.description || goal?.id || '';
+  const goalEl = document.getElementById('toolbar-goal');
+  goalEl.textContent = goalDesc ? `⊹ ${goalDesc}` : '';
+  goalEl.style.display = goalDesc ? '' : 'none';
+  goalEl.title = goalDesc ? `Current goal: ${goalDesc} — click to switch` : '';
+
+  // Activity
+  const actEl = document.getElementById('activity-text');
+  if (data.activity) {
+    const spin = `<span class="spinner"></span>`;
+    const elapsed = data.elapsed != null ? ` (${data.elapsed}s)` : '';
+    actEl.innerHTML = `${spin} ${esc(data.activity)}${elapsed}`;
+  } else {
+    actEl.innerHTML = paused
+      ? '<span style="color:var(--s-running)">⏸ LLM paused</span>'
+      : '<span style="color:var(--text-muted)">idle</span>';
+  }
+
+  // LLM button
+  const llmBtn = document.getElementById('btn-llm-toggle');
+  llmBtn.textContent = paused ? '▶ Resume LLM' : '⏸ Pause LLM';
+  llmBtn.classList.toggle('active', paused);
+
+  // Empty state
+  const hasNodes = Object.keys(nodes).length > 0;
+  document.getElementById('empty-state').classList.toggle('hidden', hasNodes);
+
+  // Re-render DAG
+  if (hasNodes) renderDAG();
+
+  // Update info panel if open
+  if (selectedId && nodes[selectedId]) updatePanel();
+  else if (selectedId && !nodes[selectedId]) closePanel();
+}
+
+// ── Layout + Render ──────────────────────────────────────────────────────────
+
+let svg, svgG, zoomBehavior;
+
+function initSVG() {
+  svg = d3.select('#dag-canvas');
+
+  // Arrow marker
+  const defs = svg.append('defs');
+  defs.append('marker')
+    .attr('id', 'arrowhead')
+    .attr('viewBox', '-0 -4 8 8')
+    .attr('refX', 7).attr('refY', 0)
+    .attr('markerWidth', 5).attr('markerHeight', 5)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-4L8,0L0,4')
+    .attr('fill', '#2e3f58');
+
+  svgG = svg.append('g').attr('class', 'root');
+  svgG.append('g').attr('class', 'edge-layer');
+  svgG.append('g').attr('class', 'node-layer');
+
+  zoomBehavior = d3.zoom()
+    .scaleExtent([0.08, 4])
+    .on('zoom', e => svgG.attr('transform', e.transform));
+  svg.call(zoomBehavior);
+}
+
+function renderDAG() {
+  // Build dagre graph — edges go from dependent → dependency
+  // so goal (which depends on tasks) ends up at top in TB layout
+  const g = new dagre.graphlib.Graph({ multigraph: false });
+  g.setGraph({
+    rankdir: 'TB',
+    ranksep: 80, nodesep: 44,
+    marginx: 48, marginy: 48,
+  });
+  g.setDefaultEdgeLabel(() => ({}));
+
+  const visible = Object.entries(nodes)
+    .filter(([, n]) => n.node_type !== 'execution_step');
+
+  for (const [id] of visible) {
+    g.setNode(id, { width: NODE_W, height: NODE_H });
+  }
+  const visibleIds = new Set(visible.map(([id]) => id));
+  for (const [id, node] of visible) {
+    for (const dep of node.dependencies) {
+      if (visibleIds.has(dep)) {
+        g.setEdge(dep, id); // dependent → prereq = goal at top
+      }
+    }
+  }
+  dagre.layout(g);
+  currentG = g;
+
+  // Edges
+  const line = d3.line().x(d => d.x).y(d => d.y).curve(d3.curveBasis);
+  const edgeLayer = svgG.select('.edge-layer');
+  const edgeData = g.edges().map(e => ({
+    key:    `${e.v}__${e.w}`,
+    v: e.v, w: e.w,
+    points: g.edge(e).points,
+  }));
+  const edges = edgeLayer.selectAll('path.edge-path')
+    .data(edgeData, d => d.key);
+  edges.enter().append('path').attr('class', 'edge-path')
+    .merge(edges)
+    .attr('d', d => line(d.points))
+    .attr('stroke', d => STATUS_COLOR_HEX[nodes[d.v]?.status] || '#2e3f58')
+    .attr('stroke-opacity', d => nodes[d.v]?.status === 'done' ? 0.35 : 0.55);
+  edges.exit().remove();
+
+  // Nodes
+  const nodeLayer = svgG.select('.node-layer');
+  const nodeData = g.nodes()
+    .filter(id => nodes[id])
+    .map(id => ({ id, pos: g.node(id), node: nodes[id] }));
+
+  const nodeGs = nodeLayer.selectAll('g.node-g')
+    .data(nodeData, d => d.id);
+
+  // Enter
+  const entered = nodeGs.enter().append('g')
+    .attr('class', d => `node-g ${d.node.status === 'running' ? 'node-running' : ''}`)
+    .on('click', (e, d) => { e.stopPropagation(); selectNode(d.id); });
+
+  entered.append('rect').attr('class', 'node-hit')
+    .attr('x', -NODE_W/2 - 4).attr('y', -NODE_H/2 - 4)
+    .attr('width', NODE_W + 8).attr('height', NODE_H + 8)
+    .attr('rx', 10).attr('fill', 'transparent');
+
+  // Selection glow ring
+  entered.append('rect').attr('class', 'status-ring')
+    .attr('x', -NODE_W/2 - 2).attr('y', -NODE_H/2 - 2)
+    .attr('width', NODE_W + 4).attr('height', NODE_H + 4)
+    .attr('rx', 9).attr('fill', 'none')
+    .attr('stroke-width', 2).attr('stroke', 'transparent');
+
+  entered.append('rect').attr('class', 'bg')
+    .attr('x', -NODE_W/2).attr('y', -NODE_H/2)
+    .attr('width', NODE_W).attr('height', NODE_H)
+    .attr('rx', 7);
+
+  // Left status bar
+  entered.append('rect').attr('class', 'sbar')
+    .attr('x', -NODE_W/2 + 4).attr('y', -NODE_H/2 + 7)
+    .attr('width', 3).attr('height', NODE_H - 14)
+    .attr('rx', 1.5);
+
+  entered.append('text').attr('class', 'ticon');
+  entered.append('text').attr('class', 'tdesc');
+  entered.append('text').attr('class', 'tstatus');
+  entered.append('text').attr('class', 'ttype');
+
+  // Merge + update
+  const merged = entered.merge(nodeGs);
+
+  merged
+    .attr('transform', d => `translate(${d.pos.x}, ${d.pos.y})`)
+    .attr('class', d => `node-g ${d.node.status === 'running' ? 'node-running' : ''} ${d.id === selectedId ? 'selected' : ''}`);
+
+  const isGoal = d => d.node.node_type === 'goal';
+  merged.select('.bg')
+    .attr('fill', d => d.id === selectedId ? '#1e2a3d' : '#111827')
+    .attr('stroke', d => d.id === selectedId ? '#6366f1' : isGoal(d) ? '#312e81' : '#1f2d42')
+    .attr('stroke-width', d => d.id === selectedId ? 2 : isGoal(d) ? 1.5 : 1);
+
+  merged.select('.status-ring')
+    .attr('stroke', d => {
+      if (d.id === selectedId) return '#6366f1';
+      if (d.node.status === 'running') return STATUS_COLOR_HEX.running;
+      return 'transparent';
+    })
+    .attr('stroke-opacity', d => d.id === selectedId || d.node.status === 'running' ? 0.4 : 0);
+
+  merged.select('.sbar')
+    .attr('fill', d => STATUS_COLOR_HEX[d.node.status] || '#475569');
+
+  merged.select('.ticon')
+    .attr('x', -NODE_W/2 + 14).attr('y', -NODE_H/2 + 20)
+    .attr('font-size', 12).attr('font-family', 'monospace')
+    .attr('fill', d => TYPE_COLOR[d.node.node_type] || '#94a3b8')
+    .text(d => TYPE_ICON[d.node.node_type] || '▣');
+
+  merged.select('.tdesc')
+    .attr('x', -NODE_W/2 + 28).attr('y', -NODE_H/2 + 20)
+    .attr('font-size', 12).attr('font-family', 'system-ui, sans-serif').attr('font-weight', '500')
+    .attr('fill', '#e2e8f0')
+    .text(d => trunc(d.node.metadata?.description || d.id, 24));
+
+  merged.select('.tstatus')
+    .attr('x', -NODE_W/2 + 14).attr('y', -NODE_H/2 + 38)
+    .attr('font-size', 10).attr('font-family', 'system-ui, sans-serif')
+    .attr('fill', d => STATUS_COLOR_HEX[d.node.status] || '#475569')
+    .text(d => d.node.status);
+
+  merged.select('.ttype')
+    .attr('x', NODE_W/2 - 8).attr('y', -NODE_H/2 + 38)
+    .attr('font-size', 10).attr('font-family', 'system-ui, sans-serif')
+    .attr('text-anchor', 'end').attr('fill', '#2e3f58')
+    .text(d => d.node.node_type);
+
+  nodeGs.exit().remove();
+
+  // Deselect on canvas click (not on node)
+  svg.on('click', () => { if (selectedId) closePanel(); });
+
+  // Auto-fit first render
+  if (firstRender) { fitGraph(); firstRender = false; }
+}
+
+// ── Selection ────────────────────────────────────────────────────────────────
+
+function selectNode(id) {
+  selectedId = id;
+  renderDAG();
+  updatePanel();
+}
+
+function updatePanel() {
+  const node = nodes[selectedId];
+  if (!node) return;
+
+  const panel = document.getElementById('info-panel');
+  panel.classList.remove('hidden');
+  document.getElementById('panel-title').textContent = selectedId;
+
+  // Actions
+  const actions = document.getElementById('panel-actions');
+  const isGoal = node.node_type === 'goal';
+  const isFailed = node.status === 'failed';
+  const isDone = node.status === 'done';
+  actions.innerHTML = `
+    <button class="panel-btn" onclick="openEditModal()">✎ Edit</button>
+    ${(isFailed || isDone) ? `<button class="panel-btn" onclick="retryNode()">↺ Retry</button>` : ''}
+    ${isGoal ? `<button class="panel-btn" onclick="replanGoal()">⟳ Replan</button>` : ''}
+    <button class="panel-btn danger" onclick="openRemoveModal()">✕ Remove</button>
+  `;
+
+  // Body
+  const body = document.getElementById('panel-body');
+  const desc = node.metadata?.description || '';
+  const deps = node.dependencies || [];
+  const result = node.result;
+  const notes = node.metadata?.reflection_notes || [];
+  const reqIn = node.metadata?.required_input || [];
+  const output = node.metadata?.output || [];
+
+  const stepChildren = Object.values(nodes).filter(n =>
+    n.node_type === 'execution_step' &&
+    n.dependencies.includes(selectedId) &&
+    !n.metadata?.hidden
+  );
+
+  let html = '';
+
+  if (desc) {
+    html += row('Description', `<span class="info-value prominent">${esc(desc)}</span>`);
+  }
+
+  html += row('Status &amp; Type', `
+    <span class="badge" style="color:${STATUS_COLOR_HEX[node.status]};border-color:${STATUS_COLOR_HEX[node.status]}30">
+      <span style="width:6px;height:6px;border-radius:50%;background:${STATUS_COLOR_HEX[node.status]};display:inline-block"></span>
+      ${esc(node.status)}
+    </span>
+    &nbsp;
+    <span class="badge" style="color:${TYPE_COLOR[node.node_type] || '#94a3b8'}">
+      ${TYPE_ICON[node.node_type]} ${esc(node.node_type)}
+    </span>
+  `);
+
+  if (deps.length) {
+    html += row('Dependencies', deps.map(d =>
+      `<span class="dep-tag" onclick="selectNode('${esc(d)}')">${esc(d)}</span>`
+    ).join(''));
+  }
+
+  if (reqIn.length) {
+    html += row('Requires', reqIn.map(i =>
+      `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
+        <span style="color:var(--text-dim)">${esc(i.name)}</span>
+        <span style="color:var(--s-pending);font-size:10px"> [${esc(i.type)}]</span>
+        — ${esc(i.description || '')}
+      </div>`
+    ).join(''));
+  }
+
+  if (output.length) {
+    html += row('Outputs', output.map(o =>
+      `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
+        <span style="color:var(--text-dim)">${esc(o.name)}</span>
+        <span style="color:var(--s-ready);font-size:10px"> [${esc(o.type)}]</span>
+        — ${esc(o.description || '')}
+      </div>`
+    ).join(''));
+  }
+
+  if (result != null) {
+    const label = node.node_type === 'goal' ? 'Plan' : 'Result';
+    html += row(label, `<div class="result-box">${esc(String(result))}</div>`);
+  }
+
+  if (notes.length) {
+    html += row('Notes', notes.map(n => `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">• ${esc(n)}</div>`).join(''));
+  }
+
+  if (stepChildren.length) {
+    const stepsHtml = stepChildren.map(step => {
+      const icon = step.status === 'done' ? '✓' : step.status === 'failed' ? '✗' : '…';
+      const iconColor = step.status === 'done' ? 'var(--s-done)' : step.status === 'failed' ? 'var(--s-failed)' : 'var(--s-running)';
+      return `<div class="step-item">
+        <span class="step-icon" style="color:${iconColor}">${icon}</span>
+        <div>
+          <div class="step-desc">${esc(step.metadata?.description || step.id)}</div>
+          ${step.result ? `<div class="step-result">${esc(trunc(step.result, 120))}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+    html += row('Execution Steps', `<div style="margin-top:2px">${stepsHtml}</div>`);
+  }
+
+  body.innerHTML = html || '<div style="color:var(--text-muted);font-size:12px">No details available.</div>';
+}
+
+function row(label, content) {
+  return `<div class="info-row">
+    <div class="info-label">${label}</div>
+    <div class="info-value">${content}</div>
+  </div>`;
+}
+
+function closePanel() {
+  selectedId = null;
+  document.getElementById('info-panel').classList.add('hidden');
+  renderDAG();
+}
+
+// ── Panel dragging ────────────────────────────────────────────────────────────
+
+(function() {
+  let dragging = false, ox, oy;
+  const panel = document.getElementById('info-panel');
+  const handle = document.getElementById('panel-drag-handle');
+
+  handle.addEventListener('mousedown', e => {
+    dragging = true;
+    const r = panel.getBoundingClientRect();
+    ox = e.clientX - r.left;
+    oy = e.clientY - r.top;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    panel.style.left   = (e.clientX - ox) + 'px';
+    panel.style.top    = (e.clientY - oy) + 'px';
+    panel.style.right  = 'auto';
+    panel.style.bottom = 'auto';
+  });
+  document.addEventListener('mouseup', () => { dragging = false; });
+})();
+
+// ── Modals ────────────────────────────────────────────────────────────────────
+
+function openEditModal() {
+  const node = nodes[selectedId];
+  if (!node) return;
+  modalMode = 'edit';
+  document.getElementById('modal-title').textContent = 'Edit Node';
+
+  const allIds = Object.keys(nodes).filter(id => id !== selectedId);
+  const deps = (node.dependencies || []).join(', ');
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea class="form-textarea" id="f-desc" rows="3">${esc(node.metadata?.description || '')}</textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Status</label>
+      <select class="form-select" id="f-status">
+        ${['pending','ready','running','done','failed','to_be_expanded'].map(s =>
+          `<option value="${s}" ${node.status === s ? 'selected' : ''}>${s}</option>`
+        ).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Dependencies</label>
+      <input class="form-input" id="f-deps" value="${esc(deps)}" placeholder="comma-separated node IDs">
+      <div class="form-hint">Available: ${allIds.slice(0,8).join(', ')}${allIds.length > 8 ? '…' : ''}</div>
+    </div>
+  `;
+
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitEdit()">Save</button>
+  `;
+
+  showModal();
+}
+
+function submitEdit() {
+  const desc  = document.getElementById('f-desc').value.trim();
+  const status = document.getElementById('f-status').value;
+  const depsRaw = document.getElementById('f-deps').value;
+  const deps = depsRaw.split(',').map(d => d.trim()).filter(Boolean);
+
+  api('PUT', `/api/node/${encodeURIComponent(selectedId)}`, {
+    description: desc, status, dependencies: deps,
+  });
+  closeModal();
+}
+
+function openRemoveModal() {
+  const node = nodes[selectedId];
+  if (!node) return;
+  modalMode = 'remove';
+  document.getElementById('modal-title').textContent = `Remove: ${selectedId}`;
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="radio-group">
+      <label class="radio-item">
+        <input type="radio" name="remove-mode" value="rewire" checked>
+        <div>
+          <div class="radio-item-label">Rewire children</div>
+          <div class="radio-item-desc">Remove this node and connect its children directly to its parents.</div>
+        </div>
+      </label>
+      <label class="radio-item">
+        <input type="radio" name="remove-mode" value="cascade">
+        <div>
+          <div class="radio-item-label">Cascade remove</div>
+          <div class="radio-item-desc">Remove this node and all its descendants.</div>
+        </div>
+      </label>
+      <label class="radio-item">
+        <input type="radio" name="remove-mode" value="disconnect">
+        <div>
+          <div class="radio-item-label">Disconnect</div>
+          <div class="radio-item-desc">Remove this node only, leaving children without this dependency.</div>
+        </div>
+      </label>
+    </div>
+  `;
+
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-danger" onclick="submitRemove()">Remove</button>
+  `;
+
+  showModal();
+}
+
+function submitRemove() {
+  const mode = document.querySelector('input[name="remove-mode"]:checked')?.value || 'cascade';
+  const id = selectedId;
+  closeModal();
+  closePanel();
+  api('DELETE', `/api/node/${encodeURIComponent(id)}?mode=${mode}`);
+}
+// Replacements for addNodePrompt() and submitAdd() in web_ui.html
+
+function addNodePrompt() {
+  modalMode = 'add';
+  document.getElementById('modal-title').textContent = 'Add Node';
+  const allIds = Object.keys(nodes);
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="form-group">
+      <label class="form-label">Node ID <span style="color:var(--s-failed)">*</span></label>
+      <input class="form-input" id="f-node-id" placeholder="e.g. Research_Market">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea class="form-textarea" id="f-add-desc" rows="2" placeholder="What this node does"></textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Type</label>
+      <select class="form-select" id="f-type">
+        <option value="task" selected>task</option>
+        <option value="goal">goal</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Dependencies</label>
+      <input class="form-input" id="f-add-deps" value="${esc(selectedId || '')}" placeholder="comma-separated node IDs">
+      <div class="form-hint">Nodes this node depends on (prerequisites that must complete first).</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Dependents</label>
+      <input class="form-input" id="f-add-dependents" value="" placeholder="comma-separated node IDs">
+      <div class="form-hint">
+        Existing nodes that should depend on this new node (it becomes their prerequisite).
+        ${allIds.length ? `Available: ${allIds.slice(0, 8).join(', ')}${allIds.length > 8 ? '…' : ''}` : ''}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitAdd()">Add Node</button>
+  `;
+
+  showModal();
+  document.getElementById('f-node-id').focus();
+}
+
+function submitAdd() {
+  const nodeId  = document.getElementById('f-node-id').value.trim();
+  if (!nodeId) { toast('Node ID is required'); return; }
+  if (nodes[nodeId]) { toast('Node ID already exists'); return; }
+
+  const desc    = document.getElementById('f-add-desc').value.trim();
+  const type    = document.getElementById('f-type').value;
+
+  const depsRaw = document.getElementById('f-add-deps').value;
+  const deps    = depsRaw.split(',').map(d => d.trim()).filter(d => d && nodes[d]);
+
+  const dependentsRaw = document.getElementById('f-add-dependents').value;
+  const dependents    = dependentsRaw.split(',').map(d => d.trim()).filter(d => d && nodes[d]);
+
+  api('POST', '/api/node', {
+    node_id:      nodeId,
+    node_type:    type,
+    description:  desc,
+    dependencies: deps,
+    dependents:   dependents,
+  });
+  closeModal();
+}
+
+function showModal() {
+  document.getElementById('modal-overlay').classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+}
+
+function overlayClick(e) {
+  if (e.target === document.getElementById('modal-overlay')) closeModal();
+}
+
+// ── Node actions ──────────────────────────────────────────────────────────────
+
+function retryNode() {
+  if (!selectedId) return;
+  api('POST', `/api/node/${encodeURIComponent(selectedId)}/retry`);
+  toast('Retry scheduled');
+}
+
+function replanGoal() {
+  if (!selectedId) return;
+  api('POST', `/api/goal/${encodeURIComponent(selectedId)}/replan`);
+  toast('Replan scheduled');
+  closePanel();
+}
+
+// ── LLM control ───────────────────────────────────────────────────────────────
+
+function toggleLLM() {
+  api('POST', paused ? '/api/llm/resume' : '/api/llm/pause');
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+function exportMD() {
+  api('POST', '/api/export').then(data => {
+    if (data.ok) toast(`Exported → ${data.path.split('/').pop()}`);
+  });
+}
+
+// ── Zoom controls ─────────────────────────────────────────────────────────────
+
+function zoomIn()    { svg.transition().call(zoomBehavior.scaleBy, 1.4); }
+function zoomOut()   { svg.transition().call(zoomBehavior.scaleBy, 0.7); }
+function zoomReset() { fitGraph(); }
+
+function fitGraph() {
+  if (!currentG) return;
+  const graph = currentG.graph();
+  if (!graph.width || !graph.height) return;
+
+  const wrap = document.getElementById('canvas-wrap');
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  const pad = 60;
+  const scale = Math.min(
+    (W - pad * 2) / graph.width,
+    (H - pad * 2) / graph.height,
+    1.2
+  );
+  const tx = (W - graph.width  * scale) / 2;
+  const ty = (H - graph.height * scale) / 2;
+
+  svg.transition().duration(400).call(
+    zoomBehavior.transform,
+    d3.zoomIdentity.translate(tx, ty).scale(scale)
+  );
+}
+
+// ── API helper ────────────────────────────────────────────────────────────────
+
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  try {
+    const r = await fetch(path, opts);
+    return await r.json();
+  } catch (e) {
+    toast('Request failed: ' + e.message);
+    return { ok: false };
+  }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function trunc(s, n) {
+  s = String(s);
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), 3500);
+}
+
+// ── Switch-goal modal ────────────────────────────────────────────────────────
+
+let swActiveTab     = 'existing';
+let swSelectedRun   = null;
+let swPolling       = false;
+
+function openSwitchModal() {
+  swActiveTab   = 'existing';
+  swSelectedRun = null;
+  swPolling     = false;
+
+  // Reset to initial state
+  document.querySelectorAll('.sw-pane').forEach(el => el.classList.remove('active'));
+  document.getElementById('swpane-existing').classList.add('active');
+  document.querySelectorAll('.sw-tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('swtab-existing').classList.add('active');
+  document.querySelectorAll('.sw-error').forEach(el => el.textContent = '');
+  document.getElementById('sw-loading').classList.remove('show');
+  document.getElementById('sw-footer').style.display = '';
+  document.getElementById('sw-main').querySelectorAll('.sw-pane')
+    .forEach(el => { if (!el.classList.contains('active')) el.classList.remove('active'); });
+
+  document.getElementById('switch-overlay').classList.remove('hidden');
+  loadSwitchRuns();
+}
+
+function closeSwitchModal() {
+  if (swPolling) return;   // don't close while switching
+  document.getElementById('switch-overlay').classList.add('hidden');
+}
+
+function switchModalTab(tab) {
+  swActiveTab   = tab;
+  swSelectedRun = null;
+  document.querySelectorAll('.sw-tab').forEach(el =>
+    el.classList.toggle('active', el.id === `swtab-${tab}`)
+  );
+  document.querySelectorAll('.sw-pane').forEach(el =>
+    el.classList.toggle('active', el.id === `swpane-${tab}`)
+  );
+  document.querySelectorAll('.sw-error').forEach(el => el.textContent = '');
+
+  if (tab === 'goal')     setTimeout(() => document.getElementById('sw-goal-input')?.focus(), 50);
+  if (tab === 'plan')     setTimeout(() => document.getElementById('sw-plan-input')?.focus(), 50);
+}
+
+async function loadSwitchRuns() {
+  const container = document.getElementById('sw-runs-container');
+  container.innerHTML = '<div class="sw-empty">Loading…</div>';
+  try {
+    const data = await (await fetch('/api/runs')).json();
+    const runs = data.runs || [];
+    if (!runs.length) {
+      container.innerHTML = '<div class="sw-empty">No existing runs found.</div>';
+      switchModalTab('goal');
+      return;
+    }
+    container.innerHTML = `<div class="sw-runs-list">
+      ${runs.map((r, i) => `
+        <div class="sw-run-item" id="swrun-${i}"
+             data-path="${swEsc(r.path)}" data-goal="${swEsc(r.goal)}"
+             onclick="selectSwitchRun(${i})">
+          <div class="sw-run-dot"></div>
+          <div class="sw-run-goal" title="${swEsc(r.goal)}">${swEsc(r.goal)}</div>
+          <div class="sw-run-meta">${swEsc(r.age)} · ${r.node_count} nodes</div>
+        </div>`).join('')}
+    </div>`;
+    selectSwitchRun(0);
+  } catch (e) {
+    container.innerHTML = `<div class="sw-empty">Could not load runs: ${swEsc(String(e))}</div>`;
+  }
+}
+
+function selectSwitchRun(i) {
+  swSelectedRun = i;
+  document.querySelectorAll('.sw-run-item').forEach((el, j) =>
+    el.classList.toggle('selected', j === i)
+  );
+}
+
+async function submitSwitch() {
+  document.querySelectorAll('.sw-error').forEach(el => el.textContent = '');
+  let body;
+
+  if (swActiveTab === 'existing') {
+    if (swSelectedRun === null) {
+      document.getElementById('swerr-existing').textContent = 'Select a run first.';
+      return;
+    }
+    const item = document.querySelector(`#swrun-${swSelectedRun}`);
+    body = { mode: 'existing', run_dir: item.dataset.path, goal_text: item.dataset.goal };
+
+  } else if (swActiveTab === 'goal') {
+    const gt = document.getElementById('sw-goal-input').value.trim();
+    if (!gt) { document.getElementById('swerr-goal').textContent = 'Please enter a goal.'; return; }
+    body = { mode: 'new_goal', goal_text: gt };
+
+  } else {
+    const plan = document.getElementById('sw-plan-input').value.trim();
+    if (!plan) { document.getElementById('swerr-plan').textContent = 'Please enter a plan.'; return; }
+    body = { mode: 'manual_plan', plan_text: plan };
+  }
+
+  // Show loading spinner
+  document.getElementById('sw-main').querySelectorAll('.sw-pane')
+    .forEach(el => el.classList.remove('active'));
+  document.getElementById('sw-loading').classList.add('show');
+  document.getElementById('sw-footer').style.display = 'none';
+  swPolling = true;
+
+  try {
+    const res  = await fetch('/api/switch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      swShowError(data.error || 'Switch failed.');
+      return;
+    }
+    // Poll until the new orchestrator is ready
+    swPollReady();
+  } catch (e) {
+    swShowError(String(e));
+  }
+}
+
+function swPollReady() {
+  const msgs = ['Initialising…', 'Loading model…', 'Building graph…', 'Almost ready…'];
+  let tick = 0;
+  const iv = setInterval(async () => {
+    tick++;
+    document.getElementById('sw-loading-msg').textContent =
+      msgs[Math.floor(tick / 4) % msgs.length];
+    try {
+      const d = await (await fetch('/api/status')).json();
+      if (d.error) { clearInterval(iv); swShowError(d.error); return; }
+      if (d.initialized) {
+        clearInterval(iv);
+        window.location.reload();
+      }
+    } catch (_) { /* keep polling */ }
+  }, 1500);
+}
+
+function swShowError(msg) {
+  swPolling = false;
+  document.getElementById('sw-loading').classList.remove('show');
+  document.getElementById('sw-footer').style.display = '';
+  document.getElementById(`swpane-${swActiveTab}`).classList.add('active');
+  document.getElementById(`swerr-${swActiveTab}`).textContent = 'Error: ' + msg;
+}
+
+function swEsc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Close on overlay click (outside the shell)
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('switch-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('switch-overlay')) closeSwitchModal();
+  });
+});
+
+// Esc key closes the modal
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeSwitchModal();
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+
+initSVG();
+connect();
+</script>
+<!-- ── Switch-goal modal ─────────────────────────────────────────────────── -->
+<div id="switch-overlay" class="hidden">
+  <div id="switch-shell">
+
+    <div id="switch-shell-header">
+      <span class="sw-brand">Switch goal</span>
+      <button class="sw-close" onclick="closeSwitchModal()">✕</button>
+    </div>
+
+    <div class="sw-tabs">
+      <button class="sw-tab active" id="swtab-existing" onclick="switchModalTab('existing')">📂 Existing runs</button>
+      <button class="sw-tab"        id="swtab-goal"     onclick="switchModalTab('goal')">✦ New goal</button>
+      <button class="sw-tab"        id="swtab-plan"     onclick="switchModalTab('plan')">✎ Manual plan</button>
+    </div>
+
+    <div id="sw-main">
+      <!-- Existing runs -->
+      <div class="sw-pane active" id="swpane-existing">
+        <div id="sw-runs-container"><div class="sw-empty">Loading…</div></div>
+        <div class="sw-error" id="swerr-existing"></div>
+      </div>
+
+      <!-- New goal -->
+      <div class="sw-pane" id="swpane-goal">
+        <label class="sw-label">What do you want to achieve?</label>
+        <input class="sw-input" id="sw-goal-input"
+          placeholder="e.g. Build a CLI tool that summarises GitHub PRs"
+          autocomplete="off">
+        <div class="sw-hint">The planner will break this down into tasks automatically.</div>
+        <div class="sw-error" id="swerr-goal"></div>
+      </div>
+
+      <!-- Manual plan -->
+      <div class="sw-pane" id="swpane-plan">
+        <label class="sw-label">Your plan</label>
+        <textarea class="sw-textarea" id="sw-plan-input"
+          placeholder="First line = goal description&#10;- Task: description [depends: Other_Task]&#10;- Another_Task: does something else"></textarea>
+        <div class="sw-hint">First non-bullet line is the goal. Lines starting with <code style="background:#263350;padding:1px 4px;border-radius:3px">-</code> are tasks.</div>
+        <div class="sw-error" id="swerr-plan"></div>
+      </div>
+
+      <!-- Loading state -->
+      <div class="sw-loading" id="sw-loading">
+        <div class="sw-spinner"></div>
+        <div class="sw-loading-msg" id="sw-loading-msg">Switching goal…</div>
+      </div>
+    </div>
+
+    <div class="sw-footer" id="sw-footer">
+      <button class="sw-btn sw-btn-ghost" onclick="closeSwitchModal()">Cancel</button>
+      <button class="sw-btn sw-btn-primary" id="sw-start-btn" onclick="submitSwitch()">Switch →</button>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

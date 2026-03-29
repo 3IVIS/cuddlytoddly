@@ -1,0 +1,74 @@
+[project]
+name = "cuddlytoddly"
+version = "0.1.0"
+description = "LLM-driven autonomous DAG planning and execution system"
+readme = "README.md"
+license = "MIT"                # SPDX expression, simple string
+requires-python = ">=3.11"
+authors = [
+    { name = "3IVIS GmbH" }
+]
+keywords = ["llm", "dag", "planning", "autonomous", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Core runtime dependencies
+dependencies = [
+    "gitpython>=3.1",
+    'windows-curses>=2.3; sys_platform == "win32"',
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+claude = ["anthropic>=0.25"]
+local = [
+    "llama-cpp-python>=0.2",
+    "outlines>=0.0.46",
+]
+all = ["cuddlytoddly[openai,claude,local]"]
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+cuddlytoddly = "cuddlytoddly.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/3IVIS/cuddlytoddly"
+Documentation = "https://github.com/3IVIS/cuddlytoddly/tree/main/docs"
+Issues = "https://github.com/3IVIS/cuddlytoddly/issues"
+
+# ── Package discovery ────────────────────────────────────────────────────────
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cuddlytoddly*"]
+
+[tool.setuptools.package-data]
+"*" = ["SKILL.md", "*.html"]
+
+# ── Tooling ──────────────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
