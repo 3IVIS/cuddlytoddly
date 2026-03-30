@@ -37,7 +37,7 @@ from cuddlytoddly.core.events import (
     ADD_NODE, REMOVE_NODE,
     ADD_DEPENDENCY, REMOVE_DEPENDENCY,
     UPDATE_METADATA, UPDATE_STATUS,
-    RESET_SUBTREE,
+    SET_RESULT, RESET_SUBTREE,
 )
 from cuddlytoddly.infra.logging import get_logger
 
@@ -194,6 +194,22 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                     "node_id": added, "depends_on": node_id,
                 }))
                 orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": added}))
+
+        if "result" in body:
+            new_result   = body["result"]
+            old_result   = node.result or ""
+            result_changed = new_result != old_result
+            if result_changed:
+                # Update result in-place; the node keeps its current status.
+                # Reset only children so they rerun with the new upstream result.
+                orchestrator.event_queue.put(Event(SET_RESULT, {
+                    "node_id": node_id,
+                    "result":  new_result if new_result else None,
+                }))
+                for child_id in node.children:
+                    orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": child_id}))
+                return {"ok": True}
+
         orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": node_id}))
         return {"ok": True}
 

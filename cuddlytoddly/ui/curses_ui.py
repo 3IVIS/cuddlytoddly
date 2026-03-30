@@ -35,6 +35,7 @@ from cuddlytoddly.core.events import (
     REMOVE_DEPENDENCY,
     UPDATE_METADATA,
     UPDATE_STATUS,
+    SET_RESULT,
     RESET_SUBTREE
 )
 
@@ -770,11 +771,11 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
     node = snapshot[current_node]
     node_ids = [nid for nid in snapshot.keys() if nid != current_node]
     current_deps = ", ".join(node.dependencies)
-    # Nodes whose dependency list includes current_node
     current_dependents = ", ".join(
         nid for nid, n in snapshot.items()
         if current_node in n.dependencies
     )
+    current_result = node.result or ""
  
     def on_submit(values):
         new_id           = values["ID"].strip()
@@ -782,6 +783,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
         new_deps_raw     = values["Dependencies"].strip()
         new_status       = values["Status"].strip()
         new_dep_raw      = values["Dependents"].strip()
+        new_result       = values["Result"].strip()
  
         new_deps = [d.strip() for d in new_deps_raw.split(",") if d.strip()]
         new_deps = [d for d in new_deps if d in snapshot]
@@ -816,7 +818,6 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
                 "node_id": current_node, "depends_on": added,
             }))
  
-        # Apply dependent changes
         for removed in old_dependents - new_dependents_set:
             event_queue.put(Event(REMOVE_DEPENDENCY, {
                 "node_id": removed, "depends_on": current_node,
@@ -827,6 +828,24 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
                 "node_id": added, "depends_on": current_node,
             }))
             event_queue.put(Event(RESET_SUBTREE, {"node_id": added}))
+ 
+        result_changed = new_result != current_result
+        if result_changed:
+            # Update the result in-place; reset only children so this node
+            # keeps its current status (e.g. "done") with the new result.
+            event_queue.put(Event(SET_RESULT, {
+                "node_id": current_node,
+                "result":  new_result if new_result else None,
+            }))
+            for child_id in node.children:
+                event_queue.put(Event(RESET_SUBTREE, {"node_id": child_id}))
+        else:
+            # No result change — reset the node and everything downstream
+            # as before (covers description / dependency edits).
+            if new_id and new_id != current_node and new_id not in snapshot:
+                pass   # rename path handles reset below
+            else:
+                event_queue.put(Event(RESET_SUBTREE, {"node_id": current_node}))
  
         if new_id and new_id != current_node and new_id not in snapshot:
             event_queue.put(Event(ADD_NODE, {
@@ -841,8 +860,6 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
                 event_queue.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": current_node}))
             event_queue.put(Event(REMOVE_NODE, {"node_id": current_node}))
             event_queue.put(Event(RESET_SUBTREE, {"node_id": new_id}))
-        else:
-            event_queue.put(Event(RESET_SUBTREE, {"node_id": current_node}))
  
         set_modal(None)
  
@@ -855,6 +872,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
             ModalField("Dependents",   value=current_dependents, completions=node_ids),
             ModalField("Status",       value=node.status,
                        completions=["pending", "running", "done", "failed", "to_be_expanded"]),
+            ModalField("Result",       value=current_result),
         ],
         on_submit=on_submit,
         on_cancel=lambda: set_modal(None),
