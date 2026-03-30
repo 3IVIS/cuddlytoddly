@@ -37,7 +37,7 @@ from cuddlytoddly.core.events import (
     ADD_NODE, REMOVE_NODE,
     ADD_DEPENDENCY, REMOVE_DEPENDENCY,
     UPDATE_METADATA, UPDATE_STATUS,
-    SET_RESULT, RESET_SUBTREE,
+    SET_RESULT, RESET_NODE, RESET_SUBTREE,
 )
 from cuddlytoddly.infra.logging import get_logger
 
@@ -195,22 +195,50 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                 }))
                 orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": added}))
 
-        if "result" in body:
-            new_result   = body["result"]
-            old_result   = node.result or ""
-            result_changed = new_result != old_result
-            if result_changed:
-                # Update result in-place; the node keeps its current status.
-                # Reset only children so they rerun with the new upstream result.
-                orchestrator.event_queue.put(Event(SET_RESULT, {
-                    "node_id": node_id,
-                    "result":  new_result if new_result else None,
-                }))
-                for child_id in node.children:
-                    orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": child_id}))
-                return {"ok": True}
+        # ── Cascade decision ──────────────────────────────────────────────
+        # Only cascade when something that feeds into downstream LLM prompts
+        # actually changed (_resolve_inputs reads: description, output metadata,
+        # and result from each upstream node).
+        #
+        # Lazy cascade strategy:
+        # • result changed  → SET_RESULT (node keeps status) + RESET_NODE on
+        #                     each done direct child only.  _on_node_done in the
+        #                     orchestrator compares each child's new result to its
+        #                     previous result and cascades further only if changed,
+        #                     propagating all the way to the leaf nodes.
+        # • desc/deps changed → RESET_NODE on the node itself only.  After it
+        #                     reruns, the same orchestrator logic cascades to done
+        #                     children if the result changes.
+        # • status-only or no LLM-relevant change → no cascade.
+        result_changed = (
+            "result" in body
+            and body.get("result", "") != (node.result or "")
+        )
+        desc_changed = (
+            "description" in body
+            and body["description"] != node.metadata.get("description", "")
+        )
+        deps_changed = (
+            "dependencies" in body
+            and set(body["dependencies"]) != set(node.dependencies)
+        )
 
-        orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": node_id}))
+        if result_changed:
+            # Preserve node status; reset only done direct children.
+            # _on_node_done cascades further when each child finishes.
+            orchestrator.event_queue.put(Event(SET_RESULT, {
+                "node_id": node_id,
+                "result":  body["result"] if body["result"] else None,
+            }))
+            for child_id in node.children:
+                child = snap.get(child_id)
+                if child and child.status == "done":
+                    orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
+        elif desc_changed or deps_changed:
+            # Reset node itself only; _on_node_done cascades if result changes.
+            orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": node_id}))
+        # else: status-only or no LLM-relevant change → no cascade
+
         return {"ok": True}
 
     @app.delete("/api/node/{node_id:path}")

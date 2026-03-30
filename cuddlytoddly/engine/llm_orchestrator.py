@@ -26,6 +26,9 @@ PlanningContext = namedtuple("PlanningContext", ["snapshot", "goals"])
 
 _IDLE_SLEEP = 0.5
 
+# Sentinel used to distinguish "never stored" from "stored value was None"
+_NO_PREV = object()
+
 # Maximum number of times the orchestrator will attempt to inject a bridging
 # node for any single blocked node before giving up and just launching it.
 _MAX_GAP_FILL_ATTEMPTS = 2
@@ -68,6 +71,10 @@ class SimpleOrchestrator:
         self._running_futures: dict[str, object] = {}
         self._stop_event                    = threading.Event()
         self._thread: threading.Thread | None = None
+
+        # Stores each node's result immediately before it starts executing so
+        # _on_node_done can compare old vs new and decide whether to cascade.
+        self._prev_results: dict[str, object] = {}
 
         # LLM clients for pause/resume — collected from planner and executor
         self._llm_clients = []
@@ -334,6 +341,8 @@ class SimpleOrchestrator:
                 current = self.graph.nodes.get(node.id)
                 if not current or current.status != "ready":
                     continue
+                # Snapshot the current result so _on_node_done can detect changes
+                self._prev_results[node.id] = current.result
                 snapshot = self.graph.get_snapshot()
 
             # ── Dependency gap check (skip if no quality gate or budget exhausted) ──
@@ -616,7 +625,7 @@ class SimpleOrchestrator:
                         self.graph.recompute_readiness()
 
                 else:
-                    # Success — hide step nodes from the main UI
+                    # ── Success ───────────────────────────────────────────────
                     if reporter:
                         reporter.hide_all()
 
@@ -629,6 +638,38 @@ class SimpleOrchestrator:
                         "node_id":  node_id,
                         "metadata": {"verified": True},
                     }))
+
+                    # ── Lazy cascade ──────────────────────────────────────────
+                    # Only reset children that have already completed ("done")
+                    # and only when the result actually changed.  Each child
+                    # will in turn apply the same logic when it finishes,
+                    # propagating the cascade all the way to the leaf nodes
+                    # without touching nodes whose upstream input is unchanged.
+                    prev_result = self._prev_results.pop(node_id, _NO_PREV)
+                    result_changed = (prev_result is _NO_PREV) or (result != prev_result)
+
+                    if result_changed:
+                        logger.info(
+                            "[EXEC] Result changed for %s — resetting done children",
+                            node_id,
+                        )
+                        for child_id in list(live_node.children):
+                            child = self.graph.nodes.get(child_id)
+                            if child and child.status == "done":
+                                logger.info(
+                                    "[EXEC] Cascading rerun to child: %s", child_id
+                                )
+                                child.status = "pending"
+                                child.result = None
+                                child.metadata.pop("verified",             None)
+                                child.metadata.pop("verification_failure", None)
+                                child.metadata.pop("retry_count",          None)
+                        self.graph.recompute_readiness()
+                    else:
+                        logger.info(
+                            "[EXEC] Result unchanged for %s — children kept as-is",
+                            node_id,
+                        )
 
     # ── Bridge node injection ────────────────────────────────────────────────
 

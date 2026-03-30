@@ -36,6 +36,7 @@ from cuddlytoddly.core.events import (
     UPDATE_METADATA,
     UPDATE_STATUS,
     SET_RESULT,
+    RESET_NODE,
     RESET_SUBTREE
 )
 
@@ -829,23 +830,41 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
             }))
             event_queue.put(Event(RESET_SUBTREE, {"node_id": added}))
  
+        # ── Cascade decision ──────────────────────────────────────────────
+        # Only cascade when something that feeds into the downstream LLM
+        # prompt actually changed: result, description, or dependencies.
+        # Status-only changes do not affect LLM input → no cascade.
+        #
+        # Lazy cascade strategy:
+        # • result changed  → SET_RESULT (node keeps status) + RESET_NODE on
+        #                     each done direct child only.  When each child
+        #                     reruns, _on_node_done compares its new result to
+        #                     its previous result and cascades further only if
+        #                     it changed — propagating all the way to leaf nodes.
+        # • desc/deps changed → RESET_NODE on the node itself only.  After it
+        #                     reruns, the same _on_node_done logic cascades to
+        #                     done children if the result changes.
+        # • status-only     → no cascade at all.
         result_changed = new_result != current_result
+        desc_changed   = new_desc != node.metadata.get("description", "")
+        deps_changed   = new_deps_set != old_deps
+        is_rename      = bool(new_id and new_id != current_node
+                              and new_id not in snapshot)
+
         if result_changed:
-            # Update the result in-place; reset only children so this node
-            # keeps its current status (e.g. "done") with the new result.
+            # Preserve the node's current status.
+            # Reset only done direct children — _on_node_done cascades further.
             event_queue.put(Event(SET_RESULT, {
                 "node_id": current_node,
                 "result":  new_result if new_result else None,
             }))
             for child_id in node.children:
-                event_queue.put(Event(RESET_SUBTREE, {"node_id": child_id}))
-        else:
-            # No result change — reset the node and everything downstream
-            # as before (covers description / dependency edits).
-            if new_id and new_id != current_node and new_id not in snapshot:
-                pass   # rename path handles reset below
-            else:
-                event_queue.put(Event(RESET_SUBTREE, {"node_id": current_node}))
+                child = snapshot.get(child_id)
+                if child and child.status == "done":
+                    event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
+        elif (desc_changed or deps_changed) and not is_rename:
+            # Reset the node itself only; _on_node_done cascades if result changes.
+            event_queue.put(Event(RESET_NODE, {"node_id": current_node}))
  
         if new_id and new_id != current_node and new_id not in snapshot:
             event_queue.put(Event(ADD_NODE, {
