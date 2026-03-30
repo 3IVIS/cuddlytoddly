@@ -37,6 +37,7 @@ from cuddlytoddly.core.events import (
     ADD_NODE, REMOVE_NODE,
     ADD_DEPENDENCY, REMOVE_DEPENDENCY,
     UPDATE_METADATA, UPDATE_STATUS,
+    RESET_SUBTREE,
 )
 from cuddlytoddly.infra.logging import get_logger
 
@@ -148,7 +149,6 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
             orchestrator.event_queue.put(Event(ADD_DEPENDENCY, {
                 "node_id": dep_id, "depends_on": node_id,
             }))
-            from cuddlytoddly.core.events import RESET_SUBTREE
             orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": dep_id}))
         return {"ok": True}
 
@@ -180,7 +180,20 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                 orchestrator.event_queue.put(Event(ADD_DEPENDENCY, {
                     "node_id": node_id, "depends_on": added,
                 }))
-        from cuddlytoddly.core.events import RESET_SUBTREE
+        if "dependents" in body:
+            snap2     = orchestrator.get_snapshot()
+            old_deps  = {nid for nid, n in snap2.items() if node_id in n.dependencies}
+            new_deps  = {d for d in body["dependents"] if d in snap2 and d != node_id}
+            for removed in old_deps - new_deps:
+                orchestrator.event_queue.put(Event(REMOVE_DEPENDENCY, {
+                    "node_id": removed, "depends_on": node_id,
+                }))
+                orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": removed}))
+            for added in new_deps - old_deps:
+                orchestrator.event_queue.put(Event(ADD_DEPENDENCY, {
+                    "node_id": added, "depends_on": node_id,
+                }))
+                orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": added}))
         orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": node_id}))
         return {"ok": True}
 
@@ -193,7 +206,6 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
         parents  = list(node.dependencies)
         children = list(node.children)
         q = orchestrator.event_queue
-        from cuddlytoddly.core.events import RESET_SUBTREE
         if mode == "rewire":
             for child in children:
                 q.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id}))
@@ -507,7 +519,6 @@ def _create_unified_app(
             "origin":       "user",
             "metadata":     {"description": body.get("description", "")},
         }))
-        from cuddlytoddly.core.events import RESET_SUBTREE
         for dep_id in dependents:
             orch.event_queue.put(Event(ADD_DEPENDENCY, {
                 "node_id": dep_id, "depends_on": node_id,
@@ -540,7 +551,6 @@ def _create_unified_app(
             for added in new - old:
                 orch.event_queue.put(Event(ADD_DEPENDENCY, {
                     "node_id": node_id, "depends_on": added}))
-        from cuddlytoddly.core.events import RESET_SUBTREE
         orch.event_queue.put(Event(RESET_SUBTREE, {"node_id": node_id}))
         return {"ok": True}
 
@@ -554,7 +564,6 @@ def _create_unified_app(
         parents  = list(node.dependencies)
         children = list(node.children)
         q = orch.event_queue
-        from cuddlytoddly.core.events import RESET_SUBTREE
         if mode == "rewire":
             for child in children:
                 q.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id}))

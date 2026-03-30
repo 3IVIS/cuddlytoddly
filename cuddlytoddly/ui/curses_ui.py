@@ -455,11 +455,30 @@ class ModalField:
         self.error = None
         self._completion_idx = -1
         self._completion_prefix = ""
+        self._dd_idx = -1   # highlighted row in the visible dropdown list (-1 = none)
 
     def _current_token(self):
             """Return the text after the last comma (stripped), for autocomplete."""
             parts = self.value[:self.cursor].rsplit(",", 1)
             return parts[-1].strip()
+
+    def _select_dd_item(self, completion):
+        """Insert *completion*, replacing the current comma-token."""
+        before_cursor = self.value[:self.cursor]
+        last_comma = before_cursor.rfind(",")
+        if last_comma == -1:
+            self.value = completion + self.value[self.cursor:]
+        else:
+            prefix_part = self.value[:last_comma + 1] + " "
+            self.value = prefix_part + completion + self.value[self.cursor:]
+        self.cursor = len(self.value)
+        self._completion_idx = -1
+        self._dd_idx = -1
+
+    def _dd_matches(self):
+        """Return the current filtered completion list (up to 8)."""
+        token = self._current_token()
+        return [c for c in self.completions if c.startswith(token)][:8]
 
     def handle_key(self, k):
         if k == curses.KEY_BACKSPACE or k == 127:
@@ -476,6 +495,7 @@ class ModalField:
             matches = [c for c in self.completions if c.startswith(token)]
             if matches:
                 self._completion_idx = (self._completion_idx + 1) % len(matches)
+                self._dd_idx = self._completion_idx   # keep dropdown highlight in sync
                 completion = matches[self._completion_idx]
                 # Replace only the current token, preserving everything before it
                 before_cursor = self.value[:self.cursor]
@@ -493,6 +513,7 @@ class ModalField:
             self.value = self.value[:self.cursor] + ch + self.value[self.cursor:]
             self.cursor += 1
             self._completion_idx = -1  # reset on typing
+            self._dd_idx = -1          # reset dropdown selection on typing
             
     def validate(self):
         if self.validator:
@@ -520,7 +541,8 @@ class Modal:
             self.on_cancel()
             return
 
-        if k in (curses.KEY_DOWN, ord('\t')) and chr(k) != '\t':
+        # ── Field navigation — always available ───────────────────────────────
+        if k == curses.KEY_DOWN:
             self.active_field = (self.active_field + 1) % len(self.fields)
             return
 
@@ -528,13 +550,19 @@ class Modal:
             self.active_field = (self.active_field - 1) % len(self.fields)
             return
 
-        if k in (10, 13):  # Enter
-            # Validate all fields
+        # ── Tab: cycle completions and highlight the chosen match ─────────────
+        if k == ord('\t') and self.fields[self.active_field].completions:
+            self.fields[self.active_field].handle_key(k)
+            return
+
+        # ── Enter: submit ─────────────────────────────────────────────────────
+        if k in (10, 13):
             all_valid = all(f.validate() for f in self.fields)
             if all_valid:
                 self.on_submit({f.label: f.value for f in self.fields})
             return
 
+        # ── All other keys → active field ─────────────────────────────────────
         self.fields[self.active_field].handle_key(k)
 
     def draw(self, stdscr, h, w):
@@ -585,14 +613,17 @@ class Modal:
                     pass
                 row += 1
 
-            # Autocomplete suggestions
+            # Autocomplete dropdown
             if is_active and field.completions:
-                prefix = field._current_token()  # <-- see below
-                matches = [c for c in field.completions if c.startswith(prefix)][:4]
+                token = field._current_token()
+                matches = field._dd_matches()
                 if matches:
                     for j, m in enumerate(matches):
+                        is_sel = (j == field._dd_idx)
+                        item_attr = curses.A_REVERSE if is_sel else curses.A_DIM
+                        prefix = "▶ " if is_sel else "  "
                         try:
-                            stdscr.addstr(row + j, val_x, m[:val_w], curses.A_DIM)
+                            stdscr.addstr(row + j, val_x, (prefix + m)[:val_w], item_attr)
                         except curses.error:
                             pass
                     row += len(matches)
@@ -600,7 +631,8 @@ class Modal:
             row += 1
         # Footer
         try:
-            stdscr.addstr(row + 1, panel_x, " Enter: confirm  Esc: cancel  Tab: autocomplete", curses.A_DIM)
+            stdscr.addstr(row + 1, panel_x,
+                          " ↑↓: switch field  Tab: complete  Enter: confirm  Esc: cancel", curses.A_DIM)
         except curses.error:
             pass
 
@@ -736,17 +768,30 @@ def open_add_modal(snapshot, event_queue, current_node, set_modal):
   
 def open_edit_modal(current_node, snapshot, event_queue, set_modal):
     node = snapshot[current_node]
-    node_ids = list(snapshot.keys())
+    node_ids = [nid for nid in snapshot.keys() if nid != current_node]
     current_deps = ", ".join(node.dependencies)
+    # Nodes whose dependency list includes current_node
+    current_dependents = ", ".join(
+        nid for nid, n in snapshot.items()
+        if current_node in n.dependencies
+    )
  
     def on_submit(values):
-        new_id       = values["ID"].strip()
-        new_desc     = values["Description"].strip()
-        new_deps_raw = values["Dependencies"].strip()
-        new_status   = values["Status"].strip()
+        new_id           = values["ID"].strip()
+        new_desc         = values["Description"].strip()
+        new_deps_raw     = values["Dependencies"].strip()
+        new_status       = values["Status"].strip()
+        new_dep_raw      = values["Dependents"].strip()
  
         new_deps = [d.strip() for d in new_deps_raw.split(",") if d.strip()]
         new_deps = [d for d in new_deps if d in snapshot]
+ 
+        new_dependents = [d.strip() for d in new_dep_raw.split(",")
+                          if d.strip() and d.strip() in snapshot
+                          and d.strip() != current_node]
+        new_dependents_set = set(new_dependents)
+        old_dependents = {nid for nid, n in snapshot.items()
+                          if current_node in n.dependencies}
  
         event_queue.put(Event(UPDATE_METADATA, {
             "node_id": current_node,
@@ -771,6 +816,18 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
                 "node_id": current_node, "depends_on": added,
             }))
  
+        # Apply dependent changes
+        for removed in old_dependents - new_dependents_set:
+            event_queue.put(Event(REMOVE_DEPENDENCY, {
+                "node_id": removed, "depends_on": current_node,
+            }))
+            event_queue.put(Event(RESET_SUBTREE, {"node_id": removed}))
+        for added in new_dependents_set - old_dependents:
+            event_queue.put(Event(ADD_DEPENDENCY, {
+                "node_id": added, "depends_on": current_node,
+            }))
+            event_queue.put(Event(RESET_SUBTREE, {"node_id": added}))
+ 
         if new_id and new_id != current_node and new_id not in snapshot:
             event_queue.put(Event(ADD_NODE, {
                 "node_id":      new_id,
@@ -783,10 +840,8 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
                 event_queue.put(Event(ADD_DEPENDENCY,    {"node_id": child, "depends_on": new_id}))
                 event_queue.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": current_node}))
             event_queue.put(Event(REMOVE_NODE, {"node_id": current_node}))
-            # Reset the renamed node's subtree (children now point to new_id)
             event_queue.put(Event(RESET_SUBTREE, {"node_id": new_id}))
         else:
-            # Reset this node and everything downstream
             event_queue.put(Event(RESET_SUBTREE, {"node_id": current_node}))
  
         set_modal(None)
@@ -796,7 +851,8 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
         fields=[
             ModalField("ID",           value=current_node),
             ModalField("Description",  value=node.metadata.get("description", "")),
-            ModalField("Dependencies", value=current_deps, completions=node_ids),
+            ModalField("Dependencies", value=current_deps,       completions=node_ids),
+            ModalField("Dependents",   value=current_dependents, completions=node_ids),
             ModalField("Status",       value=node.status,
                        completions=["pending", "running", "done", "failed", "to_be_expanded"]),
         ],

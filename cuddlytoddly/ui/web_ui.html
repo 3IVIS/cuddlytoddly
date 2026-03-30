@@ -361,8 +361,7 @@ body {
   font-size: 11px;
   line-height: 1.6;
   color: var(--text-dim);
-  max-height: 180px;
-  overflow-y: auto;
+  overflow-y: visible;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -499,6 +498,98 @@ body {
 .btn-primary:hover { filter: brightness(1.1); }
 .btn-danger { background: #7f1d1d; border-color: #991b1b; color: #fef2f2; }
 .btn-danger:hover { background: #991b1b; }
+
+/* ── Panel resize handle ─────────────────────────────────────────────── */
+.panel-resize {
+  position: absolute;
+  bottom: 0; right: 0;
+  width: 16px; height: 16px;
+  cursor: nwse-resize;
+  z-index: 5;
+  /* subtle diagonal grip indicator */
+  background:
+    linear-gradient(135deg,
+      transparent 0%, transparent 40%,
+      var(--border2) 40%, var(--border2) 50%,
+      transparent 50%, transparent 65%,
+      var(--border2) 65%, var(--border2) 75%,
+      transparent 75%);
+  border-radius: 0 0 var(--radius) 0;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.panel-resize:hover { opacity: 1; }
+
+/* ── Tag picker ──────────────────────────────────────────────────────── */
+.tag-picker {
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 5px;
+  padding: 5px 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  min-height: 36px;
+  cursor: text;
+  transition: border-color 0.15s;
+  position: relative;
+}
+.tag-picker:focus-within { border-color: var(--accent); }
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface3);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.tag-chip-remove {
+  background: none; border: none;
+  color: var(--text-muted); cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 0 1px;
+}
+.tag-chip-remove:hover { color: var(--s-failed); }
+
+.tag-input {
+  background: none; border: none; outline: none;
+  color: var(--text); font-size: 13px; font-family: inherit;
+  min-width: 80px; flex: 1;
+  padding: 2px 0;
+}
+
+.tag-dropdown {
+  position: absolute;
+  top: calc(100% + 4px); left: 0; right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  z-index: 50;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+.tag-dropdown.hidden { display: none; }
+.tag-dropdown-item {
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.tag-dropdown-item:hover,
+.tag-dropdown-item.active { background: var(--surface2); color: var(--text); }
+.tag-dropdown-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
 
 /* ── Toast ───────────────────────────────────────────────────────────── */
 #toast {
@@ -713,6 +804,7 @@ body {
   </div>
   <div class="panel-actions" id="panel-actions"></div>
   <div class="panel-body" id="panel-body"></div>
+  <div class="panel-resize" id="panel-resize-handle" title="Drag to resize"></div>
 </div>
 
 <!-- ── Modal ─────────────────────────────────────────────────────────────── -->
@@ -1165,7 +1257,11 @@ function openEditModal() {
   document.getElementById('modal-title').textContent = 'Edit Node';
 
   const allIds = Object.keys(nodes).filter(id => id !== selectedId);
-  const deps = (node.dependencies || []).join(', ');
+  const curDeps = node.dependencies || [];
+  // Compute current dependents — nodes that list selectedId in their own dependencies
+  const curDependents = Object.entries(nodes)
+    .filter(([, n]) => (n.dependencies || []).includes(selectedId))
+    .map(([id]) => id);
 
   document.getElementById('modal-body').innerHTML = `
     <div class="form-group">
@@ -1181,11 +1277,19 @@ function openEditModal() {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">Dependencies</label>
-      <input class="form-input" id="f-deps" value="${esc(deps)}" placeholder="comma-separated node IDs">
-      <div class="form-hint">Available: ${allIds.slice(0,8).join(', ')}${allIds.length > 8 ? '…' : ''}</div>
+      <label class="form-label">Dependencies
+        <span class="form-hint" style="display:inline;margin-left:6px">nodes this node waits for</span>
+      </label>
+      ${tagPickerHTML('edit-deps', curDeps, allIds)}
+    </div>
+    <div class="form-group">
+      <label class="form-label">Dependents
+        <span class="form-hint" style="display:inline;margin-left:6px">nodes that wait for this one</span>
+      </label>
+      ${tagPickerHTML('edit-dependents', curDependents, allIds)}
     </div>
   `;
+  initTagPickers();
 
   document.getElementById('modal-footer').innerHTML = `
     <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -1196,13 +1300,13 @@ function openEditModal() {
 }
 
 function submitEdit() {
-  const desc  = document.getElementById('f-desc').value.trim();
-  const status = document.getElementById('f-status').value;
-  const depsRaw = document.getElementById('f-deps').value;
-  const deps = depsRaw.split(',').map(d => d.trim()).filter(Boolean);
+  const desc       = document.getElementById('f-desc').value.trim();
+  const status     = document.getElementById('f-status').value;
+  const deps       = getTagPickerValues('edit-deps');
+  const dependents = getTagPickerValues('edit-dependents');
 
   api('PUT', `/api/node/${encodeURIComponent(selectedId)}`, {
-    description: desc, status, dependencies: deps,
+    description: desc, status, dependencies: deps, dependents,
   });
   closeModal();
 }
@@ -1260,11 +1364,12 @@ function addNodePrompt() {
   modalMode = 'add';
   document.getElementById('modal-title').textContent = 'Add Node';
   const allIds = Object.keys(nodes);
+  const preselectedDep = selectedId ? [selectedId] : [];
 
   document.getElementById('modal-body').innerHTML = `
     <div class="form-group">
       <label class="form-label">Node ID <span style="color:var(--s-failed)">*</span></label>
-      <input class="form-input" id="f-node-id" placeholder="e.g. Research_Market">
+      <input class="form-input" id="f-node-id" placeholder="e.g. Research_Market" autocomplete="off">
     </div>
     <div class="form-group">
       <label class="form-label">Description</label>
@@ -1278,19 +1383,19 @@ function addNodePrompt() {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">Dependencies</label>
-      <input class="form-input" id="f-add-deps" value="${esc(selectedId || '')}" placeholder="comma-separated node IDs">
-      <div class="form-hint">Nodes this node depends on (prerequisites that must complete first).</div>
+      <label class="form-label">Dependencies
+        <span class="form-hint" style="display:inline;margin-left:6px">nodes this node waits for</span>
+      </label>
+      ${tagPickerHTML('add-deps', preselectedDep, allIds)}
     </div>
     <div class="form-group">
-      <label class="form-label">Dependents</label>
-      <input class="form-input" id="f-add-dependents" value="" placeholder="comma-separated node IDs">
-      <div class="form-hint">
-        Existing nodes that should depend on this new node (it becomes their prerequisite).
-        ${allIds.length ? `Available: ${allIds.slice(0, 8).join(', ')}${allIds.length > 8 ? '…' : ''}` : ''}
-      </div>
+      <label class="form-label">Dependents
+        <span class="form-hint" style="display:inline;margin-left:6px">nodes that will wait for this one</span>
+      </label>
+      ${tagPickerHTML('add-dependents', [], allIds)}
     </div>
   `;
+  initTagPickers();
 
   document.getElementById('modal-footer').innerHTML = `
     <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -1302,25 +1407,21 @@ function addNodePrompt() {
 }
 
 function submitAdd() {
-  const nodeId  = document.getElementById('f-node-id').value.trim();
+  const nodeId = document.getElementById('f-node-id').value.trim();
   if (!nodeId) { toast('Node ID is required'); return; }
   if (nodes[nodeId]) { toast('Node ID already exists'); return; }
 
-  const desc    = document.getElementById('f-add-desc').value.trim();
-  const type    = document.getElementById('f-type').value;
-
-  const depsRaw = document.getElementById('f-add-deps').value;
-  const deps    = depsRaw.split(',').map(d => d.trim()).filter(d => d && nodes[d]);
-
-  const dependentsRaw = document.getElementById('f-add-dependents').value;
-  const dependents    = dependentsRaw.split(',').map(d => d.trim()).filter(d => d && nodes[d]);
+  const desc       = document.getElementById('f-add-desc').value.trim();
+  const type       = document.getElementById('f-type').value;
+  const deps       = getTagPickerValues('add-deps').filter(d => nodes[d]);
+  const dependents = getTagPickerValues('add-dependents').filter(d => nodes[d]);
 
   api('POST', '/api/node', {
     node_id:      nodeId,
     node_type:    type,
     description:  desc,
     dependencies: deps,
-    dependents:   dependents,
+    dependents,
   });
   closeModal();
 }
@@ -1602,6 +1703,155 @@ document.addEventListener('DOMContentLoaded', () => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeSwitchModal();
 });
+
+// ── Panel resize ──────────────────────────────────────────────────────────────
+
+(function() {
+  let resizing = false, startX, startY, startW, startH;
+  const panel  = document.getElementById('info-panel');
+  const handle = document.getElementById('panel-resize-handle');
+
+  handle.addEventListener('mousedown', e => {
+    resizing = true;
+    startX = e.clientX; startY = e.clientY;
+    const r = panel.getBoundingClientRect();
+    startW = r.width; startH = r.height;
+    e.preventDefault(); e.stopPropagation();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!resizing) return;
+    const w = Math.max(240, startW + (e.clientX - startX));
+    const h = Math.max(160, startH + (e.clientY - startY));
+    panel.style.width    = w + 'px';
+    panel.style.height   = h + 'px';
+    panel.style.maxHeight = 'none';
+  });
+  document.addEventListener('mouseup', () => { resizing = false; });
+})();
+
+// ── Tag-picker component ──────────────────────────────────────────────────────
+// Usage:
+//   tagPickerHTML(id, values, available)  → HTML string (set via innerHTML)
+//   initTagPickers()                      → wire events after HTML is in the DOM
+//   getTagPickerValues(id)                → string[] of selected values
+
+const _tp = {};   // state: id → { values: Set, available: string[] }
+
+function tagPickerHTML(id, values, available) {
+  _tp[id] = { values: new Set(values.filter(Boolean)), available };
+  return `
+  <div class="tag-picker" id="tp-${id}" onclick="document.getElementById('tp-${id}-input').focus()">
+    <span id="tp-${id}-tags"></span>
+    <input class="tag-input" id="tp-${id}-input" autocomplete="off"
+           placeholder="Type to search…"
+           oninput="_tpFilter('${id}')"
+           onkeydown="_tpKeydown(event,'${id}')"
+           onfocus="_tpFilter('${id}')"
+           onblur="_tpBlur('${id}')">
+    <div class="tag-dropdown hidden" id="tp-${id}-drop"></div>
+  </div>`;
+}
+
+function initTagPickers() {
+  for (const id of Object.keys(_tp)) {
+    _tpRenderTags(id);
+  }
+}
+
+function _tpRenderTags(id) {
+  const state = _tp[id]; if (!state) return;
+  const el = document.getElementById(`tp-${id}-tags`);
+  if (!el) return;
+  el.innerHTML = [...state.values].map(v =>
+    `<span class="tag-chip">
+       ${esc(v)}
+       <button class="tag-chip-remove" type="button"
+               onmousedown="event.preventDefault();_tpRemove('${id}','${esc(v)}')"
+       >✕</button>
+     </span>`
+  ).join('');
+}
+
+function _tpFilter(id) {
+  const state = _tp[id]; if (!state) return;
+  const input = document.getElementById(`tp-${id}-input`);
+  const drop  = document.getElementById(`tp-${id}-drop`);
+  if (!input || !drop) return;
+
+  const q = input.value.toLowerCase();
+  const matches = state.available
+    .filter(a => !state.values.has(a) && a.toLowerCase().includes(q))
+    .slice(0, 12);
+
+  if (!matches.length) {
+    drop.innerHTML = q
+      ? `<div class="tag-dropdown-empty">No matches</div>`
+      : `<div class="tag-dropdown-empty">No more nodes</div>`;
+  } else {
+    drop.innerHTML = matches.map((m, i) =>
+      `<div class="tag-dropdown-item" id="tp-${id}-item-${i}"
+            onmousedown="event.preventDefault();_tpSelect('${id}','${esc(m)}')"
+       >${esc(m)}</div>`
+    ).join('');
+  }
+  drop.classList.remove('hidden');
+  state._activeIdx = -1;
+}
+
+function _tpBlur(id) {
+  // Small delay so a mousedown on a dropdown item fires first
+  setTimeout(() => {
+    const drop = document.getElementById(`tp-${id}-drop`);
+    if (drop) drop.classList.add('hidden');
+  }, 150);
+}
+
+function _tpSelect(id, val) {
+  const state = _tp[id]; if (!state) return;
+  state.values.add(val);
+  _tpRenderTags(id);
+  const input = document.getElementById(`tp-${id}-input`);
+  if (input) { input.value = ''; input.focus(); }
+  _tpFilter(id);
+}
+
+function _tpRemove(id, val) {
+  const state = _tp[id]; if (!state) return;
+  state.values.delete(val);
+  _tpRenderTags(id);
+}
+
+function _tpKeydown(e, id) {
+  const state = _tp[id]; if (!state) return;
+  const drop  = document.getElementById(`tp-${id}-drop`);
+  const items = drop ? [...drop.querySelectorAll('.tag-dropdown-item')] : [];
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    state._activeIdx = Math.min((state._activeIdx ?? -1) + 1, items.length - 1);
+    items.forEach((el, i) => el.classList.toggle('active', i === state._activeIdx));
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    state._activeIdx = Math.max((state._activeIdx ?? 0) - 1, 0);
+    items.forEach((el, i) => el.classList.toggle('active', i === state._activeIdx));
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (state._activeIdx >= 0 && items[state._activeIdx]) {
+      const val = items[state._activeIdx].textContent.trim();
+      _tpSelect(id, val);
+    }
+  } else if (e.key === 'Escape') {
+    if (drop) drop.classList.add('hidden');
+  } else if (e.key === 'Backspace' && e.target.value === '') {
+    // Remove last tag on backspace in empty input
+    const vals = [...state.values];
+    if (vals.length) { state.values.delete(vals[vals.length - 1]); _tpRenderTags(id); }
+  }
+}
+
+function getTagPickerValues(id) {
+  return _tp[id] ? [..._tp[id].values] : [];
+}
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
