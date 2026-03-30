@@ -749,9 +749,9 @@ def open_add_modal(snapshot, event_queue, current_node, set_modal):
                 "node_id":    dependent_id,
                 "depends_on": new_id,
             }))
-            # Reset each dependent and its subtree so they rerun
+            # Reset the dependent so it reruns; _on_node_done cascades further if its result changes.
             # with the new node as a prerequisite.
-            event_queue.put(Event(RESET_SUBTREE, {"node_id": dependent_id}))
+            event_queue.put(Event(RESET_NODE, {"node_id": dependent_id}))
  
         set_modal(None)
  
@@ -823,12 +823,12 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
             event_queue.put(Event(REMOVE_DEPENDENCY, {
                 "node_id": removed, "depends_on": current_node,
             }))
-            event_queue.put(Event(RESET_SUBTREE, {"node_id": removed}))
+            event_queue.put(Event(RESET_NODE, {"node_id": removed}))
         for added in new_dependents_set - old_dependents:
             event_queue.put(Event(ADD_DEPENDENCY, {
                 "node_id": added, "depends_on": current_node,
             }))
-            event_queue.put(Event(RESET_SUBTREE, {"node_id": added}))
+            event_queue.put(Event(RESET_NODE, {"node_id": added}))
  
         # ── Cascade decision ──────────────────────────────────────────────
         # Only cascade when something that feeds into the downstream LLM
@@ -878,7 +878,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
                 event_queue.put(Event(ADD_DEPENDENCY,    {"node_id": child, "depends_on": new_id}))
                 event_queue.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": current_node}))
             event_queue.put(Event(REMOVE_NODE, {"node_id": current_node}))
-            event_queue.put(Event(RESET_SUBTREE, {"node_id": new_id}))
+            event_queue.put(Event(RESET_NODE, {"node_id": new_id}))
  
         set_modal(None)
  
@@ -924,7 +924,7 @@ def open_remove_modal(current_node, snapshot, event_queue, set_modal):
             event_queue.put(Event(REMOVE_NODE, {"node_id": current_node}))
             # Children survive — reset them and their subtrees
             for child in children:
-                event_queue.put(Event(RESET_SUBTREE, {"node_id": child}))
+                event_queue.put(Event(RESET_NODE, {"node_id": child}))
  
         elif mode == "cascade":
             # REMOVE_NODE recurses into children — nothing left to reset
@@ -938,7 +938,7 @@ def open_remove_modal(current_node, snapshot, event_queue, set_modal):
             event_queue.put(Event(REMOVE_NODE, {"node_id": current_node}))
             # Children survive without this dep — reset them
             for child in children:
-                event_queue.put(Event(RESET_SUBTREE, {"node_id": child}))
+                event_queue.put(Event(RESET_NODE, {"node_id": child}))
  
         set_modal(None)
  

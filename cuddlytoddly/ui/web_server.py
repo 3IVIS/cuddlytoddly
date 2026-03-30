@@ -149,7 +149,7 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
             orchestrator.event_queue.put(Event(ADD_DEPENDENCY, {
                 "node_id": dep_id, "depends_on": node_id,
             }))
-            orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": dep_id}))
+            orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": dep_id}))
         return {"ok": True}
 
     @app.put("/api/node/{node_id:path}")
@@ -188,12 +188,12 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                 orchestrator.event_queue.put(Event(REMOVE_DEPENDENCY, {
                     "node_id": removed, "depends_on": node_id,
                 }))
-                orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": removed}))
+                orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": removed}))
             for added in new_deps - old_deps:
                 orchestrator.event_queue.put(Event(ADD_DEPENDENCY, {
                     "node_id": added, "depends_on": node_id,
                 }))
-                orchestrator.event_queue.put(Event(RESET_SUBTREE, {"node_id": added}))
+                orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": added}))
 
         # ── Cascade decision ──────────────────────────────────────────────
         # Only cascade when something that feeds into downstream LLM prompts
@@ -257,13 +257,13 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                     q.put(Event(ADD_DEPENDENCY, {"node_id": child, "depends_on": parent}))
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
             for child in children:
-                q.put(Event(RESET_SUBTREE, {"node_id": child}))
+                q.put(Event(RESET_NODE, {"node_id": child}))
         elif mode == "disconnect":
             for child in children:
                 q.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id}))
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
             for child in children:
-                q.put(Event(RESET_SUBTREE, {"node_id": child}))
+                q.put(Event(RESET_NODE, {"node_id": child}))
         else:  # cascade
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
         return {"ok": True}
@@ -567,7 +567,7 @@ def _create_unified_app(
             orch.event_queue.put(Event(ADD_DEPENDENCY, {
                 "node_id": dep_id, "depends_on": node_id,
             }))
-            orch.event_queue.put(Event(RESET_SUBTREE, {"node_id": dep_id}))
+            orch.event_queue.put(Event(RESET_NODE, {"node_id": dep_id}))
         return {"ok": True}
 
     @app.put("/api/node/{node_id:path}")
@@ -595,7 +595,7 @@ def _create_unified_app(
             for added in new - old:
                 orch.event_queue.put(Event(ADD_DEPENDENCY, {
                     "node_id": node_id, "depends_on": added}))
-        orch.event_queue.put(Event(RESET_SUBTREE, {"node_id": node_id}))
+        orch.event_queue.put(Event(RESET_NODE, {"node_id": node_id}))
         return {"ok": True}
 
     @app.delete("/api/node/{node_id:path}")
@@ -615,13 +615,13 @@ def _create_unified_app(
                     q.put(Event(ADD_DEPENDENCY, {"node_id": child, "depends_on": parent}))
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
             for child in children:
-                q.put(Event(RESET_SUBTREE, {"node_id": child}))
+                q.put(Event(RESET_NODE, {"node_id": child}))
         elif mode == "disconnect":
             for child in children:
                 q.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id}))
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
             for child in children:
-                q.put(Event(RESET_SUBTREE, {"node_id": child}))
+                q.put(Event(RESET_NODE, {"node_id": child}))
         else:
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
         return {"ok": True}

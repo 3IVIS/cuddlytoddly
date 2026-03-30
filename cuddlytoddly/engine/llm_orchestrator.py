@@ -645,6 +645,9 @@ class SimpleOrchestrator:
                     # will in turn apply the same logic when it finishes,
                     # propagating the cascade all the way to the leaf nodes
                     # without touching nodes whose upstream input is unchanged.
+                    #
+                    # We use self._apply (not direct mutation) so every reset
+                    # is written to the event log and survives an app restart.
                     prev_result = self._prev_results.pop(node_id, _NO_PREV)
                     result_changed = (prev_result is _NO_PREV) or (result != prev_result)
 
@@ -659,12 +662,8 @@ class SimpleOrchestrator:
                                 logger.info(
                                     "[EXEC] Cascading rerun to child: %s", child_id
                                 )
-                                child.status = "pending"
-                                child.result = None
-                                child.metadata.pop("verified",             None)
-                                child.metadata.pop("verification_failure", None)
-                                child.metadata.pop("retry_count",          None)
-                        self.graph.recompute_readiness()
+                                # _apply logs RESET_NODE so replay is correct
+                                self._apply(Event(RESET_NODE, {"node_id": child_id}))
                     else:
                         logger.info(
                             "[EXEC] Result unchanged for %s — children kept as-is",
