@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>cuddlytoddly — startup</title>
+<!-- Preload DAG libraries so they are already cached when the browser
+     navigates to /dag after init completes. -->
+<link rel="preload" as="script" crossorigin
+      href="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js">
+<link rel="preload" as="script" crossorigin
+      href="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -604,7 +610,7 @@ function pollReady() {
         window.location.href = '/dag';
       }
     } catch (_) { /* keep polling */ }
-  }, 1500);
+  }, 500);
 }
 
 function showLoadError(msg) {

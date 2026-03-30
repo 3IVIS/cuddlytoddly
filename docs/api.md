@@ -21,15 +21,21 @@ Factory for LLM clients. Returns a `BaseLLM` instance.
 All backends implement:
 
 ```python
-def ask(self, prompt: str, schema: dict | None = None) -> str:
-    """Send a prompt; return raw JSON string. Pass schema for structured output."""
+def ask(self, prompt: str) -> str:
+    """Send a prompt; return raw text. Concrete subclasses may also accept
+    an optional schema keyword argument for structured output enforcement."""
 
 def stop(self) -> None:
-    """Signal the LLM to stop mid-generation (used by the UI pause button)."""
+    """Set the stop flag — subsequent ask() calls raise LLMStoppedError."""
 
 def resume(self) -> None:
-    """Resume after a stop()."""
+    """Clear the stop flag — ask() calls proceed normally again."""
+
+def generate(self, prompt: str) -> str:
+    """Alias for ask() — kept for backward compatibility."""
 ```
+
+> **Note:** The `schema` keyword argument for structured output is supported by `ApiLLM` (claude/openai) and `LlamaCppLLM`, but is not part of the `BaseLLM` abstract interface. Code that needs structured output should type-hint against the concrete class or check for the attribute at runtime.
 
 ---
 
@@ -63,7 +69,7 @@ result: str = executor.run(node, snapshot, reporter)
 
 ## `cuddlytoddly.engine.llm_orchestrator`
 
-### `SimpleOrchestrator(graph, planner, executor, quality_gate, event_log, event_queue, max_workers)`
+### `SimpleOrchestrator(graph, planner, executor, event_log, event_queue, max_workers, quality_gate)`
 
 The top-level plan→execute loop.
 
@@ -72,23 +78,25 @@ orchestrator = SimpleOrchestrator(
     graph=graph,
     planner=planner,
     executor=executor,
-    quality_gate=quality_gate,
     event_log=event_log,
     event_queue=queue,
     max_workers=1,
+    quality_gate=quality_gate,   # optional; keyword argument
 )
 orchestrator.start()   # runs in a background thread
 orchestrator.stop()    # signals shutdown
 ```
+
+All arguments after `executor` are keyword arguments and have defaults (`event_log=None`, `event_queue=None`, `max_workers=4`, `quality_gate=None`).
 
 **UI-facing attributes** (read by `curses_ui`):
 
 | Attribute | Type | Description |
 |---|---|---|
 | `graph` | `TaskGraph` | The live graph |
-| `graph_lock` | `threading.Lock` | Must be held when reading graph for display |
+| `graph_lock` | `threading.RLock` | Must be held when reading graph for display |
 | `event_queue` | `EventQueue` | Queue for user-injected events |
-| `current_activity` | `str` | Human-readable status string |
+| `current_activity` | `str \| None` | Human-readable status string; `None` when idle |
 | `llm_stopped` | `bool` | True when LLM is paused |
 
 ---
@@ -150,11 +158,13 @@ graph.recompute_readiness()
 |---|---|---|
 | `id` | `str` | Unique node identifier |
 | `status` | `str` | `pending` / `ready` / `running` / `done` / `failed` |
-| `node_type` | `str` | `goal`, `task`, `execution_step` |
+| `node_type` | `str` | `goal`, `task`, `reflection`, `execution_step` |
 | `dependencies` | `set[str]` | IDs of nodes this node depends on |
 | `children` | `set[str]` | IDs of nodes that depend on this node |
 | `result` | `str \| None` | Output of the node once done |
 | `metadata` | `dict` | Arbitrary planner/executor annotations |
+
+> **Node type notes:** `goal` and `task` are planner-created; `reflection` is emitted by the refiner pass; `execution_step` is an internal type created by `ExecutionStepReporter` to track individual tool calls within a task and is pruned on restart.
 
 ---
 

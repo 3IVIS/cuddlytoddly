@@ -1,89 +1,220 @@
 # Configuration
 
-All runtime configuration is passed directly to `main()` or to individual components — there is no global config file. The values below are the defaults set in `cuddlytoddly/__main__.py` and can be overridden by editing that file or by calling the Python API directly.
+cuddlytoddly is configured through a single TOML file in the user data directory.
+No environment variables are required for basic operation, and nothing is hardcoded
+inside the package itself.
 
-## LLM backends
+## Config file location
 
-cuddlytoddly supports three backends selected via `create_llm_client(backend=...)`.
+On first run the file is created automatically with sensible defaults.
 
-### Anthropic Claude (default recommended)
+| OS | Path |
+|---|---|
+| Linux | `~/.local/share/cuddlytoddly/config.toml` |
+| macOS | `~/Library/Application Support/cuddlytoddly/config.toml` |
+| Windows | `%LOCALAPPDATA%\3IVIS\cuddlytoddly\config.toml` |
 
-```python
-from cuddlytoddly.planning.llm_interface import create_llm_client
+Print the exact path on your machine:
 
-llm = create_llm_client(
-    "claude",
-    model="claude-3-5-sonnet-20241022",  # any Anthropic model
-    temperature=0.1,
-    max_tokens=8192,
-)
+```bash
+python -c "from cuddlytoddly.config import CONFIG_PATH; print(CONFIG_PATH)"
 ```
 
-Requires the `ANTHROPIC_API_KEY` environment variable.
+---
 
-### OpenAI-compatible API
+## Full reference
 
-```python
-llm = create_llm_client(
-    "openai",
-    model="gpt-4o",
-    base_url="https://api.openai.com/v1",   # or any compatible endpoint
-    temperature=0.1,
-    max_tokens=8192,
-)
+```toml
+# ── LLM backend ───────────────────────────────────────────────────────────────
+[llm]
+
+# Which backend to use: "llamacpp" (local), "claude", or "openai"
+backend = "llamacpp"
+
+# ── Local model (llama.cpp) ───────────────────────────────────────────────────
+[llamacpp]
+
+# GGUF model filename. Searched in this order:
+#   1. CUDDLYTODDLY_MODEL_PATH env var  (full path — overrides everything)
+#   2. LLAMA_CACHE / ~/.cache/llama.cpp/      (llama-cli / llama-server -hf)
+#   3. HF_HOME / ~/.cache/huggingface/hub/    (huggingface-cli download)
+#   4. <data_dir>/models/<model_filename>     (cuddlytoddly's own folder)
+model_filename = "Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+
+# GPU layer offload: -1 = all layers on GPU, 0 = CPU only
+n_gpu_layers = -1
+
+# Context window size in tokens
+n_ctx = 16384
+
+# Maximum tokens to generate per response
+max_tokens = 8192
+
+# Sampling temperature (lower = more deterministic)
+temperature = 0.1
+
+# Cache LLM responses to disk; speeds up resumed runs
+cache_enabled = true
+
+# ── Anthropic Claude (API) ────────────────────────────────────────────────────
+[claude]
+
+# Requires the ANTHROPIC_API_KEY environment variable.
+model       = "claude-opus-4-6"
+temperature = 0.1
+max_tokens  = 8192
+
+# ── OpenAI-compatible API ─────────────────────────────────────────────────────
+[openai]
+
+# API key can be set here or via the OPENAI_API_KEY environment variable.
+model       = "gpt-4o"
+temperature = 0.1
+max_tokens  = 8192
+
+# Uncomment for OpenAI-compatible providers (Together, Groq, Mistral, etc.)
+# base_url = "https://api.together.xyz/v1"
+# api_key  = ""   # set here or via OPENAI_API_KEY
+
+# ── Orchestrator ──────────────────────────────────────────────────────────────
+[orchestrator]
+
+# Parallel task execution threads.
+# Keep at 1 when backend = "llamacpp" — llama.cpp is not thread-safe.
+max_workers = 1
+
+# Maximum LLM turns per task node before marking it failed
+max_turns = 5
+
+# ── Web / terminal server ─────────────────────────────────────────────────────
+[server]
+
+host = "127.0.0.1"
+port = 8765
 ```
 
-Requires `OPENAI_API_KEY`, or set `base_url` + `api_key` for a custom endpoint.  
-Install the extra: `pip install cuddlytoddly[openai]`.
+---
+
+## Switching backends
+
+Edit `[llm] backend` in `config.toml`. The only other step is making sure the
+credentials or model file for the chosen backend are available.
 
 ### Local llama.cpp
 
-```python
-llm = create_llm_client(
-    "llamacpp",
-    model_path="/path/to/model.gguf",
-    n_gpu_layers=-1,       # -1 = all layers on GPU
-    temperature=0.1,
-    n_ctx=16384,
-    max_tokens=8192,
-    cache_path="llamacpp_cache.json",  # optional response cache
-)
+```toml
+[llm]
+backend = "llamacpp"
+
+[llamacpp]
+model_filename = "Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+n_gpu_layers   = -1
 ```
 
-Install the extra: `pip install cuddlytoddly[local]`.
+Install the extra if you haven't already:
 
-## Orchestrator options
+```bash
+# macOS (Apple Silicon)
+CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+pip install outlines
 
-| Parameter | Default | Description |
+# Linux / NVIDIA CUDA
+CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+pip install outlines
+```
+
+See [llama-cpp-python installation](https://github.com/abetlen/llama-cpp-python#installation)
+for other hardware (ROCm, Vulkan, CPU-only).
+
+### Anthropic Claude
+
+```toml
+[llm]
+backend = "claude"
+
+[claude]
+model = "claude-opus-4-6"
+```
+
+```bash
+pip install cuddlytoddly[claude]
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### OpenAI
+
+```toml
+[llm]
+backend = "openai"
+
+[openai]
+model = "gpt-4o"
+```
+
+```bash
+pip install cuddlytoddly[openai]
+export OPENAI_API_KEY=sk-...
+```
+
+### OpenAI-compatible provider (Together, Groq, Mistral, etc.)
+
+```toml
+[llm]
+backend = "openai"
+
+[openai]
+model    = "mistralai/Mixtral-8x7B-Instruct-v0.1"
+base_url = "https://api.together.xyz/v1"
+api_key  = "..."    # or set OPENAI_API_KEY
+```
+
+---
+
+## Model file search
+
+When `backend = "llamacpp"`, the model is located by probing four places in
+order. The first file that exists wins.
+
+| Priority | Location | Set by |
 |---|---|---|
-| `max_workers` | `1` | Parallel node execution threads. Use `1` for llama.cpp (not thread-safe). |
-| `max_turns` | `5` | Max LLM turns per node execution before giving up. |
+| 1 | `CUDDLYTODDLY_MODEL_PATH` env var | You |
+| 2 | `~/.cache/llama.cpp/<filename>` | `llama-cli -hf` / `llama-server -hf` |
+| 3 | `~/.cache/huggingface/hub/**/<filename>` | `huggingface-cli download` |
+| 4 | `<data_dir>/models/<filename>` | Your own download |
 
-## Run directory
+If nothing is found, cuddlytoddly prints a clear error with the exact download
+command for the configured `model_filename`.
 
-Each invocation creates a `runs/<goal_slug>/` directory containing:
-
-```
-runs/how_to_go_to_mars/
-├── events.jsonl        # full event log (enables crash recovery)
-├── llamacpp_cache.json # LLM response cache (optional)
-├── logs/               # rotating log files
-├── outputs/            # working directory for file-writing tools
-└── dag_repo/           # Git repo mirroring the DAG (for visualization)
-```
+---
 
 ## Environment variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | For `claude` backend | Anthropic API key |
-| `OPENAI_API_KEY` | For `openai` backend | OpenAI API key |
+| Variable | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` | API key for the `claude` backend |
+| `OPENAI_API_KEY` | API key for the `openai` backend |
+| `CUDDLYTODDLY_MODEL_PATH` | Full path to any `.gguf` file — overrides model search |
+| `LLAMA_CACHE` | Override llama.cpp's cache dir (default `~/.cache/llama.cpp`) |
+| `HF_HOME` | Override Hugging Face home (default `~/.cache/huggingface`) |
 
-## Git DAG projection
+For the `claude` backend, the API key must be provided via the `ANTHROPIC_API_KEY`
+environment variable. For the `openai` backend, the key can be set either via
+`OPENAI_API_KEY` or as `api_key` under `[openai]` in `config.toml` — both are
+supported.
 
-The Git projection (`ui/git_projection.py`) requires `git` to be installed on the system. It is purely visual — it does not affect the DAG or execution. The path to the repo is set in `main()`:
+---
 
-```python
-import cuddlytoddly.ui.git_projection as git_proj
-git_proj.REPO_PATH = str(run_dir / "dag_repo")
+## Data directory layout
+
+```
+<data_dir>/
+├── config.toml              ← the file described on this page
+├── models/                  ← optional: place .gguf files here
+└── runs/
+    └── <goal_slug>/
+        ├── events.jsonl     ← full event log (enables crash recovery)
+        ├── llamacpp_cache.json
+        ├── logs/
+        ├── outputs/         ← working directory for file-writing tools
+        └── dag_repo/        ← Git repo mirroring the DAG
 ```

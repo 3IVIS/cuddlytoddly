@@ -482,12 +482,26 @@ def _create_unified_app(
 
         def _init():
             try:
-                orch, rd              = init_fn(choice)
-                state["orchestrator"] = orch
-                state["run_dir"]      = rd
-                state["ready"]        = True
-                logger.info("[WEB] System initialised — DAG has %d nodes",
-                            len(orch.graph.nodes))
+                if mode == "existing":
+                    # Two-phase init: set state["ready"] as soon as the graph
+                    # is rebuilt (before the LLM finishes loading) so the browser
+                    # can show the DAG immediately.
+                    def _on_graph_ready(orch, rd):
+                        state["orchestrator"] = orch
+                        state["run_dir"]      = rd
+                        state["ready"]        = True
+                        logger.info("[WEB] Graph ready — DAG visible (%d nodes)",
+                                    len(orch.graph.nodes))
+                    # init_fn returns after on_graph_ready fires; the real LLM
+                    # continues loading in a daemon thread managed by _init_system.
+                    init_fn(choice, on_graph_ready=_on_graph_ready)
+                else:
+                    orch, rd              = init_fn(choice)
+                    state["orchestrator"] = orch
+                    state["run_dir"]      = rd
+                    state["ready"]        = True
+                    logger.info("[WEB] System initialised — DAG has %d nodes",
+                                len(orch.graph.nodes))
             except Exception as e:
                 logger.exception("[WEB] init_fn failed: %s", e)
                 state["error"] = str(e)

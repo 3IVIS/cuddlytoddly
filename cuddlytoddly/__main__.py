@@ -34,6 +34,73 @@ setup_logging()
 logger = get_logger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Deferred LLM — used by the web UI two-phase init so the DAG is shown
+# immediately while the real model loads in the background.
+# ---------------------------------------------------------------------------
+
+class _DeferredLLM:
+    """
+    Placeholder LLM that appears stopped until a real client is attached.
+
+    The orchestrator checks `is_stopped` before every LLM call.  While this
+    object is stopped, all call attempts raise LLMStoppedError — identical to
+    the user pressing the pause button — so no LLM work is attempted.
+
+    Once `attach(real_llm)` is called (from the background LLM-loader thread)
+    the deferred LLM becomes transparent: `is_stopped` reflects the real
+    client's state, and `ask()` delegates straight through.
+    """
+
+    def __init__(self):
+        import threading
+        self._real: object | None = None
+        self._lock = threading.Lock()
+
+    # ── Orchestrator-facing API ───────────────────────────────────────────────
+
+    @property
+    def is_stopped(self) -> bool:
+        with self._lock:
+            if self._real is None:
+                return True
+            return getattr(self._real, "is_stopped", False)
+
+    def stop(self) -> None:
+        with self._lock:
+            if self._real is not None:
+                if hasattr(self._real, "stop"):
+                    self._real.stop()
+
+    def resume(self) -> None:
+        with self._lock:
+            if self._real is not None:
+                if hasattr(self._real, "resume"):
+                    self._real.resume()
+
+    def ask(self, prompt: str, schema=None) -> str:
+        from cuddlytoddly.planning.llm_interface import LLMStoppedError
+        with self._lock:
+            real = self._real
+        if real is None:
+            raise LLMStoppedError(
+                "LLM is still loading — execution will resume automatically"
+            )
+        return real.ask(prompt, schema=schema) if schema is not None else real.ask(prompt)
+
+    # Alias for backward-compat callers that use .generate()
+    def generate(self, prompt: str) -> str:
+        return self.ask(prompt)
+
+    # ── Called from the background LLM-loader thread ──────────────────────────
+
+    def attach(self, real_llm) -> None:
+        """Swap in the real client; from this point on the LLM is live."""
+        with self._lock:
+            self._real = real_llm
+        logger.info("[DEFERRED LLM] Real LLM attached — execution enabled")
+
+
 def make_run_dir(goal_text: str) -> Path:
     safe    = goal_text.lower().replace(" ", "_")
     safe    = "".join(c for c in safe if c.isalnum() or c == "_")[:60]
@@ -121,8 +188,10 @@ def main():
     # ── Build a bound init function that carries cfg through all call sites ───
     # _init_system needs cfg, but restart_fn is called as restart_fn(choice, use_web)
     # inside run_ui — we close over cfg here so the signature stays compatible.
-    def _init(choice: StartupChoice, _use_web: bool = use_web):
-        return _init_system(choice, _use_web, cfg)
+    def _init(choice: StartupChoice, _use_web: bool = use_web,
+              on_graph_ready=None):
+        return _init_system(choice, _use_web, cfg,
+                            on_graph_ready=on_graph_ready)
 
     # ── Startup screen ────────────────────────────────────────────────────────
     inline_goal = " ".join(args.goal).strip()
@@ -178,10 +247,16 @@ def main():
         logger.info("  [%s] %s", n.status, nid)
 
 
-def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict):
+def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
+                 on_graph_ready=None):
     """
     Build the full orchestrator from a StartupChoice and a loaded config dict.
     Returns (orchestrator, run_dir).
+
+    on_graph_ready: optional callable(orchestrator, run_dir) invoked as soon
+    as the graph is rebuilt and the orchestrator is started — before the LLM
+    client finishes loading.  The web UI uses this to show the DAG immediately
+    while the model loads in the background via _DeferredLLM.
     """
     goal_text = choice.goal_text
     goal_id   = goal_text.replace(" ", "_")[:60]
@@ -240,8 +315,17 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict):
         graph       = TaskGraph()
         fresh_start = True
 
-    # ── LLM client — driven entirely by config ────────────────────────────────
-    shared_llm = _build_llm_client(cfg, run_dir)
+    # ── LLM client ────────────────────────────────────────────────────────────
+    # For existing runs when a caller has supplied on_graph_ready, use a
+    # _DeferredLLM so the orchestrator can start immediately.  The real client
+    # is built in the background and swapped in via deferred.attach().
+    use_deferred = (not fresh_start) and (on_graph_ready is not None)
+    if use_deferred:
+        deferred_llm = _DeferredLLM()
+        shared_llm   = deferred_llm
+    else:
+        deferred_llm = None
+        shared_llm   = _build_llm_client(cfg, run_dir)
 
     # ── Components ────────────────────────────────────────────────────────────
     orch_cfg     = cfg.get("orchestrator", {})
@@ -283,12 +367,34 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict):
 
     orchestrator.start()
 
-    if not fresh_start:
-        def _bg_verify():
-            _logger.info("[STARTUP] Background verification pass starting...")
-            orchestrator.verify_restored_nodes()
-            _logger.info("[STARTUP] Background verification complete")
-        threading.Thread(target=_bg_verify, daemon=True, name="startup-verify").start()
+    if use_deferred:
+        # ── Signal graph ready BEFORE the real LLM is loaded ─────────────────
+        # The caller (web server) sets state["ready"] here so the browser can
+        # show the DAG immediately.
+        on_graph_ready(orchestrator, run_dir)
+
+        # Build the real LLM client and verify restored nodes in the background.
+        def _load_real_llm():
+            _logger.info("[STARTUP] Background LLM load starting…")
+            try:
+                real_llm = _build_llm_client(cfg, run_dir)
+                deferred_llm.attach(real_llm)
+                _logger.info("[STARTUP] LLM ready — starting background verification")
+                orchestrator.verify_restored_nodes()
+            except Exception as exc:
+                _logger.error("[STARTUP] Background LLM load failed: %s", exc)
+        threading.Thread(target=_load_real_llm, daemon=True,
+                         name="startup-llm").start()
+
+    else:
+        # Standard path: LLM already loaded, verify in background as before.
+        if not fresh_start:
+            def _bg_verify():
+                _logger.info("[STARTUP] Background verification pass starting...")
+                orchestrator.verify_restored_nodes()
+                _logger.info("[STARTUP] Background verification complete")
+            threading.Thread(target=_bg_verify, daemon=True,
+                             name="startup-verify").start()
 
     return orchestrator, run_dir
 
