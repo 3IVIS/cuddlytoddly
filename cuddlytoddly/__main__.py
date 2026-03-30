@@ -1,6 +1,4 @@
-# __main__.py  — updated startup section
-# Replace the existing main() function with this version.
-# Everything from the LLM client setup downward is unchanged.
+# __main__.py
 
 import sys
 import os
@@ -27,33 +25,65 @@ from cuddlytoddly.ui.startup import StartupChoice
 from cuddlytoddly.ui.startup import run_startup_curses
 from cuddlytoddly.ui.web_server import run_web_ui
 from cuddlytoddly.core.id_generator import StableIDGenerator
+from cuddlytoddly.config import load_config, DATA_DIR, resolve_model_path, preflight_check
 import cuddlytoddly.planning.llm_interface as llm_iface
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent   # package code location
 
 setup_logging()
 logger = get_logger(__name__)
-
-# ── Configuration ──────────────────────────────────────────────────────────────
-
-MODEL_PATH   = str(REPO_ROOT / "models/Llama-3.3-70B-Instruct-Q4_K_M.gguf")
-N_GPU_LAYERS = -1
-TEMPERATURE  = 0.1
-N_CTX        = int(131072 / 8)
-MAX_TOKENS   = int(65536 / 8)
-MAX_WORKERS  = 1
 
 
 def make_run_dir(goal_text: str) -> Path:
     safe    = goal_text.lower().replace(" ", "_")
     safe    = "".join(c for c in safe if c.isalnum() or c == "_")[:60]
-    run_dir = REPO_ROOT / "runs" / safe
+    run_dir = DATA_DIR / "runs" / safe
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "outputs").mkdir(exist_ok=True)
     return run_dir
 
 
+def _print_preflight_issues(issues: list[dict]) -> None:
+    """
+    Print preflight issues to stderr.  Called for every startup path so
+    the user always sees the issues — even when bypassing the startup UI
+    with an inline goal argument.
+    """
+    errors   = [i for i in issues if i["level"] == "error"]
+    warnings = [i for i in issues if i["level"] != "error"]
+
+    if errors:
+        print("\n  ✗ Configuration errors (will fail at runtime):", file=sys.stderr)
+        for issue in errors:
+            print(f"    • {issue['message']}", file=sys.stderr)
+            if issue.get("fix"):
+                print(f"      → {issue['fix']}", file=sys.stderr)
+    if warnings:
+        print("\n  ⚠ Configuration warnings:", file=sys.stderr)
+        for issue in warnings:
+            print(f"    • {issue['message']}", file=sys.stderr)
+            if issue.get("fix"):
+                print(f"      → {issue['fix']}", file=sys.stderr)
+    print(file=sys.stderr)
+
+
 def main():
+    # ── Load config ───────────────────────────────────────────────────────────
+    # Done first so CLI arg defaults can reflect config values (host, port).
+    cfg = load_config()
+    server_cfg = cfg.get("server", {})
+
+    # ── Pre-flight checks ─────────────────────────────────────────────────────
+    # Run before showing any UI so both startup paths receive the same issues.
+    issues = preflight_check(cfg)
+    if issues:
+        for issue in issues:
+            logger.warning("[PREFLIGHT] %s: %s — %s",
+                           issue["level"].upper(), issue["message"],
+                           issue.get("fix", ""))
+        # Always print to stderr as well — the startup UI may not be shown
+        # (inline-goal path) and the user needs to see these before the crash.
+        _print_preflight_issues(issues)
 
     # ── CLI ───────────────────────────────────────────────────────────────────
     parser = argparse.ArgumentParser(
@@ -68,14 +98,14 @@ def main():
     )
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
-        help="Host for the web UI server (default: 127.0.0.1).",
+        default=server_cfg.get("host", "127.0.0.1"),
+        help="Host for the web UI server (default: from config.toml).",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8765,
-        help="Port for the web UI server (default: 8765).",
+        default=server_cfg.get("port", 8765),
+        help="Port for the web UI server (default: from config.toml).",
     )
     parser.add_argument(
         "goal",
@@ -88,13 +118,16 @@ def main():
     args = parser.parse_args()
     use_web = not args.terminal
 
+    # ── Build a bound init function that carries cfg through all call sites ───
+    # _init_system needs cfg, but restart_fn is called as restart_fn(choice, use_web)
+    # inside run_ui — we close over cfg here so the signature stays compatible.
+    def _init(choice: StartupChoice, _use_web: bool = use_web):
+        return _init_system(choice, _use_web, cfg)
+
     # ── Startup screen ────────────────────────────────────────────────────────
-    # If a goal was passed on the CLI, skip the startup screen and go straight
-    # to a new-goal run.  Otherwise show the appropriate startup UI.
     inline_goal = " ".join(args.goal).strip()
 
     if inline_goal:
-        # Bypass startup screen — behaves like the old CLI usage
         choice = StartupChoice(
             mode="new_goal",
             run_dir=make_run_dir(inline_goal).resolve(),
@@ -102,34 +135,27 @@ def main():
             is_fresh=True,
         )
     elif use_web:
-        # Web startup screen is shown inside the browser — no blocking call here.
-        # We use a deferred choice that will be filled in via /api/startup.
         choice = None
     else:
-        # Curses startup screen — blocks until the user makes a choice.
         try:
-            choice = run_startup_curses(REPO_ROOT)
+            choice = run_startup_curses(DATA_DIR, issues=issues)
         except SystemExit:
-            return   # user pressed q
+            return
 
-    # ── For web UI with no inline goal, defer all init to init_fn ────────────
+    # ── Web UI with deferred init ─────────────────────────────────────────────
     if use_web and choice is None:
-
-        def init_fn(ch: StartupChoice):
-            return _init_system(ch, use_web)
-
         run_web_ui(
-            repo_root=REPO_ROOT,
-            init_fn=init_fn,
+            repo_root=DATA_DIR,
+            init_fn=_init,
+            cfg=cfg,
             host=args.host,
             port=args.port,
         )
         return
 
-    # ── Init system ───────────────────────────────────────────────────────────
-    orchestrator, run_dir = _init_system(choice, use_web)
+    # ── Eager init ────────────────────────────────────────────────────────────
+    orchestrator, run_dir = _init(choice)
 
-    # ── Launch UI ─────────────────────────────────────────────────────────────
     if use_web:
         run_web_ui(
             orchestrator=orchestrator,
@@ -141,8 +167,8 @@ def main():
         run_ui(
             orchestrator,
             run_dir=run_dir,
-            repo_root=REPO_ROOT,
-            restart_fn=_init_system,
+            repo_root=DATA_DIR,
+            restart_fn=_init,
         )
 
     # ── Final log ─────────────────────────────────────────────────────────────
@@ -152,10 +178,9 @@ def main():
         logger.info("  [%s] %s", n.status, nid)
 
 
-def _init_system(choice: "StartupChoice", use_web: bool):
+def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict):
     """
-    Build the full orchestrator from a StartupChoice.
-    Extracted so both the curses and web startup paths share the same logic.
+    Build the full orchestrator from a StartupChoice and a loaded config dict.
     Returns (orchestrator, run_dir).
     """
     goal_text = choice.goal_text
@@ -174,14 +199,11 @@ def _init_system(choice: "StartupChoice", use_web: bool):
     event_log      = EventLog(str(event_log_path))
     log_path       = Path(event_log_path)
 
-    # ── LLM cache ─────────────────────────────────────────────────────────────
-    cache_path = str(run_dir / "llamacpp_cache.json")
-
     # ── Git repo — per run ────────────────────────────────────────────────────
     import cuddlytoddly.ui.git_projection as git_proj
     git_proj.REPO_PATH = str(run_dir / "dag_repo")
 
-    # ── Working directory — sandbox file tools ────────────────────────────────
+    # ── Working directory — sandbox for file tools ────────────────────────────
     os.chdir(run_dir / "outputs")
     _logger.info("Working directory: %s", Path.cwd())
 
@@ -218,29 +240,27 @@ def _init_system(choice: "StartupChoice", use_web: bool):
         graph       = TaskGraph()
         fresh_start = True
 
-    # ── LLM / components ──────────────────────────────────────────────────────
-    shared_llm = create_llm_client(
-        "llamacpp",
-        model_path=MODEL_PATH,
-        n_gpu_layers=N_GPU_LAYERS,
-        temperature=TEMPERATURE,
-        n_ctx=N_CTX,
-        max_tokens=MAX_TOKENS,
-        cache_path=cache_path,
-    )
+    # ── LLM client — driven entirely by config ────────────────────────────────
+    shared_llm = _build_llm_client(cfg, run_dir)
+
+    # ── Components ────────────────────────────────────────────────────────────
+    orch_cfg     = cfg.get("orchestrator", {})
+    max_workers  = orch_cfg.get("max_workers", 1)
+    max_turns    = orch_cfg.get("max_turns", 5)
 
     skills       = SkillLoader()
     registry     = skills.registry
     planner      = LLMPlanner(llm_client=shared_llm, graph=graph,
                               skills_summary=skills.prompt_summary)
-    executor     = LLMExecutor(llm_client=shared_llm, tool_registry=registry, max_turns=5)
+    executor     = LLMExecutor(llm_client=shared_llm, tool_registry=registry,
+                               max_turns=max_turns)
     quality_gate = QualityGate(llm_client=shared_llm, tool_registry=registry)
 
     queue        = EventQueue()
     orchestrator = SimpleOrchestrator(
         graph=graph, planner=planner, executor=executor,
         quality_gate=quality_gate, event_log=event_log,
-        event_queue=queue, max_workers=MAX_WORKERS,
+        event_queue=queue, max_workers=max_workers,
     )
 
     # ── Seed graph ────────────────────────────────────────────────────────────
@@ -271,6 +291,59 @@ def _init_system(choice: "StartupChoice", use_web: bool):
         threading.Thread(target=_bg_verify, daemon=True, name="startup-verify").start()
 
     return orchestrator, run_dir
+
+
+def _build_llm_client(cfg: dict, run_dir: Path):
+    """
+    Construct and return the correct BaseLLM from the loaded config.
+    Extracted so it can be unit-tested independently of the full startup.
+    """
+    backend  = cfg["llm"]["backend"]           # already validated by load_config()
+    llm_cfg  = cfg.get(backend, {})
+
+    _logger = get_logger(__name__)
+    _logger.info("[LLM] Backend: %s", backend)
+
+    if backend == "llamacpp":
+        model_path   = resolve_model_path(cfg)
+        cache_path   = (
+            str(run_dir / "llamacpp_cache.json")
+            if llm_cfg.get("cache_enabled", True)
+            else None
+        )
+        return create_llm_client(
+            "llamacpp",
+            model_path   = model_path,
+            n_gpu_layers = llm_cfg.get("n_gpu_layers", -1),
+            n_ctx        = llm_cfg.get("n_ctx", 16384),
+            max_tokens   = llm_cfg.get("max_tokens", 8192),
+            temperature  = llm_cfg.get("temperature", 0.1),
+            cache_path   = cache_path,
+        )
+
+    if backend == "claude":
+        return create_llm_client(
+            "claude",
+            model       = llm_cfg.get("model", "claude-opus-4-6"),
+            temperature = llm_cfg.get("temperature", 0.1),
+            max_tokens  = llm_cfg.get("max_tokens", 8192),
+        )
+
+    if backend == "openai":
+        kwargs: dict = dict(
+            model       = llm_cfg.get("model", "gpt-4o"),
+            temperature = llm_cfg.get("temperature", 0.1),
+            max_tokens  = llm_cfg.get("max_tokens", 8192),
+        )
+        if "base_url" in llm_cfg:
+            kwargs["base_url"] = llm_cfg["base_url"]
+        if "api_key" in llm_cfg:
+            kwargs["api_key"] = llm_cfg["api_key"]
+        return create_llm_client("openai", **kwargs)
+
+    # Should never reach here — _validate() in load_config() guards this.
+    raise ValueError(f"Unknown backend: {backend!r}")
+
 
 if __name__ == "__main__":
     main()

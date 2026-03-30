@@ -2,13 +2,15 @@
 
 An LLM-driven autonomous planning and execution system built around a DAG (directed acyclic graph) of tasks. Give it a goal; it breaks the goal into tasks, executes them with tools, verifies results, and fills in gaps — continuously, with live terminal and web UIs.
 
-Why "cuddlytoddly"?
+**Why "cuddlytoddly"?**
 
 Large language models are powerful at generating text and solving well-scoped problems, but they are widely recognized as weak at long-horizon, complex planning. Left alone, they often miss dependencies, overlook edge cases, or wander off track.
 
 cuddlytoddly takes a different approach: instead of expecting the LLM to plan everything autonomously, we provide a structured framework where humans and the system collaborate. The LLM handles decomposition, execution, and verification, while the framework ensures tasks are organized, dependencies are respected, and gaps are bridged.
 
-Think of it as holding the model’s hand while it learns to walk through complex goals — hence the name cuddlytoddly. It’s not about blind autonomy; it’s about guided, reliable progress.
+Think of it as holding the model's hand while it learns to walk through complex goals — hence the name cuddlytoddly. It's not about blind autonomy; it's about guided, reliable progress.
+
+---
 
 ## How it works
 
@@ -29,35 +31,185 @@ goal → LLMPlanner → TaskGraph (DAG)
                    EventLog (JSONL) → replay on restart
 ```
 
+---
+
 ## Installation
 
 ```bash
-pip install cuddlytoddly                       
+pip install cuddlytoddly
 ```
 
 **Requirements:** Python 3.11+, `git` on your PATH (for the DAG visualiser).
 
+Then install one or more LLM backend extras depending on how you want to run the model:
+
+| Backend | Extra to install |
+|---|---|
+| Anthropic Claude | `pip install cuddlytoddly[claude]` |
+| OpenAI / compatible | `pip install cuddlytoddly[openai]` |
+| Local llama.cpp | `pip install cuddlytoddly[local]` — see [Local model setup](#local-model-setup-llamacpp) |
+| Everything | `pip install cuddlytoddly[all]` |
+
+---
+
 ## Quick start
 
 ```bash
+pip install cuddlytoddly[claude]
 export ANTHROPIC_API_KEY=sk-ant-...
 cuddlytoddly "Write a market analysis for electric scooters"
 ```
 
-Or pass no argument to use the startup screen with multiple options.
-The UI opens automatically. The run data is stored locally and can be resumed later — the event log preserves all state.
+On first run, a `config.toml` is written to your user data directory with all defaults pre-filled. Open it to change backends, model settings, temperature, and more — no code editing required.
 
-## LLM backends
+```bash
+# Print the config file location
+python -c "from cuddlytoddly.config import CONFIG_PATH; print(CONFIG_PATH)"
+```
 
-| Backend | Install | `create_llm_client` call |
+Pass no argument to open the startup screen (resume a previous run, load a manual plan, etc.). The web UI opens automatically. Run data is stored locally and can be resumed — the event log preserves all state.
+
+### Switching backends
+
+Edit `[llm] backend` in `config.toml`. That's the only change needed.
+
+```toml
+# config.toml
+
+[llm]
+backend = "claude"    # or "openai" or "llamacpp"
+
+[claude]
+model = "claude-opus-4-6"
+
+[openai]
+model    = "gpt-4o"
+# base_url = "https://api.together.xyz/v1"   # any OpenAI-compatible provider
+```
+
+Then install the matching extra and set the API key:
+
+| Backend | Extra | Env var |
 |---|---|---|
-| Anthropic Claude | included | `create_llm_client("claude", model="claude-3-5-sonnet-20241022")` |
-| OpenAI / compatible | `[openai]` | `create_llm_client("openai", model="gpt-4o")` |
-| Local llama.cpp | `[local]` | `create_llm_client("llamacpp", model_path="/path/to/model.gguf")` |
+| `claude` | `pip install cuddlytoddly[claude]` | `ANTHROPIC_API_KEY` |
+| `openai` | `pip install cuddlytoddly[openai]` | `OPENAI_API_KEY` |
+| `llamacpp` | see [Local model setup](#local-model-setup-llamacpp) | — |
+
+---
+
+## Local model setup (llama.cpp)
+
+Running a model locally gives you full privacy, no API costs, and offline operation. The local backend uses [llama-cpp-python](https://github.com/abetlen/llama-cpp-python), a Python binding for [llama.cpp](https://github.com/ggerganov/llama.cpp).
+
+### Step 1 — Install llama-cpp-python
+
+The right install command depends on your hardware. The plain `pip install cuddlytoddly[local]` build is CPU-only and very slow for large models. Choose the command that matches your setup:
+
+**macOS (Apple Silicon — Metal GPU)**
+```bash
+CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+```
+
+**Linux / Windows — NVIDIA GPU (CUDA)**
+```bash
+CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+```
+
+**Linux — CPU only**
+```bash
+pip install llama-cpp-python
+```
+
+For other hardware (ROCm, Vulkan, SYCL) and detailed build options, see the official installation guide:
+👉 **https://github.com/abetlen/llama-cpp-python#installation**
+
+After installing llama-cpp-python, install the remaining local extras:
+
+```bash
+pip install "outlines>=0.0.46"
+# or in one shot:
+pip install cuddlytoddly[local]   # then re-run the GPU install above to override
+```
+
+### Step 2 — Download a model
+
+Models must be in **GGUF format**. The default model is **Llama 3.3 70B Instruct Q4_K_M** — a good balance of quality and speed on 48 GB+ VRAM or unified memory.
+
+**If you already have this model downloaded** (via `llama-cli -hf`, `llama-server -hf`, or `huggingface-cli download`), cuddlytoddly will find it automatically — no extra steps needed. It probes these locations in order:
+
+1. `CUDDLYTODDLY_MODEL_PATH` env var — explicit override, any path
+2. `~/.cache/llama.cpp/` — llama.cpp's native download cache
+3. `~/.cache/huggingface/hub/` — Hugging Face hub cache
+4. `<data dir>/models/` — cuddlytoddly's own models folder
+
+If the model isn't found anywhere, you'll get a clear error message with the exact download command to run.
+
+**To download the default model** into cuddlytoddly's own folder:
+
+```bash
+pip install huggingface-hub
+
+# Linux / macOS
+DATA_DIR=$(python -c "from platformdirs import user_data_dir; print(user_data_dir('cuddlytoddly', '3IVIS'))")
+mkdir -p "$DATA_DIR/models"
+huggingface-cli download bartowski/Llama-3.3-70B-Instruct-GGUF \
+  Llama-3.3-70B-Instruct-Q4_K_M.gguf \
+  --local-dir "$DATA_DIR/models"
+
+# Windows PowerShell
+$dataDir = python -c "from platformdirs import user_data_dir; print(user_data_dir('cuddlytoddly', '3IVIS'))"
+New-Item -ItemType Directory -Force "$dataDir\models"
+huggingface-cli download bartowski/Llama-3.3-70B-Instruct-GGUF Llama-3.3-70B-Instruct-Q4_K_M.gguf --local-dir "$dataDir\models"
+```
+
+**To use a different model or a custom path**, set the env var:
+
+```bash
+export CUDDLYTODDLY_MODEL_PATH=/path/to/your-model.gguf
+```
+
+For machines with less VRAM, consider a smaller quantisation or a smaller model entirely (e.g. `Llama-3.2-3B-Instruct-Q8_0.gguf`). Any instruction-tuned GGUF that supports a chat template will work — just set `CUDDLYTODDLY_MODEL_PATH` to point to it.
+
+### Step 3 — Configure the backend
+
+Open your `config.toml` (path printed by `python -c "from cuddlytoddly.config import CONFIG_PATH; print(CONFIG_PATH)"`) and set:
+
+```toml
+[llm]
+backend = "llamacpp"
+
+[llamacpp]
+model_filename = "Llama-3.3-70B-Instruct-Q4_K_M.gguf"
+n_gpu_layers   = -1    # -1 = all layers on GPU, 0 = CPU only
+n_ctx          = 16384
+max_tokens     = 8192
+temperature    = 0.1
+cache_enabled  = true
+```
+
+Change `model_filename` to match whatever you downloaded. Everything else can stay at defaults to start.
+
+### Step 4 — Run
+
+```bash
+cuddlytoddly "Write a market analysis for electric scooters"
+```
+
+The first run will load the model into memory (10–30 seconds depending on hardware), then proceed normally. Subsequent runs reuse the response cache (`llamacpp_cache.json`) to skip identical prompts.
+
+---
+
+## LLM backends — full reference
+
+See [docs/configuration.md](docs/configuration.md) for the complete config file reference and all available options per backend.
+
+---
 
 ## Adding skills
 
 Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/skills/`. The `SkillLoader` discovers it automatically. See [docs/skills.md](docs/skills.md) for the full format.
+
+---
 
 ## Documentation
 
@@ -65,6 +217,33 @@ Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/ski
 - [Configuration](docs/configuration.md) — LLM backends, run directory, environment variables
 - [Skills](docs/skills.md) — built-in skills and how to add custom ones
 - [API Reference](docs/api.md) — public Python API
+
+---
+
+## Where is my data?
+
+Models and run data are stored in the OS user data directory, completely separate from the package code. This works correctly whether you run from source or install via pip.
+
+```bash
+# Print the exact path on your machine
+python -c "from platformdirs import user_data_dir; print(user_data_dir('cuddlytoddly', '3IVIS'))"
+```
+
+```
+~/.local/share/cuddlytoddly/     ← Linux
+~/Library/Application Support/cuddlytoddly/  ← macOS
+%LOCALAPPDATA%\3IVIS\cuddlytoddly\  ← Windows
+
+├── models/
+│   └── Llama-3.3-70B-Instruct-Q4_K_M.gguf
+└── runs/
+    └── write_a_market_analysis.../
+        ├── events.jsonl         # full event log — enables crash recovery
+        ├── llamacpp_cache.json  # LLM response cache
+        ├── logs/
+        ├── outputs/             # working directory for file-writing tools
+        └── dag_repo/            # Git repo mirroring the DAG
+```
 
 ## Project structure
 
@@ -77,11 +256,13 @@ cuddlytoddly/
 ├── skills/         # SkillLoader + built-in skill packs
 │   ├── code_execution/
 │   └── file_ops/
-└── ui/             # Curses terminal UI, Git DAG projection
+└── ui/             # Curses terminal UI, web UI, Git DAG projection
 docs/
 pyproject.toml
 LICENSE
 ```
+
+---
 
 ## Python API
 
@@ -98,8 +279,8 @@ from cuddlytoddly.engine.quality_gate import QualityGate
 from cuddlytoddly.engine.llm_orchestrator import SimpleOrchestrator
 from cuddlytoddly.skills.skill_loader import SkillLoader
 
-# LLM client — swap "claude" for "openai" or "llamacpp"
-llm = create_llm_client("claude", model="claude-3-5-sonnet-20241022")
+# Swap "claude" for "openai" or "llamacpp" — everything else is identical
+llm = create_llm_client("claude", model="claude-opus-4-6")
 
 graph    = TaskGraph()
 skills   = SkillLoader()
@@ -122,6 +303,8 @@ apply_event(graph, Event(ADD_NODE, {
 orchestrator.start()
 # orchestrator runs in the background — block however suits your use case
 ```
+
+---
 
 ## License
 

@@ -263,11 +263,12 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
 
 def run_web_ui(
     orchestrator=None,
-    run_dir: Path | None = None,
-    host: str = "127.0.0.1",
-    port: int = 8765,
+    run_dir=None,
     repo_root: Path | None = None,
     init_fn=None,
+    cfg: dict | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8765,
 ):
     """
     Start the web UI server and open a browser tab.
@@ -307,7 +308,11 @@ def run_web_ui(
         logger.info("[WEB UI] Stopped by user")
 
 
-def _create_unified_app(repo_root: Path | None, init_fn) -> FastAPI:
+def _create_unified_app(
+    repo_root: Path | None,
+    init_fn,
+    cfg: dict | None = None,
+) -> "FastAPI":
     """
     Single FastAPI app that handles both phases:
       - Before init: serves the startup HTML, /api/runs, /api/startup, /api/status
@@ -357,6 +362,19 @@ def _create_unified_app(repo_root: Path | None, init_fn) -> FastAPI:
     async def api_runs():
         from cuddlytoddly.ui.startup import scan_runs
         return {"runs": scan_runs(repo_root) if repo_root else []}
+
+    @app.get("/api/preflight")
+    async def api_preflight():
+        """
+        Return pre-flight configuration issues for the current backend.
+        The startup UI fetches this on load and displays a banner if issues exist.
+        Response shape:
+            { "issues": [ { "level": "error"|"warning", "message": "...", "fix": "..." } ] }
+        """
+        if cfg is None:
+            return {"issues": []}
+        from cuddlytoddly.config import preflight_check
+        return {"issues": preflight_check(cfg)}
 
     @app.post("/api/startup")
     async def api_startup(body: dict):

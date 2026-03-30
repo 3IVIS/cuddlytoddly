@@ -4,7 +4,7 @@ Curses startup screen shown before the main DAG UI.
 
 Usage in __main__.py:
     from cuddlytoddly.ui.curses_startup import run_startup_selection
-    choice = run_startup_selection(repo_root)
+    choice = run_startup_selection(repo_root, issues=issues)
     # choice is a StartupChoice namedtuple
 """
 from __future__ import annotations
@@ -25,6 +25,7 @@ _C_DIM     = 3
 _C_DONE    = 4
 _C_ACCENT  = 5
 _C_ERR     = 6
+_C_WARN    = 7
 
 
 def _init_colors():
@@ -36,6 +37,7 @@ def _init_colors():
     curses.init_pair(_C_DONE,   curses.COLOR_GREEN,   -1)
     curses.init_pair(_C_ACCENT, curses.COLOR_YELLOW,  -1)
     curses.init_pair(_C_ERR,    curses.COLOR_RED,     -1)
+    curses.init_pair(_C_WARN,   curses.COLOR_YELLOW,  -1)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -65,6 +67,44 @@ def _hline(win, y, char="─"):
         win.addstr(y, 0, char * (w - 1))
     except curses.error:
         pass
+
+
+# ── Preflight banner ──────────────────────────────────────────────────────────
+
+def _draw_preflight_banner(stdscr, issues: list[dict], start_y: int) -> int:
+    """
+    Draw pre-flight issues on *stdscr* starting at *start_y*.
+    Returns the next available row after the banner (including a trailing
+    separator line).  If *issues* is empty, returns *start_y* unchanged.
+    """
+    if not issues:
+        return start_y
+
+    h, _ = stdscr.getmaxyx()
+    y = start_y
+
+    for issue in issues:
+        if y >= h - 2:
+            break
+        is_err = issue["level"] == "error"
+        prefix = "✗" if is_err else "⚠"
+        attr   = curses.color_pair(_C_ERR) | curses.A_BOLD if is_err \
+                 else curses.color_pair(_C_WARN) | curses.A_BOLD
+        _safe_addstr(stdscr, y, 2, f"{prefix} {issue['message']}", attr)
+        y += 1
+
+        fix = issue.get("fix", "")
+        if fix and y < h - 2:
+            dim = curses.color_pair(_C_DIM) | curses.A_DIM
+            _safe_addstr(stdscr, y, 4, f"→ {fix}", dim)
+            y += 1
+
+    # Trailing separator
+    if y < h - 2:
+        _hline(stdscr, y)
+        y += 1
+
+    return y
 
 
 # ── Tab 1 — Resume existing run ───────────────────────────────────────────────
@@ -220,7 +260,11 @@ def _draw_tab_bar(win, active_tab: int):
 
 # ── Main startup screen ───────────────────────────────────────────────────────
 
-def _startup_screen(stdscr, repo_root: Path) -> StartupChoice | None:
+def _startup_screen(
+    stdscr,
+    repo_root: Path,
+    issues: list[dict] | None = None,
+) -> StartupChoice | None:
     curses.curs_set(0)
     stdscr.nodelay(False)
     _init_colors()
@@ -246,19 +290,24 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice | None:
     manual_active_fld  = 0   # 0=goal, 1=plan
     manual_error       = ""
 
+    _issues = issues or []
+
     while True:
         h, w = stdscr.getmaxyx()
         stdscr.erase()
 
         _draw_tab_bar(stdscr, active_tab)
 
-        # Content area starts at row 4
-        content_h = h - 5
+        # ── Preflight banner (rows 4 .. content_start-1) ─────────────────────
+        # Tab bar occupies rows 0-3; banner starts at row 4.
+        content_start = _draw_preflight_banner(stdscr, _issues, 4)
+
+        content_h = h - content_start - 1
         content_w = w
 
         # Use a subwindow for cleaner rendering
         try:
-            content = stdscr.derwin(content_h, content_w, 4, 0)
+            content = stdscr.derwin(content_h, content_w, content_start, 0)
         except curses.error:
             stdscr.refresh()
             k = stdscr.getch()
@@ -401,14 +450,18 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice | None:
                     manual_plan_cursor += 1
 
 
-def run_startup_selection(repo_root: Path) -> StartupChoice | None:
+def run_startup_selection(
+    repo_root: Path,
+    issues: list[dict] | None = None,
+) -> StartupChoice | None:
     """
     Show the startup screen and return the user's choice.
     Returns None if the user presses Escape (quit).
-    Runs in its own curses.wrapper call so it finishes cleanly before
-    the main UI starts.
+
+    *issues* is the list returned by ``preflight_check()`` — any non-empty
+    list is displayed as a banner above the tab content.
     """
-    import sys, logging
+    import logging
 
     # Silence stderr during curses — same pattern as run_ui
     root = logging.getLogger("dag")
@@ -419,7 +472,7 @@ def run_startup_selection(repo_root: Path) -> StartupChoice | None:
     result: list[StartupChoice | None] = [None]
 
     def _inner(stdscr):
-        result[0] = _startup_screen(stdscr, repo_root)
+        result[0] = _startup_screen(stdscr, repo_root, issues=issues)
 
     try:
         curses.wrapper(_inner)

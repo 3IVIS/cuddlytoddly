@@ -60,6 +60,54 @@ body {
   margin-top: 3px;
 }
 
+/* ── Preflight banner ──────────────────────────────── */
+.preflight-banner {
+  display: none;
+  padding: 12px 20px;
+  background: color-mix(in srgb, var(--fail) 8%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--fail) 30%, var(--border));
+}
+.preflight-banner.has-issues { display: block; }
+.preflight-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fail);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.preflight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.preflight-issue {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.preflight-msg {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+.preflight-icon { flex-shrink: 0; }
+.preflight-icon.error { color: var(--fail); }
+.preflight-icon.warning { color: var(--warn); }
+.preflight-text.error { color: #fca5a5; }
+.preflight-text.warning { color: #fde68a; }
+.preflight-fix {
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: 18px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.preflight-fix::before { content: "→ "; }
+
 /* ── Tabs ──────────────────────────────────────────── */
 .tabs {
   display: flex;
@@ -271,6 +319,14 @@ body {
     <div class="tagline">Choose a run or start something new</div>
   </div>
 
+  <!-- Preflight banner (hidden until issues are loaded) -->
+  <div class="preflight-banner" id="preflight-banner">
+    <div class="preflight-title">
+      <span>⚠</span> Configuration issues detected
+    </div>
+    <div class="preflight-list" id="preflight-list"></div>
+  </div>
+
   <!-- Tabs -->
   <div class="tabs">
     <div class="tab active" id="tab-existing" onclick="switchTab('existing')">
@@ -372,6 +428,50 @@ function clearErrors() {
   document.querySelectorAll('.error-msg').forEach(el => el.textContent = '');
 }
 
+// ── Preflight banner ──────────────────────────────────────────────────────────
+async function loadPreflight() {
+  try {
+    const data   = await (await fetch('/api/preflight')).json();
+    const issues = data.issues || [];
+    if (!issues.length) return;
+
+    const banner = document.getElementById('preflight-banner');
+    const list   = document.getElementById('preflight-list');
+
+    list.innerHTML = issues.map(issue => {
+      const isErr  = issue.level === 'error';
+      const icon   = isErr ? '✗' : '⚠';
+      const cls    = isErr ? 'error' : 'warning';
+      const fix    = issue.fix
+        ? `<div class="preflight-fix">${esc(issue.fix)}</div>`
+        : '';
+      return `
+        <div class="preflight-issue">
+          <div class="preflight-msg">
+            <span class="preflight-icon ${cls}">${icon}</span>
+            <span class="preflight-text ${cls}">${esc(issue.message)}</span>
+          </div>
+          ${fix}
+        </div>`;
+    }).join('');
+
+    // Colour the banner border based on worst level
+    const hasError = issues.some(i => i.level === 'error');
+    if (!hasError) {
+      banner.style.background =
+        'color-mix(in srgb, var(--warn) 8%, var(--surface))';
+      banner.style.borderBottomColor =
+        'color-mix(in srgb, var(--warn) 30%, var(--border))';
+      banner.querySelector('.preflight-title').style.color = 'var(--warn)';
+      banner.querySelector('.preflight-title span').textContent = '⚠';
+    }
+
+    banner.classList.add('has-issues');
+  } catch (_) {
+    // Silently ignore — preflight is best-effort
+  }
+}
+
 // ── Load runs ─────────────────────────────────────────────────────────────────
 async function loadRuns() {
   try {
@@ -383,7 +483,6 @@ async function loadRuns() {
       container.innerHTML = `<div class="empty-runs">
         No existing runs found.<br>Start a new goal below.
       </div>`;
-      // Auto-switch to New Goal if no runs
       switchTab('goal');
       return;
     }
@@ -402,7 +501,6 @@ async function loadRuns() {
       `).join('')}
     </div>`;
 
-    // Auto-select first
     selectRun(0);
   } catch (e) {
     document.getElementById('runs-container').innerHTML =
@@ -473,7 +571,6 @@ async function submit() {
       window.location.href = '/dag';
       return;
     }
-    // Poll until initialized
     pollReady();
   } catch (e) {
     showLoadError(String(e));
@@ -514,7 +611,6 @@ function showLoadError(msg) {
   polling = false;
   document.getElementById('loading-overlay').classList.remove('show');
   document.getElementById('footer').style.display = '';
-  // Re-show active pane
   document.getElementById(`pane-${activeTab}`).classList.add('active');
   document.getElementById(`err-${activeTab}`).textContent = 'Error: ' + msg;
 }
@@ -532,6 +628,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+loadPreflight();   // fetch config issues and show banner if any
 loadRuns();
 
 // If already initialized (server restarted), go straight to DAG

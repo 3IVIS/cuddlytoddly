@@ -237,48 +237,65 @@ def parse_manual_plan(text: str) -> tuple[str, list]:
 # Curses startup screen
 # ---------------------------------------------------------------------------
 
-def run_startup_curses(repo_root: Path) -> StartupChoice:
+def run_startup_curses(
+    repo_root: Path,
+    issues: list[dict] | None = None,
+) -> StartupChoice:
     """
     Show a full-screen curses startup dialog.
     Blocks until the user confirms a choice.
     Raises SystemExit(0) if the user presses q / Escape.
+ 
+    *issues* is the list returned by ``config.preflight_check()`` — any
+    non-empty list is rendered as a banner above the tab content so the
+    user sees what needs fixing before they start a run.
     """
     result: list[StartupChoice] = []
-
+ 
     def _screen(stdscr):
-        result.append(_startup_screen(stdscr, repo_root))
-
+        result.append(_startup_screen(stdscr, repo_root, issues=issues))
+ 
     curses.wrapper(_screen)
     return result[0]
 
-
-def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
+def _startup_screen(
+    stdscr,
+    repo_root: Path,
+    issues: list[dict] | None = None,
+) -> StartupChoice:
     curses.start_color()
     curses.use_default_colors()
     curses.curs_set(0)
     stdscr.nodelay(False)
     stdscr.keypad(True)
-
+ 
     try:
         curses.init_pair(1, curses.COLOR_CYAN,   -1)
         curses.init_pair(2, curses.COLOR_GREEN,  -1)
         curses.init_pair(3, curses.COLOR_YELLOW, -1)
         curses.init_pair(4, curses.COLOR_WHITE,  -1)
         curses.init_pair(5, curses.COLOR_BLACK,  curses.COLOR_CYAN)
+        curses.init_pair(6, curses.COLOR_RED,    -1)   # errors
+        curses.init_pair(7, curses.COLOR_YELLOW, -1)   # warnings (same as HI here)
     except Exception:
         pass
-
+ 
     ACCENT  = curses.color_pair(1)
     SEL     = curses.color_pair(2) | curses.A_BOLD
     HI      = curses.color_pair(3)
     NORMAL  = curses.color_pair(4)
     TAB_ON  = curses.color_pair(5) | curses.A_BOLD
     TAB_OFF = NORMAL
-
+    ERR     = curses.color_pair(6) | curses.A_BOLD
+    WARN    = curses.color_pair(7) | curses.A_BOLD
+    DIM     = NORMAL | curses.A_DIM
+ 
     runs  = scan_runs(repo_root)
     TABS  = ["  Existing runs  ", "  New goal  ", "  Manual plan  "]
     tab   = 0 if runs else 1
-
+ 
+    _issues = issues or []
+ 
     # Per-tab state
     run_sel      = 0
     goal_text    = ""
@@ -286,18 +303,52 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
     plan_text    = ""
     plan_cursor  = 0
     error_msg    = ""
-
+ 
+    def _draw_banner(h, w) -> int:
+        """
+        Draw preflight issues below the separator (row 3).
+        Returns the first row available for tab body content.
+        """
+        if not _issues:
+            return 4
+        y = 4
+        for issue in _issues:
+            if y >= h - 3:
+                break
+            is_err = issue["level"] == "error"
+            prefix = "✗" if is_err else "⚠"
+            attr   = ERR if is_err else WARN
+            line   = f" {prefix} {issue['message']}"
+            try:
+                stdscr.addstr(y, 0, line[:w - 1], attr)
+            except curses.error:
+                pass
+            y += 1
+            fix = issue.get("fix", "")
+            if fix and y < h - 3:
+                try:
+                    stdscr.addstr(y, 0, f"   → {fix}"[:w - 1], DIM)
+                except curses.error:
+                    pass
+                y += 1
+        # Separator after banner
+        try:
+            stdscr.addstr(y, 0, "─" * (w - 1), NORMAL)
+        except curses.error:
+            pass
+        return y + 1
+ 
     def _draw():
         stdscr.erase()
         h, w = stdscr.getmaxyx()
-
+ 
         # Title bar
         try:
             stdscr.addstr(0, 0,
                 " cuddlytoddly — startup ".center(w), ACCENT | curses.A_BOLD)
         except curses.error:
             pass
-
+ 
         # Tab bar
         x = 2
         for i, label in enumerate(TABS):
@@ -306,16 +357,17 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
             except curses.error:
                 pass
             x += len(label) + 2
-
-        # Separator
+ 
+        # Separator after tabs
         try:
             stdscr.addstr(3, 0, "─" * (w - 1), NORMAL)
         except curses.error:
             pass
-
-        body_top = 4
+ 
+        # Preflight banner (may push body_top down)
+        body_top = _draw_banner(h, w)
         body_h   = h - body_top - 3
-
+ 
         # ── Tab 0: existing runs ─────────────────────────────────────────────
         if tab == 0:
             if not runs:
@@ -338,7 +390,7 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
                         stdscr.addstr(y, 2, line[:w - 2], attr)
                     except curses.error:
                         pass
-
+ 
         # ── Tab 1: new goal ──────────────────────────────────────────────────
         elif tab == 1:
             try:
@@ -350,7 +402,7 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
                               "Type the goal then press Enter.", NORMAL)
             except curses.error:
                 pass
-
+ 
         # ── Tab 2: manual plan ───────────────────────────────────────────────
         elif tab == 2:
             instructions = [
@@ -368,7 +420,7 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
                               "─" * min(60, w - 6), NORMAL)
             except curses.error:
                 pass
-
+ 
             area_top   = body_top + len(instructions) + 1
             area_h     = body_h - len(instructions) - 2
             plan_lines = plan_text.splitlines() or [""]
@@ -377,7 +429,7 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
                     stdscr.addstr(area_top + i, 4, pline[:w - 6], NORMAL)
                 except curses.error:
                     pass
-
+ 
             # Draw cursor
             cur_line = plan_text[:plan_cursor].count("\n")
             cur_col  = len(plan_text[:plan_cursor].rsplit("\n", 1)[-1])
@@ -391,14 +443,14 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
                     stdscr.addstr(abs_y, 4 + cur_col, ch, curses.A_REVERSE)
                 except curses.error:
                     pass
-
-        # Error line
+ 
+        # Error line (validation errors from key handling)
         if error_msg:
             try:
                 stdscr.addstr(h - 3, 2, f"! {error_msg}"[:w - 2], HI)
             except curses.error:
                 pass
-
+ 
         # Footer
         try:
             stdscr.addstr(h - 2, 0, "─" * (w - 1), NORMAL)
@@ -407,33 +459,30 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
                 NORMAL)
         except curses.error:
             pass
-
+ 
         stdscr.refresh()
-
-    def _make_run_dir(goal: str) -> Path:
+ 
+    def _make_run_dir(goal: str) -> "Path":
         from cuddlytoddly.__main__ import make_run_dir
         return make_run_dir(goal).resolve()
-
+ 
     while True:
         _draw()
         k = stdscr.getch()
-
-        # ── Quit ────────────────────────────────────────────────────────────
+ 
         if k in (ord("q"), 27):
             raise SystemExit(0)
-
-        # ── Tab switching ────────────────────────────────────────────────────
+ 
         if k in (9, curses.KEY_RIGHT):
             tab = (tab + 1) % len(TABS)
             error_msg = ""
             continue
-
+ 
         if k == curses.KEY_LEFT:
             tab = (tab - 1) % len(TABS)
             error_msg = ""
             continue
-
-        # ── Tab 0: existing runs ─────────────────────────────────────────────
+ 
         if tab == 0:
             if k == curses.KEY_UP:
                 run_sel = max(0, run_sel - 1)
@@ -447,8 +496,7 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
                     goal_text=r["goal"],
                     is_fresh=False,
                 )
-
-        # ── Tab 1: new goal ──────────────────────────────────────────────────
+ 
         elif tab == 1:
             if k in (10, 13):
                 if goal_text.strip():
@@ -470,8 +518,7 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
             elif 32 <= k <= 126:
                 goal_text   = goal_text[:goal_cursor] + chr(k) + goal_text[goal_cursor:]
                 goal_cursor += 1
-
-        # ── Tab 2: manual plan ───────────────────────────────────────────────
+ 
         elif tab == 2:
             if k == 7:   # Ctrl+G — submit
                 if plan_text.strip():
@@ -486,38 +533,18 @@ def _startup_screen(stdscr, repo_root: Path) -> StartupChoice:
                         )
                     error_msg = "Could not parse plan — add a goal line first."
                 else:
-                    error_msg = "Plan cannot be empty."
-            elif k == 10:   # Enter — insert newline
-                plan_text    = plan_text[:plan_cursor] + "\n" + plan_text[plan_cursor:]
-                plan_cursor += 1
+                    error_msg = "Plan is empty."
             elif k in (curses.KEY_BACKSPACE, 127):
                 if plan_cursor > 0:
-                    plan_text    = plan_text[:plan_cursor - 1] + plan_text[plan_cursor:]
+                    plan_text   = plan_text[:plan_cursor - 1] + plan_text[plan_cursor:]
                     plan_cursor -= 1
-            elif k == curses.KEY_UP:
-                before = plan_text[:plan_cursor]
-                lines  = before.splitlines(keepends=True)
-                if len(lines) >= 2:
-                    col         = len(lines[-1])
-                    prev        = lines[-2]
-                    plan_cursor = len("".join(lines[:-2])) + min(col, len(prev.rstrip("\n")))
-            elif k == curses.KEY_DOWN:
-                all_lines = plan_text.splitlines(keepends=True)
-                before    = plan_text[:plan_cursor]
-                line_idx  = before.count("\n")
-                if line_idx + 1 < len(all_lines):
-                    col         = len(before.rsplit("\n", 1)[-1])
-                    nxt         = all_lines[line_idx + 1]
-                    plan_cursor = len("".join(all_lines[:line_idx + 1])) + min(col, len(nxt.rstrip("\n")))
-            elif k == curses.KEY_LEFT:
-                plan_cursor = max(0, plan_cursor - 1)
-            elif k == curses.KEY_RIGHT:
-                plan_cursor = min(len(plan_text), plan_cursor + 1)
-            elif 32 <= k <= 126:
-                plan_text    = plan_text[:plan_cursor] + chr(k) + plan_text[plan_cursor:]
+            elif k in (10, 13):
+                plan_text   = plan_text[:plan_cursor] + "\n" + plan_text[plan_cursor:]
                 plan_cursor += 1
-
-
+            elif 32 <= k <= 126:
+                plan_text   = plan_text[:plan_cursor] + chr(k) + plan_text[plan_cursor:]
+                plan_cursor += 1
+                
 def build_manual_plan_events(goal_id: str, goal_text: str, tasks: list) -> list:
     """
     Compatibility shim for callers that pre-parse tasks themselves.

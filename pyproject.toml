@@ -1,9 +1,9 @@
 [project]
 name = "cuddlytoddly"
-version = "0.1.0"
+version = "0.1.1"
 description = "LLM-driven autonomous DAG planning and execution system"
 readme = "README.md"
-license = "MIT"                # SPDX expression, simple string
+license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [
     { name = "3IVIS GmbH" }
@@ -12,6 +12,7 @@ keywords = ["llm", "dag", "planning", "autonomous", "agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -21,13 +22,14 @@ classifiers = [
 # Core runtime dependencies
 dependencies = [
     "gitpython>=3.1",
+    "platformdirs>=4.0",
     'windows-curses>=2.3; sys_platform == "win32"',
 ]
 
 [project.optional-dependencies]
-openai = ["openai>=1.0"]
-claude = ["anthropic>=0.25"]
-local = [
+openai  = ["openai>=1.0"]
+claude  = ["anthropic>=0.25"]
+local   = [
     "llama-cpp-python>=0.2",
     "outlines>=0.0.46",
 ]
@@ -43,14 +45,18 @@ dev = [
 cuddlytoddly = "cuddlytoddly.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/3IVIS/cuddlytoddly"
+Homepage      = "https://github.com/3IVIS/cuddlytoddly"
 Documentation = "https://github.com/3IVIS/cuddlytoddly/tree/main/docs"
-Issues = "https://github.com/3IVIS/cuddlytoddly/issues"
+Issues        = "https://github.com/3IVIS/cuddlytoddly/issues"
+
+[build-system]
+requires      = ["setuptools>=68,<69", "wheel"]
+build-backend = "setuptools.build_meta"
 
 # ── Package discovery ────────────────────────────────────────────────────────
 
 [tool.setuptools.packages.find]
-where = ["."]
+where   = ["."]
 include = ["cuddlytoddly*"]
 
 [tool.setuptools.package-data]
@@ -62,7 +68,7 @@ include = ["cuddlytoddly*"]
 pythonpath = ["."]
 
 [tool.ruff]
-line-length = 100
+line-length    = 100
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -70,5 +76,5 @@ select = ["E", "F", "I"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version       = "3.11"
 ignore_missing_imports = true
