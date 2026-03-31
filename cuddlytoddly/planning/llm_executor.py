@@ -3,40 +3,21 @@
 import json
 from cuddlytoddly.infra.logging import get_logger
 from cuddlytoddly.planning.llm_interface import LLMStoppedError
-
-MAX_INLINE_RESULT_CHARS = 3000
+from cuddlytoddly.planning.schemas import EXECUTION_TURN_SCHEMA
+from cuddlytoddly.planning.prompts import (
+    build_executor_prompt,
+    build_executor_outputs_block,
+    build_executor_file_output_instruction,
+    build_executor_inline_output_instruction,
+    build_executor_retry_notice,
+    build_executor_file_reminder,
+)
 
 logger = get_logger(__name__)
 
-# Schema for a single execution turn.
-# The model either returns a final result or requests a tool call.
-EXECUTION_TURN_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "done": {
-            "type": "boolean",
-            "description": "True if this is the final answer, False if a tool call is needed."
-        },
-        "result": {
-            "type": "string",
-            "description": (
-                "The final result text. Required when done=true. "
-                "Must be a self-contained, detailed description of what was produced — "
-                "it will be passed verbatim to downstream tasks as their input."
-            )
-        },
-        "tool_call": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "args": {"type": "object", "additionalProperties": {"type": "string"}}
-            },
-            "required": ["name", "args"],
-            "description": "Tool to call. Required when done=false."
-        }
-    },
-    "required": ["done"]
-}
+# Version tag bumped when prompt semantics change significantly.
+# Kept as a code constant (not config) because it tracks internal compatibility.
+PROMPT_VERSION = "v3"
 
 
 class LLMExecutor:
@@ -51,12 +32,34 @@ class LLMExecutor:
          or done=False + tool_call
       3. If tool_call, run the tool and append the result to history
       4. Repeat until done=True or max_turns reached
+
+    All numeric limits come from the application config (passed via __init__)
+    so users can tune behaviour without editing source code.
     """
 
-    def __init__(self, llm_client, tool_registry=None, max_turns=5):
-        self.llm   = llm_client
-        self.tools = tool_registry
-        self.max_turns = max_turns
+    # File extensions that trigger "write_file" enforcement
+    FILE_EXTENSIONS = frozenset({
+        ".md", ".txt", ".py", ".json", ".csv", ".html",
+        ".yaml", ".yml", ".xml", ".pdf", ".log",
+    })
+
+    def __init__(
+        self,
+        llm_client,
+        tool_registry=None,
+        max_turns: int = 5,
+        max_inline_result_chars: int = 3000,
+        max_total_input_chars: int = 3000,
+        max_tool_result_chars: int = 2000,
+        max_history_entries: int = 3,
+    ):
+        self.llm                    = llm_client
+        self.tools                  = tool_registry
+        self.max_turns              = max_turns
+        self.max_inline_result_chars = max_inline_result_chars
+        self.max_total_input_chars  = max_total_input_chars
+        self.max_tool_result_chars  = max_tool_result_chars
+        self.max_history_entries    = max_history_entries
 
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -70,11 +73,9 @@ class LLMExecutor:
                 if isinstance(o, dict):
                     result.append(f"{o['name']} ({o['type']}): {o['description']}")
                 else:
-                    result.append(str(o))  # backward compat
+                    result.append(str(o))   # backward compat
             return result
 
-        MAX_TOTAL_INPUT_CHARS = 3000   # ~750 tokens total for all upstream results
-        
         resolved = []
         for dep_id in node.dependencies:
             dep = snapshot.get(dep_id)
@@ -84,16 +85,19 @@ class LLMExecutor:
                 "node_id":         dep_id,
                 "description":     dep.metadata.get("description", dep_id),
                 "declared_output": _format_output_list(dep.metadata.get("output", [])),
-                "result":          dep.result,   # full for now, truncated below
+                "result":          dep.result,
             })
 
-        # Distribute the budget evenly across all upstream results
+        # Distribute the char budget evenly across all upstream results
         if resolved:
-            budget_per_dep = MAX_TOTAL_INPUT_CHARS // len(resolved)
+            budget_per_dep = self.max_total_input_chars // len(resolved)
             for entry in resolved:
                 r = entry["result"]
                 if len(r) > budget_per_dep:
-                    entry["result"] = r[:budget_per_dep] + f"\n…[truncated, {len(r)} chars total]"
+                    entry["result"] = (
+                        r[:budget_per_dep]
+                        + f"\n…[truncated, {len(r)} chars total]"
+                    )
 
         return resolved
 
@@ -109,40 +113,45 @@ class LLMExecutor:
 
     def _build_prompt(self, node, resolved_inputs, history, extra_reminder=""):
 
-        def _format_output_for_prompt(o):
+        def _fmt_output(o):
             if isinstance(o, dict):
                 return f"  - [{o['type']}] {o['name']}: {o['description']}"
-            return f"  - {o}"  # backward compat
+            return f"  - {o}"
+
+        def _output_name(o):
+            return o["name"] if isinstance(o, dict) else str(o)
+
+        def _is_file(o):
+            if isinstance(o, dict):
+                return (
+                    o.get("type") == "file"
+                    or any(_output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
+                )
+            return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
 
         # ── Upstream results ──────────────────────────────────────────────────
         if resolved_inputs:
             inputs_text = "\n".join(
-                f"  [{entry['node_id']}]\n"
-                f"    Description:      {entry['description']}\n"
-                f"    Declared outputs: {entry['declared_output']}\n"
-                f"    Actual result:    {entry['result']}"
-                for entry in resolved_inputs
+                f"  [{e['node_id']}]\n"
+                f"    Description:      {e['description']}\n"
+                f"    Declared outputs: {e['declared_output']}\n"
+                f"    Actual result:    {e['result']}"
+                for e in resolved_inputs
             )
         else:
             inputs_text = "  (none — this is a root task)"
 
-        # In LLMExecutor._build_prompt:
+        # ── Retry notice ──────────────────────────────────────────────────────
         retry = node.metadata.get("retry_count", 0)
         if retry > 0:
-            failure  = node.metadata.get("verification_failure", "unknown")[:200]
+            failure    = node.metadata.get("verification_failure", "unknown")[:200]
             prev_result = node.result or "(none)"
             if len(prev_result) > 200:
                 prev_result = prev_result[:200] + "…"
-            retry_notice = f"""
-        ⚠️  RETRY ATTEMPT {retry} — PREVIOUS ATTEMPT FAILED
-        Failure reason: {failure}
-        Your previous result was: {prev_result}
-
-        You MUST return different, substantive content this time.
-        Do NOT return a label, filename, or the output name — return the actual data.
-        """
         else:
-            retry_notice = ""
+            failure    = ""
+            prev_result = ""
+        retry_notice = build_executor_retry_notice(retry, failure, prev_result)
 
         # ── Tool call history ─────────────────────────────────────────────────
         history_text = ""
@@ -158,52 +167,28 @@ class LLMExecutor:
 
         tools_text = self._tool_schema_summary()
 
-        # ── Declared outputs this node should produce ─────────────────────────
-        # Determine if this node is expected to produce a file output
+        # ── Declared outputs ──────────────────────────────────────────────────
         declared_outputs = node.metadata.get("output", [])
-        file_extensions  = {".md", ".txt", ".py", ".json", ".csv", ".html",
-                            ".yaml", ".yml", ".xml", ".pdf", ".log"}
+        expected_files   = [_output_name(o) for o in declared_outputs if _is_file(o)]
 
-        def _output_name(o):
-            return o["name"] if isinstance(o, dict) else str(o)
-
-        def o_type_is_file(o):
-            if isinstance(o, dict):
-                return (o.get("type") == "file" or
-                        any(_output_name(o).endswith(ext) for ext in file_extensions))
-            return any(str(o).endswith(ext) for ext in file_extensions)
-
-        expects_file_output = any(
-            o_type_is_file(o) for o in declared_outputs
+        description_lower = node.metadata.get("description", "").lower()
+        is_file_edit = any(
+            word in description_lower
+            for word in ("edit", "modify", "update", "append", "patch", "overwrite")
         )
 
-        description = node.metadata.get("description", "").lower()
-        is_file_edit = any(word in description for word in
-                        ("edit", "modify", "update", "append", "patch", "overwrite"))
-
-        if expects_file_output or is_file_edit:
-            output_instruction = f"""- This task is expected to produce a file on disk.
-        Call write_file (or append_file if editing an existing file) before setting done=true.
-        Your result string should confirm what was written:
-            file_written: <filename>
-            summary: <brief description of contents>"""
+        if expected_files or is_file_edit:
+            output_instruction = build_executor_file_output_instruction(expected_files)
         else:
-            output_instruction = f"""- Return your result as a self-contained text string.
-        Do NOT write files unless explicitly required by this task's description.
-        Do NOT read from or write to disk — pass results inline as text.
-        If your result would exceed {MAX_INLINE_RESULT_CHARS} characters, write it to a file
-        using write_file and return the filename + a summary instead."""
+            output_instruction = build_executor_inline_output_instruction(
+                self.max_inline_result_chars
+            )
 
-        outputs_text = ("\n".join(_format_output_for_prompt(o) for o in declared_outputs) 
-                                 if declared_outputs else "  (not specified)"
+        outputs_text = (
+            "\n".join(_fmt_output(o) for o in declared_outputs)
+            if declared_outputs else "  (not specified)"
         )
-
-        outputs_block = f"""Expected outputs (produce the CONTENT of these, not their names):
-        {outputs_text}
-
-        IMPORTANT: Do not return the output name as your result. Return the actual content.
-        For example, if the output is 'research_report', your result must contain
-        the actual research findings, not the string 'research_report'."""
+        outputs_block = build_executor_outputs_block(outputs_text)
 
         logger.info(
             "[EXECUTOR] Prompt sections for %s — "
@@ -213,50 +198,20 @@ class LLMExecutor:
             len(retry_notice), len(outputs_text),
             len(inputs_text), len(tools_text), len(history_text),
         )
-        PROMPT_VERSION = "v3"   # bump this when prompt semantics change significantly
 
-        return f"""[prompt_version={PROMPT_VERSION}]
-You are executing one task inside a larger automated plan.
-Your result will be stored and passed directly to downstream tasks as their input,
-so it must be self-contained, specific, and directly usable — not a summary or stub.
-
-════════════════════════════════════════
-TASK 
-{retry_notice}
-{extra_reminder}
-════════════════════════════════════════
-ID:          {node.id}
-Description: {node.metadata.get("description", node.id)}
-
-{outputs_block}
-
-════════════════════════════════════════
-INPUTS FROM UPSTREAM TASKS
-════════════════════════════════════════
-{inputs_text}
-
-════════════════════════════════════════
-AVAILABLE TOOLS
-════════════════════════════════════════
-{tools_text}
-
-{history_text}
-
-════════════════════════════════════════
-INSTRUCTIONS
-════════════════════════════════════════
-- Use upstream results provided in this prompt directly. They are text strings,
-  not files on disk. Do not attempt to read them from the filesystem.
-{output_instruction}
-- Your result must be detailed enough that a downstream task can use it
-  without any other context. Label each output clearly:
-    investment_analysis: <full content>
-    risk_assessment: <full content>
-- If you need to call a tool first, set done=false and provide tool_call.
-- Only set done=true when you have a complete, usable result.
-- Use \\n for line breaks and 4 spaces for indentation in Python code.
-  Do NOT compress multi-line code onto one line with semicolons.
-"""
+        return build_executor_prompt(
+            node_id=node.id,
+            description=node.metadata.get("description", node.id),
+            retry_notice=retry_notice,
+            extra_reminder=extra_reminder,
+            outputs_block=outputs_block,
+            output_instruction=output_instruction,
+            inputs_text=inputs_text,
+            tools_text=tools_text,
+            history_text=history_text,
+            max_inline_result_chars=self.max_inline_result_chars,
+            prompt_version=PROMPT_VERSION,
+        )
 
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -264,44 +219,31 @@ INSTRUCTIONS
         resolved_inputs = self._resolve_inputs(node, snapshot)
         history = []
 
-        declared_outputs = node.metadata.get("output", [])
-        file_extensions  = {".md", ".txt", ".py", ".json", ".csv", ".html",
-                            ".yaml", ".yml", ".xml", ".pdf", ".log"}
-
         def _output_name(o):
             return o["name"] if isinstance(o, dict) else str(o)
 
-        def o_type_is_file(o):
+        def _is_file(o):
             if isinstance(o, dict):
-                return (o.get("type") == "file" or
-                        any(_output_name(o).endswith(ext) for ext in file_extensions))
-            return any(str(o).endswith(ext) for ext in file_extensions)
+                return (
+                    o.get("type") == "file"
+                    or any(_output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
+                )
+            return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
 
-
-        expected_files = [
-            _output_name(o) for o in declared_outputs
-            if o_type_is_file(o)
-        ]
+        declared_outputs = node.metadata.get("output", [])
+        expected_files   = [_output_name(o) for o in declared_outputs if _is_file(o)]
 
         for turn in range(self.max_turns):
-            # If we have turns remaining and file outputs are declared,
-            # remind the model upfront in the prompt
             turns_remaining = self.max_turns - turn
-            file_reminder = ""
+            file_reminder   = ""
             if expected_files and "write_file" not in {h["name"] for h in history}:
-                file_reminder = (
-                    f"\nREMINDER: You must call write_file to create "
-                    f"{expected_files} before setting done=true. "
-                    f"You have {turns_remaining} turn(s) remaining."
-                )
-
-            prompt = self._build_prompt(node, resolved_inputs, history, 
-                                        extra_reminder=file_reminder)
+                file_reminder = build_executor_file_reminder(expected_files, turns_remaining)
 
             if reporter:
                 reporter.on_llm_turn(turn)
 
-            prompt = self._build_prompt(node, resolved_inputs, history)
+            prompt = self._build_prompt(node, resolved_inputs, history,
+                                        extra_reminder=file_reminder)
 
             try:
                 raw = self.llm.ask(prompt, schema=EXECUTION_TURN_SCHEMA)
@@ -322,23 +264,15 @@ INSTRUCTIONS
                     reporter.on_llm_error(turn, f"JSON parse error: {e}")
                 return None
 
-            # In LLMExecutor.execute(), after parsing response, before checking done:
             if response.get("done"):
-                result = response.get("result", "")
-
-                # If this node declares file outputs, verify a write_file was called
-                # this session before accepting done=true
-
+                result           = response.get("result", "")
                 tool_names_used  = {h["name"] for h in history}
 
-                # In LLMExecutor.execute(), replace the correction turn injection:
                 if expected_files and "write_file" not in tool_names_used:
                     logger.warning(
                         "[EXECUTOR] Node %s set done=true but write_file not in history "
                         "— injecting correction turn", node.id
                     )
-                    # Inject as a complete tool exchange (call + result) so the model
-                    # understands it's still in the middle of execution
                     history.append({
                         "name":   "write_file",
                         "args":   {"path": expected_files[0], "content": ""},
@@ -350,7 +284,6 @@ INSTRUCTIONS
                             f"with real content."
                         ),
                     })
-                    # Also cap done=false by continuing — the next turn must use tool_call
                     continue
 
                 logger.info("[EXECUTOR] Node %s completed. Result: %.120s", node.id, result)
@@ -358,8 +291,10 @@ INSTRUCTIONS
 
             tool_call = response.get("tool_call")
             if not tool_call:
-                logger.warning("[EXECUTOR] Node %s: done=false but no tool_call on turn %d",
-                            node.id, turn + 1)
+                logger.warning(
+                    "[EXECUTOR] Node %s: done=false but no tool_call on turn %d",
+                    node.id, turn + 1,
+                )
                 if reporter:
                     reporter.on_llm_error(turn, "done=false but no tool_call provided")
                 return None
@@ -369,14 +304,15 @@ INSTRUCTIONS
 
             if not self.tools or tool_name not in self.tools.tools:
                 logger.warning("[EXECUTOR] Node %s requested unknown tool '%s'",
-                            node.id, tool_name)
+                               node.id, tool_name)
                 if reporter:
                     step_id = reporter.on_tool_start(tool_name, tool_args)
                     reporter.on_tool_done(step_id, tool_name, tool_args,
-                                        f"ERROR: tool '{tool_name}' not found",
-                                        error=True)
+                                         f"ERROR: tool '{tool_name}' not found",
+                                         error=True)
                 history.append({
-                    "name": tool_name, "args": tool_args,
+                    "name":   tool_name,
+                    "args":   tool_args,
                     "result": f"ERROR: tool '{tool_name}' not found",
                 })
                 continue
@@ -394,15 +330,12 @@ INSTRUCTIONS
 
             if reporter and step_id:
                 reporter.on_tool_done(step_id, tool_name, tool_args,
-                                    str(tool_result), error=error)
-
-            MAX_TOOL_RESULT_CHARS = 2000
-            MAX_HISTORY_ENTRIES = 3
+                                      str(tool_result), error=error)
 
             tool_result_str = str(tool_result)
-            if len(tool_result_str) > MAX_TOOL_RESULT_CHARS:
+            if len(tool_result_str) > self.max_tool_result_chars:
                 tool_result_str = (
-                    tool_result_str[:MAX_TOOL_RESULT_CHARS]
+                    tool_result_str[:self.max_tool_result_chars]
                     + f"\n…[truncated — {len(tool_result_str)} chars total]"
                 )
 
@@ -412,9 +345,9 @@ INSTRUCTIONS
                 "result": tool_result_str,
             })
 
-            if len(history) > MAX_HISTORY_ENTRIES:
-                history = history[-MAX_HISTORY_ENTRIES:]
+            if len(history) > self.max_history_entries:
+                history = history[-self.max_history_entries:]
 
         logger.error("[EXECUTOR] Node %s did not complete within %d turns",
-                    node.id, self.max_turns)
+                     node.id, self.max_turns)
         return None

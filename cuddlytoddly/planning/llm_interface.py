@@ -14,20 +14,41 @@
 # All backends accept a `prompt: str` and return a `str` (raw JSON text).
 # Structured output (outlines grammar) is applied inside LlamaCppLLM so the
 # rest of the codebase never needs to change.
+#
+# Schemas live in planning/schemas.py.
+# Prompt text lives in planning/prompts.py.
 
 from __future__ import annotations
 
 import hashlib
 import json
 import time
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
-import threading
 
 from cuddlytoddly.core.id_generator import StableIDGenerator
 from cuddlytoddly.infra.logging import get_logger
-import threading
+
+# Re-export schemas so existing callers that imported them from here continue to work.
+from cuddlytoddly.planning.schemas import (   # noqa: F401  (public re-exports)
+    EVENT_LIST_SCHEMA,
+    PLAN_SCHEMA,
+    GOAL_SUMMARY_SCHEMA,
+    REFINER_OUTPUT_SCHEMA,
+    EXECUTION_TURN_SCHEMA,
+    RESULT_VERIFICATION_SCHEMA,
+    DEPENDENCY_CHECK_SCHEMA,
+)
+
+# System prompt text is owned by prompts.py.
+from cuddlytoddly.planning.prompts import LLM_SYSTEM_PROMPT, LLAMACPP_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Token counter
+# ---------------------------------------------------------------------------
 
 class TokenCounter:
     """
@@ -35,10 +56,10 @@ class TokenCounter:
     in this process.  Thread-safe; all attributes are read-only properties.
     """
     def __init__(self):
-        self._lock          = threading.Lock()
-        self._prompt_tokens = 0
-        self._completion_tokens = 0
-        self._calls         = 0
+        self._lock               = threading.Lock()
+        self._prompt_tokens      = 0
+        self._completion_tokens  = 0
+        self._calls              = 0
 
     def add(self, prompt: int, completion: int) -> None:
         with self._lock:
@@ -67,183 +88,29 @@ class TokenCounter:
             self._prompt_tokens = self._completion_tokens = self._calls = 0
 
 
-# Module-level singleton — import this wherever you need token counts
+# Module-level singleton — import this wherever you need token counts.
 token_counter = TokenCounter()
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Shared constants (kept from original FileBasedLLM)
+# Shared constants
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROMPT_LOG_FILE = PROJECT_ROOT / "llm_prompts.txt"
-RESPONSE_FILE = PROJECT_ROOT / "llm_responses.txt"
-POLL_INTERVAL = 0.5
-TIMEOUT = 300
-PROGRESS_LOG_INTERVAL = 2
+RESPONSE_FILE   = PROJECT_ROOT / "llm_responses.txt"
+
+# Default values — overridden by config when passed to FileBasedLLM.__init__
+_DEFAULT_POLL_INTERVAL        = 0.5
+_DEFAULT_TIMEOUT              = 300
+_DEFAULT_PROGRESS_LOG_INTERVAL = 2
 
 id_gen = StableIDGenerator(id_length=6)
 
 
 # ---------------------------------------------------------------------------
-# JSON Schema — shared by all backends that support structured output.
-# Describes the list-of-events format the planner/reflector expect.
+# Exception
 # ---------------------------------------------------------------------------
-
-# Add alongside EVENT_LIST_SCHEMA and REFINER_OUTPUT_SCHEMA
-
-GOAL_SUMMARY_SCHEMA = {
-    "type": "object",
-    "required": ["description", "plan_summary"],
-    "additionalProperties": False,
-    "properties": {
-        "description": {
-            "type": "string",
-            "description": (
-                "One sentence (max 20 words) naming what this goal achieves. "
-                "Used as the node label in the UI."
-            ),
-        },
-        "plan_summary": {
-            "type": "string",
-            "description": (
-                "2-4 sentences explaining how the planned tasks combine to "
-                "achieve the goal. Cover what each task produces and how the "
-                "outputs chain together into the final result."
-            ),
-        },
-    },
-}
-
-
-_IO_ITEM = {
-    "type": "object",
-    "required": ["name", "type", "description"],
-    "additionalProperties": False,
-    "properties": {
-        "name":        {"type": "string",
-                        "description": "Short snake_case identifier, e.g. 'investment_report'"},
-        "type":        {"type": "string",
-                        "enum": ["file", "document", "data", "list", "url", "text", "json", "code"],
-                        "description": "What kind of artifact this is"},
-        "description": {"type": "string",
-                        "description": "One sentence: what this artifact contains"},
-    }
-}
-
-EVENT_LIST_SCHEMA = {
-    "type": "array",
-    "items": {
-        "oneOf": [
-            {
-                "type": "object",
-                "title": "ADD_NODE event",
-                "required": ["type", "payload"],
-                "additionalProperties": False,
-                "properties": {
-                    "type": {"type": "string", "const": "ADD_NODE"},
-                    "payload": {
-                        "type": "object",
-                        "required": ["node_id", "node_type", "dependencies", "metadata"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "node_id":      {"type": "string"},
-                            "node_type":    {"type": "string", "enum": ["task", "goal", "reflection"]},
-                            "dependencies": {"type": "array", "items": {"type": "string"}},
-                            "metadata": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "properties": {
-                                    "description":      {"type": "string"},
-                                    "parallel_group":   {"type": ["string", "null"]},
-                                    "required_input":   {"type": "array", "items": _IO_ITEM},
-                                    "output":           {"type": "array", "items": _IO_ITEM},
-                                    "reflection_notes": {"type": "array", "items": {"type": "string"}},
-                                    "precedes":         {"type": "array", "items": {"type": "string"}}
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            {
-                "type": "object",
-                "title": "ADD_DEPENDENCY event",
-                "required": ["type", "payload"],
-                "additionalProperties": False,
-                "properties": {
-                    "type": {"type": "string", "const": "ADD_DEPENDENCY"},
-                    "payload": {
-                        "type": "object",
-                        "required": ["node_id", "depends_on"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "node_id":       {"type": "string"},
-                            "depends_on": {"type": "string"}
-                        }
-                    }
-                }
-            }
-        ]
-    }
-}
-
-PLAN_SCHEMA = {
-    "type": "object",
-    "required": ["a_goal_result", "events"],
-    "additionalProperties": False,
-    "properties": {
-        "a_goal_result": {
-            "type": "string",
-            "description": (
-                "2-4 sentences explaining how these specific tasks chain together "
-                "to achieve the goal. Name each task, what it produces, and why "
-                "the next task depends on that output. Make the dependency "
-                "reasoning explicit."
-            ),
-        },
-        "events": {
-            "type": "array",
-            "items": EVENT_LIST_SCHEMA["items"],  # reuses existing item definitions
-        },
-    },
-}
-
-
-# ---------------------------------------------------------------------------
-# JSON Schema — used by LLMRefiner.
-# The refiner returns a single object, not an array.
-# ---------------------------------------------------------------------------
-
-REFINER_OUTPUT_SCHEMA = {
-    "type": "object",
-    "required": ["needs_refinement", "tasks_to_expand", "validated_atomic", "dependency_issues", "reasoning"],
-    "additionalProperties": False,
-    "properties": {
-        "needs_refinement": {
-            "type": "boolean"
-        },
-        "tasks_to_expand": {
-            "type": "array",
-            "items": {"type": "string"}
-        },
-        "validated_atomic": {
-            "type": "array",
-            "items": {"type": "string"}
-        },
-        "dependency_issues": {
-            "type": "array",
-            "items": {"type": "string"}
-        },
-        "reasoning": {
-            "type": "string"
-        }
-    }
-}
-
-# -----------------------------------------------------------------------------
-# 1. New exception  — add near the top of llm_interface.py, after imports
-# -----------------------------------------------------------------------------
 
 class LLMStoppedError(RuntimeError):
     """Raised when an LLM call is attempted while the stop flag is set."""
@@ -252,10 +119,6 @@ class LLMStoppedError(RuntimeError):
 # ---------------------------------------------------------------------------
 # Abstract base class
 # ---------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# 2. BaseLLM  — replace existing BaseLLM class with this
-# -----------------------------------------------------------------------------
 
 class BaseLLM(ABC):
     """
@@ -277,12 +140,10 @@ class BaseLLM(ABC):
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
-        """Set the stop flag — subsequent ask() calls raise LLMStoppedError."""
         self._stop_event.set()
         logger.info("[LLM] Stop flag SET on %s", self.__class__.__name__)
 
     def resume(self) -> None:
-        """Clear the stop flag — ask() calls proceed normally again."""
         self._stop_event.clear()
         logger.info("[LLM] Stop flag CLEARED on %s", self.__class__.__name__)
 
@@ -291,7 +152,6 @@ class BaseLLM(ABC):
         return self._stop_event.is_set()
 
     def _check_stop(self) -> None:
-        """Call at the top of ask() in every backend."""
         if self._stop_event.is_set():
             raise LLMStoppedError("LLM calls are paused — resume before retrying")
 
@@ -304,9 +164,8 @@ class BaseLLM(ABC):
         return self.ask(prompt)
 
 
-
 # ---------------------------------------------------------------------------
-# Backend 1 — FileBasedLLM  (original implementation, fully preserved)
+# Backend 1 — FileBasedLLM  (development / testing)
 # ---------------------------------------------------------------------------
 
 class FileBasedLLM(BaseLLM):
@@ -314,25 +173,33 @@ class FileBasedLLM(BaseLLM):
     Simulates an LLM using text files with unique IDs.
 
     Workflow:
-      1. Prompts are appended to llm_prompts.txt  (id:<uid>\n<prompt>\n)
+      1. Prompts are appended to llm_prompts.txt  (id:<uid>\\n<prompt>\\n)
       2. A human (or external process) writes responses to llm_responses.txt
          using the same id:<uid> prefix.
       3. get_response() polls until the matching block appears.
+
+    All timing constants come from the application config (passed via __init__)
+    so they can be adjusted without editing source code.
     """
 
     def __init__(
         self,
         response_file: Path | str = RESPONSE_FILE,
         prompt_log_file: Path | str = PROMPT_LOG_FILE,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
+        timeout: float = _DEFAULT_TIMEOUT,
+        progress_log_interval: float = _DEFAULT_PROGRESS_LOG_INTERVAL,
     ):
         super().__init__()
-        self.response_file = Path(response_file)
-        self.prompt_log_file = Path(prompt_log_file)
+        self.response_file         = Path(response_file)
+        self.prompt_log_file       = Path(prompt_log_file)
+        self.poll_interval         = poll_interval
+        self.timeout               = timeout
+        self.progress_log_interval = progress_log_interval
         logger.info("[LLM] Initialized FileBasedLLM")
         logger.info("[LLM] Prompt file path: %s", self.prompt_log_file.resolve())
         logger.info("[LLM] Response file path: %s", self.response_file.resolve())
 
-    # --------------------------------------------------
     def send_prompt(self, prompt: str) -> str:
         logger.info("[LLM] send_prompt() called")
         prompt_id = id_gen.get_id(prompt, "prompts")
@@ -362,10 +229,9 @@ class FileBasedLLM(BaseLLM):
 
         return prompt_id
 
-    # --------------------------------------------------
     def get_response(self, prompt_id: str) -> str:
         logger.info("[LLM] get_response() called for id=%s", prompt_id)
-        start_time = time.time()
+        start_time         = time.time()
         last_progress_time = start_time
 
         while True:
@@ -375,55 +241,54 @@ class FileBasedLLM(BaseLLM):
                 with self.response_file.open() as f:
                     lines = f.readlines()
 
-                current_id = None
+                current_id  = None
                 block_lines = []
                 for line in lines:
                     line = line.rstrip("\n")
                     if line.startswith("id:"):
                         if current_id == prompt_id and block_lines:
-                            response_text = "\n".join([l for l in block_lines if l.strip()])
+                            response_text = "\n".join(
+                                l for l in block_lines if l.strip()
+                            )
                             logger.info("[LLM] Response matched id=%s", prompt_id)
-                            logger.debug("[LLM] Response content:\n%s", response_text)
                             return response_text
-                        current_id = line[len("id:"):].strip()
+                        current_id  = line[len("id:"):].strip()
                         block_lines = []
                     else:
                         block_lines.append(line)
 
                 # last block
                 if current_id == prompt_id and block_lines:
-                    response_text = "\n".join([l for l in block_lines if l.strip()])
+                    response_text = "\n".join(l for l in block_lines if l.strip())
                     logger.info("[LLM] Response matched id=%s (last block)", prompt_id)
-                    logger.debug("[LLM] Response content:\n%s", response_text)
                     return response_text
             else:
                 logger.debug("[LLM] Response file does not yet exist")
 
-            if now - last_progress_time > PROGRESS_LOG_INTERVAL:
+            if now - last_progress_time > self.progress_log_interval:
                 elapsed = int(now - start_time)
                 logger.info(
-                    "[LLM] Waiting for response (id=%s)... %ds elapsed", prompt_id, elapsed
+                    "[LLM] Waiting for response (id=%s)... %ds elapsed",
+                    prompt_id, elapsed,
                 )
                 last_progress_time = now
 
-            if now - start_time > TIMEOUT:
+            if now - start_time > self.timeout:
                 logger.error("[LLM] Timeout waiting for response id=%s", prompt_id)
                 raise TimeoutError(
                     f"LLM response for id={prompt_id} not found within timeout"
                 )
 
-            time.sleep(POLL_INTERVAL)
+            time.sleep(self.poll_interval)
 
-    # --------------------------------------------------
-    def ask(self, prompt: str) -> str:          # FileBasedLLM
-        self._check_stop()                      # ← ADD THIS LINE
+    def ask(self, prompt: str) -> str:
+        self._check_stop()
         logger.info("[LLM] ask() called")
         prompt_id = self.send_prompt(prompt)
         logger.info("[LLM] ask() obtained prompt_id=%s", prompt_id)
         response = self.get_response(prompt_id)
         logger.info("[LLM] ask() completed for id=%s", prompt_id)
         token_counter.add(len(prompt) // 4, len(response) // 4)
-
         return response
 
 
@@ -440,11 +305,6 @@ class LlamaCppCache:
     that:
       - Lookups within a single process are O(1) (no disk reads after load).
       - Results survive process restarts.
-
-    Parameters
-    ----------
-    cache_path : Path | str
-        Path to the JSON cache file. Created automatically if absent.
     """
 
     def __init__(self, cache_path: Path | str):
@@ -452,46 +312,34 @@ class LlamaCppCache:
         self._store: dict[str, str] = {}
         self._load()
 
-    # --------------------------------------------------
     @staticmethod
     def _hash(prompt: str) -> str:
-        """Return a stable SHA-256 hex digest of the prompt string."""
         return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
-    # --------------------------------------------------
     def _load(self) -> None:
         if not self.cache_path.exists():
             logger.info("[CACHE] No cache file found — starting empty")
             return
-
         try:
             with self.cache_path.open("r", encoding="utf-8") as f:
                 self._store = json.load(f)
-
             if not isinstance(self._store, dict):
                 raise ValueError("Cache root must be dict")
-
             logger.info(
                 "[CACHE] Loaded %d cached entries from %s",
                 len(self._store), self.cache_path,
             )
-
         except Exception as e:
             logger.error("[CACHE] Corrupted cache file detected: %s", e)
-
-            # Backup corrupted file
             backup = self.cache_path.with_suffix(".corrupt.json")
             try:
                 self.cache_path.rename(backup)
                 logger.warning("[CACHE] Corrupted cache backed up to %s", backup)
             except OSError:
                 logger.warning("[CACHE] Could not backup corrupted cache")
-
             self._store = {}
 
-    # --------------------------------------------------
     def _save(self) -> None:
-        """Persist the in-memory store to disk atomically via a temp file."""
         tmp = self.cache_path.with_suffix(".tmp")
         try:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -502,28 +350,22 @@ class LlamaCppCache:
             logger.error("[CACHE] Failed to write cache file: %s", e)
             tmp.unlink(missing_ok=True)
 
-    # --------------------------------------------------
     def get(self, prompt: str) -> str | None:
         entry = self._store.get(self._hash(prompt))
         if entry is None:
             return None
-        # handle both old format (bare string) and new format (dict)
         return entry["response"] if isinstance(entry, dict) else entry
 
-    # --------------------------------------------------
     def set(self, prompt: str, response: str) -> None:
         key = self._hash(prompt)
         self._store[key] = {"prompt": prompt, "response": response}
         self._save()
         logger.info("[CACHE] Stored new entry (hash=%s…)", key[:12])
 
-    # --------------------------------------------------
     def __len__(self) -> int:
         return len(self._store)
 
-    # --------------------------------------------------
     def clear(self) -> None:
-        """Wipe all cached entries from memory and disk."""
         self._store = {}
         self._save()
         logger.info("[CACHE] Cache cleared")
@@ -532,68 +374,6 @@ class LlamaCppCache:
 # ---------------------------------------------------------------------------
 # Backend 2 — LlamaCppLLM  (local model via llama-cpp-python + outlines)
 # ---------------------------------------------------------------------------
-
-# These must already exist in llm_interface.py — referenced here for clarity
-# from cuddlytoddly.planning.llm_interface import (
-#     BaseLLM, LlamaCppCache, EVENT_LIST_SCHEMA, PROJECT_ROOT, logger
-# )
-
-# planning/llm_interface_llamacpp.py
-#
-# Drop-in replacement for the LlamaCppLLM class in planning/llm_interface.py.
-#
-# Key design:
-#   ask(prompt)               -> unconstrained generation (fast, ~10-30s)
-#                                Used by the planner. JSON repair handles any
-#                                malformed output. Matches how the 138 cached
-#                                entries were originally generated.
-#
-#   ask(prompt, schema=X)     -> outlines-constrained generation (slower but
-#                                guaranteed-valid JSON).
-#                                Used by the executor (EXECUTION_TURN_SCHEMA).
-#
-# Cache keys:
-#   planner  -> prompt string only       (backward-compatible with existing cache)
-#   executor -> prompt + schema fingerprint  (no collision with planner entries)
-
-import json
-import threading
-import time
-from pathlib import Path
-
-# These must already exist in llm_interface.py — referenced here for clarity
-# from cuddlytoddly.planning.llm_interface import (
-#     BaseLLM, LlamaCppCache, EVENT_LIST_SCHEMA, PROJECT_ROOT, logger
-# )
-
-# planning/llm_interface_llamacpp.py
-#
-# Drop-in replacement for the LlamaCppLLM class in planning/llm_interface.py.
-#
-# Key design:
-#   ask(prompt)               -> unconstrained generation (fast, ~10-30s)
-#                                Used by the planner. JSON repair handles any
-#                                malformed output. Matches how the 138 cached
-#                                entries were originally generated.
-#
-#   ask(prompt, schema=X)     -> outlines-constrained generation (slower but
-#                                guaranteed-valid JSON).
-#                                Used by the executor (EXECUTION_TURN_SCHEMA).
-#
-# Cache keys:
-#   planner  -> prompt string only       (backward-compatible with existing cache)
-#   executor -> prompt + schema fingerprint  (no collision with planner entries)
-
-import json
-import threading
-import time
-from pathlib import Path
-
-# These must already exist in llm_interface.py — referenced here for clarity
-# from cuddlytoddly.planning.llm_interface import (
-#     BaseLLM, LlamaCppCache, EVENT_LIST_SCHEMA, PROJECT_ROOT, logger
-# )
-
 
 class LlamaCppLLM(BaseLLM):
     """
@@ -614,12 +394,12 @@ class LlamaCppLLM(BaseLLM):
     def __init__(
         self,
         model_path,
-        n_ctx=4096,
-        n_gpu_layers=0,
-        temperature=0.2,
-        max_tokens=2048,
+        n_ctx: int = 4096,
+        n_gpu_layers: int = 0,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
         schema=None,
-        cache_path=PROJECT_ROOT / "llamacpp_cache.json",
+        cache_path: Path | str | None = PROJECT_ROOT / "llamacpp_cache.json",
     ):
         super().__init__()
         self.model_path     = str(model_path)
@@ -631,36 +411,35 @@ class LlamaCppLLM(BaseLLM):
 
         logger.info("[LLAMACPP] Initializing LlamaCppLLM")
         logger.info("[LLAMACPP] Model path: %s", self.model_path)
-        logger.info("[LLAMACPP] n_ctx=%d  n_gpu_layers=%d  temperature=%.2f  max_tokens=%d",
-                    n_ctx, n_gpu_layers, temperature, max_tokens)
+        logger.info(
+            "[LLAMACPP] n_ctx=%d  n_gpu_layers=%d  temperature=%.2f  max_tokens=%d",
+            n_ctx, n_gpu_layers, temperature, max_tokens,
+        )
 
         if cache_path is not None:
             self._cache = LlamaCppCache(cache_path)
-            logger.info("[LLAMACPP] Prompt cache enabled -- %s (%d entries loaded)",
-                        Path(cache_path), len(self._cache))
+            logger.info(
+                "[LLAMACPP] Prompt cache enabled -- %s (%d entries loaded)",
+                Path(cache_path), len(self._cache),
+            )
         else:
             self._cache = None
             logger.info("[LLAMACPP] Prompt cache disabled")
 
-        self._llama          = None   # llama_cpp.Llama -- loaded once
-        self._outlines_model = None   # outlines wrapper -- only built if needed
-        self._generators     = {}     # schema fingerprint -> outlines.Generator
-        self._load_lock      = __import__("threading").Lock()  # prevents double-load
-        # llama.cpp is NOT thread-safe -- all inference must be serialised
+        self._llama          = None
+        self._outlines_model = None
+        self._generators: dict = {}
+        self._load_lock      = threading.Lock()
         self._inference_lock = threading.Lock()
 
-    # -------------------------------------------------------------------------
-    # Model loading
-    # -------------------------------------------------------------------------
+    # ── Model loading ─────────────────────────────────────────────────────────
 
     def _load_model(self):
-        """Load the Llama model. Called once on first use. Thread-safe."""
         if self._llama is not None:
             return
         with self._load_lock:
-            if self._llama is not None:  # double-checked locking
+            if self._llama is not None:
                 return
-
         try:
             from llama_cpp import Llama
         except ImportError as e:
@@ -681,39 +460,34 @@ class LlamaCppLLM(BaseLLM):
         logger.info("[LLAMACPP] Model loaded")
 
     def _load_outlines(self):
-        """Build the outlines model wrapper. Thread-safe."""
         if self._outlines_model is not None:
             return
         with self._load_lock:
             if self._outlines_model is not None:
                 return
-
         try:
             import outlines
         except ImportError as e:
             raise ImportError(
                 "outlines is not installed. Run: pip install outlines"
             ) from e
-
         self._outlines_model = outlines.from_llamacpp(self._llama)
         logger.info("[LLAMACPP] Outlines model wrapper ready")
 
-    # Keep old name as alias
     def _load(self):
         self._load_model()
 
-    # -------------------------------------------------------------------------
-    # Constrained generator cache
-    # -------------------------------------------------------------------------
+    # ── Constrained generator cache ───────────────────────────────────────────
 
     def _get_generator(self, schema: dict):
-        """Return a cached outlines Generator for schema (build on first use)."""
         import outlines
         fingerprint = json.dumps(schema, sort_keys=True)
         if fingerprint not in self._generators:
             self._load_outlines()
-            logger.info("[LLAMACPP] Building constrained generator for schema %s...",
-                        fingerprint[:40])
+            logger.info(
+                "[LLAMACPP] Building constrained generator for schema %s...",
+                fingerprint[:40],
+            )
             output_type = outlines.json_schema(fingerprint)
             self._generators[fingerprint] = outlines.Generator(
                 self._outlines_model, output_type
@@ -721,16 +495,11 @@ class LlamaCppLLM(BaseLLM):
             logger.info("[LLAMACPP] Constrained generator ready")
         return self._generators[fingerprint]
 
-    # -------------------------------------------------------------------------
-    # Chat template
-    # -------------------------------------------------------------------------
+    # ── Chat template ─────────────────────────────────────────────────────────
 
     def _apply_chat_template(self, prompt: str) -> str:
-        system = (
-            "You are a DAG planning assistant. "
-            "Always respond with a valid JSON array and nothing else. "
-            "No explanation, no markdown, no code fences."
-        )
+        # System prompt text is defined in prompts.py
+        system = LLAMACPP_SYSTEM_PROMPT
         try:
             if self._llama.metadata.get("tokenizer.chat_template"):
                 messages = [
@@ -743,7 +512,9 @@ class LlamaCppLLM(BaseLLM):
                 logger.debug("[LLAMACPP] Chat template applied via llama.cpp tokenizer")
                 return result
         except Exception as e:
-            logger.debug("[LLAMACPP] Built-in chat template unavailable (%s), using fallback", e)
+            logger.debug(
+                "[LLAMACPP] Built-in chat template unavailable (%s), using fallback", e
+            )
 
         # Llama 3 hardcoded fallback
         return (
@@ -757,12 +528,9 @@ class LlamaCppLLM(BaseLLM):
             "<|start_header_id|>assistant<|end_header_id|>\n\n"
         )
 
-    # -------------------------------------------------------------------------
-    # Generation
-    # -------------------------------------------------------------------------
+    # ── Generation ────────────────────────────────────────────────────────────
 
     def _run_watchdog(self):
-        """Return a (done_event, thread) watchdog that logs every 30s."""
         done = threading.Event()
         def _watch():
             start = time.time()
@@ -774,10 +542,6 @@ class LlamaCppLLM(BaseLLM):
         return done
 
     def _run_unconstrained(self, prompt: str, safe_max: int) -> str:
-        """
-        Fast path: raw llama.cpp generation with no grammar constraint.
-        Used by the planner. ~10-30x faster than outlines on large schemas.
-        """
         logger.info("[LLAMACPP] Running unconstrained inference (max_tokens=%d)...", safe_max)
         result = self._llama(
             prompt,
@@ -788,10 +552,6 @@ class LlamaCppLLM(BaseLLM):
         return result["choices"][0]["text"]
 
     def _run_constrained(self, prompt: str, schema: dict, safe_max: int) -> str:
-        """
-        Constrained path: outlines grammar enforcement.
-        Used by the executor for guaranteed-valid JSON.
-        """
         logger.info("[LLAMACPP] Running constrained inference (max_tokens=%d)...", safe_max)
         generator = self._get_generator(schema)
         raw = generator(prompt, max_tokens=safe_max)
@@ -800,14 +560,6 @@ class LlamaCppLLM(BaseLLM):
         return json.dumps(raw)
 
     def _run_model(self, prompt: str, constrained_schema=None) -> str:
-        """
-        Run inference, with or without schema constraint.
-        constrained_schema=None -> fast unconstrained (planner)
-        constrained_schema=dict -> outlines constrained (executor)
-
-        Serialised via _inference_lock: llama.cpp is not thread-safe.
-        Parallel executor nodes will queue here and run one at a time.
-        """
         formatted     = self._apply_chat_template(prompt)
         prompt_tokens = len(self._llama.tokenize(formatted.encode("utf-8")))
 
@@ -837,9 +589,7 @@ class LlamaCppLLM(BaseLLM):
                     time.time() - t0, len(raw))
         return raw
 
-    # -------------------------------------------------------------------------
-    # Truncation repair
-    # -------------------------------------------------------------------------
+    # ── Truncation repair ─────────────────────────────────────────────────────
 
     def _repair_truncated_json(self, text: str):
         text = text.strip()
@@ -866,27 +616,17 @@ class LlamaCppLLM(BaseLLM):
                      "Increase max_tokens (currently %d).", self.max_tokens)
         return None
 
-    # -------------------------------------------------------------------------
-    # Public interface
-    # -------------------------------------------------------------------------
+    # ── Public interface ──────────────────────────────────────────────────────
 
     def ask(self, prompt: str, schema: dict | None = None) -> str:
-        """
-        Generate a response.
-
-        schema=None  -> unconstrained generation (fast, used by planner)
-        schema=dict  -> constrained generation   (slower, used by executor)
-        """
         self._check_stop()
         logger.info("[LLAMACPP] ask() called")
 
-        # Cache key: prompt-only for planner (backward-compatible with 138
-        # existing entries); schema-namespaced for executor.
         if schema is None:
-            cache_key        = prompt
+            cache_key          = prompt
             constrained_schema = None
         else:
-            cache_key        = prompt + "\x00" + json.dumps(schema, sort_keys=True)
+            cache_key          = prompt + "\x00" + json.dumps(schema, sort_keys=True)
             constrained_schema = schema
 
         if self._cache is not None:
@@ -899,7 +639,6 @@ class LlamaCppLLM(BaseLLM):
 
         for attempt in range(2):
             response_text = self._run_model(prompt, constrained_schema)
-
             try:
                 parsed = json.loads(response_text)
                 if not parsed:
@@ -907,7 +646,6 @@ class LlamaCppLLM(BaseLLM):
                 if self._cache is not None:
                     self._cache.set(cache_key, response_text)
                 return response_text
-
             except Exception as e:
                 logger.warning("[LLAMACPP] Invalid JSON on attempt %d: %s", attempt + 1, e)
                 if attempt == 0:
@@ -926,12 +664,11 @@ class LlamaCppLLM(BaseLLM):
             logger.info("[LLAMACPP] Cache cleared")
         else:
             logger.info("[LLAMACPP] Cache is disabled -- nothing to clear")
+
+
 # ---------------------------------------------------------------------------
 # Backend 3 — ApiLLM  (OpenAI-compatible or Anthropic API)
 # ---------------------------------------------------------------------------
-
-# Replacement for ApiLLM in planning/llm_interface.py
-# Drop this class in place of the existing ApiLLM definition.
 
 class ApiLLM(BaseLLM):
     """
@@ -939,44 +676,8 @@ class ApiLLM(BaseLLM):
       - OpenAI  (and any OpenAI-compatible endpoint, e.g. Together, Groq)
       - Anthropic Claude
 
-    Schema enforcement
-    ------------------
-    OpenAI:  When schema is provided, uses structured outputs
-             (response_format type json_schema).  Falls back to
-             json_object mode if the model does not support structured outputs
-             (older checkpoints).
-
-    Claude:  Schema is serialised into the prompt so the model knows the
-             exact shape expected.  The assistant prefill character is
-             chosen based on the schema root type ("{" for objects,
-             "[" for arrays) so the model cannot produce the wrong container.
-
-    Both backends validate the response JSON and retry once on failure.
-
-    Dependencies (install the one you need):
-        pip install openai
-        pip install anthropic
-
-    Parameters
-    ----------
-    provider : str
-        "openai" or "claude".
-    api_key : str
-        Your API key. If None, reads from the environment variable
-        OPENAI_API_KEY or ANTHROPIC_API_KEY automatically.
-    model : str | None
-        Model name.  Defaults per provider:
-          openai -> "gpt-4o"
-          claude -> "claude-opus-4-6"
-    base_url : str | None
-        Override API base URL for OpenAI-compatible providers
-        (e.g. "https://api.together.xyz/v1").
-    temperature : float
-        Sampling temperature.
-    max_tokens : int
-        Maximum tokens to generate.
-    system_prompt : str | None
-        Optional system prompt prepended to every request.
+    The system prompt text is defined in planning/prompts.py (LLM_SYSTEM_PROMPT)
+    and can be overridden per-instance via the system_prompt parameter.
     """
 
     _DEFAULTS = {
@@ -1007,20 +708,17 @@ class ApiLLM(BaseLLM):
         self.base_url      = base_url
         self.temperature   = temperature
         self.max_tokens    = max_tokens
-        self.system_prompt = system_prompt or (
-            "You are a DAG planning assistant. "
-            "Always respond with valid JSON and nothing else. "
-            "No explanation, no markdown, no code fences."
-        )
+        # System prompt text defaults to prompts.py; callers can still override.
+        self.system_prompt = system_prompt or LLM_SYSTEM_PROMPT
 
         logger.info("[API] Initialized ApiLLM  provider=%s  model=%s",
                     self.provider, self.model)
         if base_url:
             logger.info("[API] Using custom base_url: %s", base_url)
 
-        self._client = None  # lazy-loaded
+        self._client = None   # lazy-loaded
 
-    # ---- Client loading -------------------------------------------------------
+    # ── Client loading ────────────────────────────────────────────────────────
 
     def _load(self):
         if self._client is not None:
@@ -1033,13 +731,11 @@ class ApiLLM(BaseLLM):
                 raise ImportError(
                     "openai package is not installed. Run: pip install openai"
                 ) from e
-
             kwargs: dict[str, Any] = {}
             if self.api_key:
                 kwargs["api_key"] = self.api_key
             if self.base_url:
                 kwargs["base_url"] = self.base_url
-
             self._client = OpenAI(**kwargs)
             logger.info("[API] OpenAI client ready")
 
@@ -1050,33 +746,24 @@ class ApiLLM(BaseLLM):
                 raise ImportError(
                     "anthropic package is not installed. Run: pip install anthropic"
                 ) from e
-
             kwargs = {}
             if self.api_key:
                 kwargs["api_key"] = self.api_key
-
             self._client = anthropic.Anthropic(**kwargs)
             logger.info("[API] Anthropic client ready")
 
-    # ---- Schema helpers -------------------------------------------------------
+    # ── Schema helpers ────────────────────────────────────────────────────────
 
     @staticmethod
     def _schema_root_type(schema: dict) -> str:
-        """Return 'object' or 'array' based on the schema root type field."""
         return schema.get("type", "object")
 
     @staticmethod
     def _schema_prefill(schema: dict) -> str:
-        """Return the correct opening character for a JSON prefill."""
         return "[" if ApiLLM._schema_root_type(schema) == "array" else "{"
 
     @staticmethod
     def _inject_schema_into_prompt(prompt: str, schema: dict) -> str:
-        """
-        Append the JSON schema to the prompt so the model knows the exact
-        shape required.  Used for Claude where grammar enforcement is not
-        available natively.
-        """
         schema_str = json.dumps(schema, indent=2)
         return (
             prompt
@@ -1085,14 +772,13 @@ class ApiLLM(BaseLLM):
             + "Respond with valid JSON only. No explanation, no markdown fences."
         )
 
-    # ---- OpenAI call ---------------------------------------------------------
+    # ── OpenAI call ───────────────────────────────────────────────────────────
 
     def _ask_openai(self, prompt: str, schema: dict | None) -> str:
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user",   "content": prompt},
         ]
-
         kwargs: dict[str, Any] = dict(
             model=self.model,
             messages=messages,
@@ -1101,19 +787,15 @@ class ApiLLM(BaseLLM):
         )
 
         if schema is not None:
-            # Structured outputs: enforces the exact schema server-side.
-            # Requires gpt-4o-2024-08-06 or later.  Older models that do not
-            # support it will raise an error that we catch and fall back from.
             kwargs["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
                     "name":   "response",
                     "schema": schema,
-                    "strict": False,  # strict=True requires no $defs / additionalProperties
+                    "strict": False,
                 },
             }
         else:
-            # json_object mode: guarantees valid JSON but not a specific shape.
             kwargs["response_format"] = {"type": "json_object"}
 
         logger.debug("[API] Sending OpenAI request  model=%s  schema=%s",
@@ -1121,8 +803,6 @@ class ApiLLM(BaseLLM):
         try:
             response = self._client.chat.completions.create(**kwargs)
         except Exception as e:
-            # Some older models / compatible endpoints don't support json_schema.
-            # Fall back to json_object mode so execution continues.
             err_str = str(e).lower()
             if schema is not None and (
                 "json_schema" in err_str or "response_format" in err_str
@@ -1136,6 +816,7 @@ class ApiLLM(BaseLLM):
                 response = self._client.chat.completions.create(**kwargs)
             else:
                 raise
+
         if response.usage:
             token_counter.add(response.usage.prompt_tokens,
                               response.usage.completion_tokens)
@@ -1144,10 +825,9 @@ class ApiLLM(BaseLLM):
         logger.debug("[API] Raw response:\n%s", content)
         return content
 
-    # ---- Claude call ---------------------------------------------------------
+    # ── Claude call ───────────────────────────────────────────────────────────
 
     def _ask_claude(self, prompt: str, schema: dict | None) -> str:
-        # Embed the schema into the prompt so the model knows the exact shape.
         if schema is not None:
             augmented_prompt = self._inject_schema_into_prompt(prompt, schema)
             prefill = self._schema_prefill(schema)
@@ -1157,7 +837,7 @@ class ApiLLM(BaseLLM):
                 + "\n\nRespond with valid JSON only. "
                 "No explanation, no markdown, no code fences."
             )
-            prefill = "{"   # default to object; planner always returns objects
+            prefill = "{"
 
         logger.debug("[API] Sending Anthropic request  model=%s  prefill=%r",
                      self.model, prefill)
@@ -1173,29 +853,18 @@ class ApiLLM(BaseLLM):
         )
         token_counter.add(response.usage.input_tokens,
                           response.usage.output_tokens)
-        # The prefill is not included in the response text — prepend it back.
         raw     = response.content[0].text
         content = prefill + raw
         logger.info("[API] Claude response received (%d chars)", len(content))
         logger.debug("[API] Raw response:\n%s", content)
         return content
 
-    # ---- Public interface ----------------------------------------------------
+    # ── Public interface ──────────────────────────────────────────────────────
 
     def ask(self, prompt: str, schema: dict | None = None) -> str:
-        """
-        Generate a response.
-
-        schema=None  -> JSON object/array mode only (no shape enforcement)
-        schema=dict  -> structured output enforcement (OpenAI json_schema /
-                        Claude schema-in-prompt + correct prefill)
-
-        Validates the response JSON and retries once on parse failure.
-        """
         self._check_stop()
         logger.info("[API] ask() called  provider=%s  model=%s", self.provider, self.model)
         self._load()
-
         logger.debug("[API] Prompt (first 200 chars): %.200s", prompt)
 
         for attempt in range(2):
@@ -1213,7 +882,6 @@ class ApiLLM(BaseLLM):
                     continue
                 raise
 
-            # Validate the response is parseable JSON
             try:
                 parsed = json.loads(raw)
                 if not parsed and parsed != 0:
@@ -1229,43 +897,13 @@ class ApiLLM(BaseLLM):
         raise ValueError(
             f"[API] {self.provider} returned invalid JSON after 2 attempts"
         )
+
+
 # ---------------------------------------------------------------------------
 # Factory — single entry point for the rest of the codebase
 # ---------------------------------------------------------------------------
 
 def create_llm_client(backend: str = "file", **kwargs) -> BaseLLM:
-    """
-    Factory that returns the right LLM backend.
-
-    Usage examples
-    --------------
-    # File-based (original behaviour — no extra args needed)
-    llm = create_llm_client("file")
-
-    # Local llama.cpp model with outlines schema enforcement + caching
-    llm = create_llm_client(
-        "llamacpp",
-        model_path="/models/mistral-7b-instruct.Q4_K_M.gguf",
-        n_gpu_layers=35,
-        temperature=0.1,
-        # cache_path defaults to <PROJECT_ROOT>/llamacpp_cache.json
-        # pass cache_path=None to disable caching
-    )
-
-    # OpenAI
-    llm = create_llm_client("openai", api_key="sk-...", model="gpt-4o")
-
-    # OpenAI-compatible provider (Together, Groq, etc.)
-    llm = create_llm_client(
-        "openai",
-        base_url="https://api.together.xyz/v1",
-        api_key="...",
-        model="mistralai/Mixtral-8x7B-Instruct-v0.1",
-    )
-
-    # Anthropic Claude
-    llm = create_llm_client("claude", api_key="sk-ant-...")
-    """
     backend = backend.lower()
     logger.info("[LLM FACTORY] Creating backend=%s", backend)
 
@@ -1275,8 +913,8 @@ def create_llm_client(backend: str = "file", **kwargs) -> BaseLLM:
     elif backend == "llamacpp":
         if "model_path" not in kwargs:
             raise ValueError(
-                "llamacpp backend requires a 'model_path' keyword argument pointing "
-                "to a .gguf file."
+                "llamacpp backend requires a 'model_path' keyword argument "
+                "pointing to a .gguf file."
             )
         return LlamaCppLLM(**kwargs)
 

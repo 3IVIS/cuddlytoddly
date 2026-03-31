@@ -25,7 +25,10 @@ from cuddlytoddly.ui.startup import StartupChoice
 from cuddlytoddly.ui.startup import run_startup_curses
 from cuddlytoddly.ui.web_server import run_web_ui
 from cuddlytoddly.core.id_generator import StableIDGenerator
-from cuddlytoddly.config import load_config, DATA_DIR, resolve_model_path, preflight_check
+from cuddlytoddly.config import (
+    load_config, DATA_DIR, resolve_model_path, preflight_check,
+    get_executor_cfg, get_planner_cfg, get_orchestrator_cfg, get_file_llm_cfg,
+)
 import cuddlytoddly.planning.llm_interface as llm_iface
 
 REPO_ROOT = Path(__file__).resolve().parent   # package code location
@@ -53,11 +56,8 @@ class _DeferredLLM:
     """
 
     def __init__(self):
-        import threading
         self._real: object | None = None
         self._lock = threading.Lock()
-
-    # ── Orchestrator-facing API ───────────────────────────────────────────────
 
     @property
     def is_stopped(self) -> bool:
@@ -68,15 +68,13 @@ class _DeferredLLM:
 
     def stop(self) -> None:
         with self._lock:
-            if self._real is not None:
-                if hasattr(self._real, "stop"):
-                    self._real.stop()
+            if self._real is not None and hasattr(self._real, "stop"):
+                self._real.stop()
 
     def resume(self) -> None:
         with self._lock:
-            if self._real is not None:
-                if hasattr(self._real, "resume"):
-                    self._real.resume()
+            if self._real is not None and hasattr(self._real, "resume"):
+                self._real.resume()
 
     def ask(self, prompt: str, schema=None) -> str:
         from cuddlytoddly.planning.llm_interface import LLMStoppedError
@@ -88,11 +86,8 @@ class _DeferredLLM:
             )
         return real.ask(prompt, schema=schema) if schema is not None else real.ask(prompt)
 
-    # Alias for backward-compat callers that use .generate()
     def generate(self, prompt: str) -> str:
         return self.ask(prompt)
-
-    # ── Called from the background LLM-loader thread ──────────────────────────
 
     def attach(self, real_llm) -> None:
         """Swap in the real client; from this point on the LLM is live."""
@@ -111,11 +106,6 @@ def make_run_dir(goal_text: str) -> Path:
 
 
 def _print_preflight_issues(issues: list[dict]) -> None:
-    """
-    Print preflight issues to stderr.  Called for every startup path so
-    the user always sees the issues — even when bypassing the startup UI
-    with an inline goal argument.
-    """
     errors   = [i for i in issues if i["level"] == "error"]
     warnings = [i for i in issues if i["level"] != "error"]
 
@@ -136,20 +126,16 @@ def _print_preflight_issues(issues: list[dict]) -> None:
 
 def main():
     # ── Load config ───────────────────────────────────────────────────────────
-    # Done first so CLI arg defaults can reflect config values (host, port).
-    cfg = load_config()
+    cfg        = load_config()
     server_cfg = cfg.get("server", {})
 
     # ── Pre-flight checks ─────────────────────────────────────────────────────
-    # Run before showing any UI so both startup paths receive the same issues.
     issues = preflight_check(cfg)
     if issues:
         for issue in issues:
             logger.warning("[PREFLIGHT] %s: %s — %s",
                            issue["level"].upper(), issue["message"],
                            issue.get("fix", ""))
-        # Always print to stderr as well — the startup UI may not be shown
-        # (inline-goal path) and the user needs to see these before the crash.
         _print_preflight_issues(issues)
 
     # ── CLI ───────────────────────────────────────────────────────────────────
@@ -182,12 +168,10 @@ def main():
             "If omitted the startup screen is shown."
         ),
     )
-    args = parser.parse_args()
+    args    = parser.parse_args()
     use_web = not args.terminal
 
     # ── Build a bound init function that carries cfg through all call sites ───
-    # _init_system needs cfg, but restart_fn is called as restart_fn(choice, use_web)
-    # inside run_ui — we close over cfg here so the signature stays compatible.
     def _init(choice: StartupChoice, _use_web: bool = use_web,
               on_graph_ready=None):
         return _init_system(choice, _use_web, cfg,
@@ -253,10 +237,8 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
     Build the full orchestrator from a StartupChoice and a loaded config dict.
     Returns (orchestrator, run_dir).
 
-    on_graph_ready: optional callable(orchestrator, run_dir) invoked as soon
-    as the graph is rebuilt and the orchestrator is started — before the LLM
-    client finishes loading.  The web UI uses this to show the DAG immediately
-    while the model loads in the background via _DeferredLLM.
+    All numeric tuning parameters are read from cfg so no source files need
+    editing to adjust behaviour.
     """
     goal_text = choice.goal_text
     goal_id   = goal_text.replace(" ", "_")[:60]
@@ -287,6 +269,14 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
         id_length=6,
     )
 
+    # ── Read config sections (with defaults for old configs) ──────────────────
+    orch_cfg     = get_orchestrator_cfg(cfg)
+    exec_cfg     = get_executor_cfg(cfg)
+    planner_cfg  = get_planner_cfg(cfg)
+
+    max_workers  = orch_cfg["max_workers"]
+    max_turns    = orch_cfg["max_turns"]
+
     # ── Graph init ────────────────────────────────────────────────────────────
     if not choice.is_fresh and log_path.exists() and log_path.stat().st_size > 0:
         _logger.info("[STARTUP] Replaying event log")
@@ -316,9 +306,6 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
         fresh_start = True
 
     # ── LLM client ────────────────────────────────────────────────────────────
-    # For existing runs when a caller has supplied on_graph_ready, use a
-    # _DeferredLLM so the orchestrator can start immediately.  The real client
-    # is built in the background and swapped in via deferred.attach().
     use_deferred = (not fresh_start) and (on_graph_ready is not None)
     if use_deferred:
         deferred_llm = _DeferredLLM()
@@ -328,23 +315,40 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
         shared_llm   = _build_llm_client(cfg, run_dir)
 
     # ── Components ────────────────────────────────────────────────────────────
-    orch_cfg     = cfg.get("orchestrator", {})
-    max_workers  = orch_cfg.get("max_workers", 1)
-    max_turns    = orch_cfg.get("max_turns", 5)
+    skills   = SkillLoader()
+    registry = skills.registry
 
-    skills       = SkillLoader()
-    registry     = skills.registry
-    planner      = LLMPlanner(llm_client=shared_llm, graph=graph,
-                              skills_summary=skills.prompt_summary)
-    executor     = LLMExecutor(llm_client=shared_llm, tool_registry=registry,
-                               max_turns=max_turns)
+    planner = LLMPlanner(
+        llm_client=shared_llm,
+        graph=graph,
+        skills_summary=skills.prompt_summary,
+        min_tasks_per_goal=planner_cfg["min_tasks_per_goal"],
+        max_tasks_per_goal=planner_cfg["max_tasks_per_goal"],
+    )
+
+    executor = LLMExecutor(
+        llm_client=shared_llm,
+        tool_registry=registry,
+        max_turns=max_turns,
+        max_inline_result_chars=exec_cfg["max_inline_result_chars"],
+        max_total_input_chars=exec_cfg["max_total_input_chars"],
+        max_tool_result_chars=exec_cfg["max_tool_result_chars"],
+        max_history_entries=exec_cfg["max_history_entries"],
+    )
+
     quality_gate = QualityGate(llm_client=shared_llm, tool_registry=registry)
 
     queue        = EventQueue()
     orchestrator = SimpleOrchestrator(
-        graph=graph, planner=planner, executor=executor,
-        quality_gate=quality_gate, event_log=event_log,
-        event_queue=queue, max_workers=max_workers,
+        graph=graph,
+        planner=planner,
+        executor=executor,
+        quality_gate=quality_gate,
+        event_log=event_log,
+        event_queue=queue,
+        max_workers=max_workers,
+        max_gap_fill_attempts=orch_cfg["max_gap_fill_attempts"],
+        idle_sleep=orch_cfg["idle_sleep"],
     )
 
     # ── Seed graph ────────────────────────────────────────────────────────────
@@ -368,12 +372,8 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
     orchestrator.start()
 
     if use_deferred:
-        # ── Signal graph ready BEFORE the real LLM is loaded ─────────────────
-        # The caller (web server) sets state["ready"] here so the browser can
-        # show the DAG immediately.
         on_graph_ready(orchestrator, run_dir)
 
-        # Build the real LLM client and verify restored nodes in the background.
         def _load_real_llm():
             _logger.info("[STARTUP] Background LLM load starting…")
             try:
@@ -383,16 +383,17 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
                 orchestrator.verify_restored_nodes()
             except Exception as exc:
                 _logger.error("[STARTUP] Background LLM load failed: %s", exc)
+
         threading.Thread(target=_load_real_llm, daemon=True,
                          name="startup-llm").start()
 
     else:
-        # Standard path: LLM already loaded, verify in background as before.
         if not fresh_start:
             def _bg_verify():
                 _logger.info("[STARTUP] Background verification pass starting...")
                 orchestrator.verify_restored_nodes()
                 _logger.info("[STARTUP] Background verification complete")
+
             threading.Thread(target=_bg_verify, daemon=True,
                              name="startup-verify").start()
 
@@ -420,32 +421,41 @@ def _build_llm_client(cfg: dict, run_dir: Path):
         return create_llm_client(
             "llamacpp",
             model_path   = model_path,
-            n_gpu_layers = llm_cfg.get("n_gpu_layers", -1),
-            n_ctx        = llm_cfg.get("n_ctx", 16384),
-            max_tokens   = llm_cfg.get("max_tokens", 8192),
-            temperature  = llm_cfg.get("temperature", 0.1),
+            n_gpu_layers = llm_cfg.get("n_gpu_layers",  -1),
+            n_ctx        = llm_cfg.get("n_ctx",         16384),
+            max_tokens   = llm_cfg.get("max_tokens",    8192),
+            temperature  = llm_cfg.get("temperature",   0.1),
             cache_path   = cache_path,
         )
 
     if backend == "claude":
         return create_llm_client(
             "claude",
-            model       = llm_cfg.get("model", "claude-opus-4-6"),
+            model       = llm_cfg.get("model",       "claude-opus-4-6"),
             temperature = llm_cfg.get("temperature", 0.1),
-            max_tokens  = llm_cfg.get("max_tokens", 8192),
+            max_tokens  = llm_cfg.get("max_tokens",  8192),
         )
 
     if backend == "openai":
         kwargs: dict = dict(
-            model       = llm_cfg.get("model", "gpt-4o"),
+            model       = llm_cfg.get("model",       "gpt-4o"),
             temperature = llm_cfg.get("temperature", 0.1),
-            max_tokens  = llm_cfg.get("max_tokens", 8192),
+            max_tokens  = llm_cfg.get("max_tokens",  8192),
         )
         if "base_url" in llm_cfg:
             kwargs["base_url"] = llm_cfg["base_url"]
         if "api_key" in llm_cfg:
             kwargs["api_key"] = llm_cfg["api_key"]
         return create_llm_client("openai", **kwargs)
+
+    if backend == "file":
+        file_cfg = get_file_llm_cfg(cfg)
+        return create_llm_client(
+            "file",
+            poll_interval         = file_cfg["poll_interval"],
+            timeout               = file_cfg["timeout"],
+            progress_log_interval = file_cfg["progress_log_interval"],
+        )
 
     # Should never reach here — _validate() in load_config() guards this.
     raise ValueError(f"Unknown backend: {backend!r}")

@@ -39,13 +39,6 @@ _MODEL_SIZES: dict[str, str] = {
     "7B":  "~4 GB",  "3B":  "~2 GB",  "1B":  "~1 GB",
 }
 
-def _model_size_hint(filename: str) -> str:
-    upper = filename.upper()
-    for tag, size in _MODEL_SIZES.items():
-        if tag in upper:
-            return size
-    return ""
-
 # ── Default config template ───────────────────────────────────────────────────
 # {backend} is substituted at first-run time from _detect_backend().
 
@@ -115,6 +108,51 @@ max_workers = 1
 
 # Maximum LLM turns per task node before marking it failed
 max_turns = 5
+
+# Maximum times the orchestrator injects a bridge node for a single blocked
+# task before giving up and executing it anyway.
+max_gap_fill_attempts = 2
+
+# Seconds the orchestrator loop sleeps when idle (no planning or execution work).
+idle_sleep = 0.5
+
+# ── Planner ───────────────────────────────────────────────────────────────────
+[planner]
+
+# Task count guidelines per goal decomposition.
+# The planner prompt instructs the LLM to stay within this range.
+min_tasks_per_goal = 3
+max_tasks_per_goal = 8
+
+# ── Executor ──────────────────────────────────────────────────────────────────
+[executor]
+
+# Maximum characters a task result may contain before the executor asks the
+# LLM to write the content to a file instead of returning it inline.
+max_inline_result_chars = 3000
+
+# Total character budget shared across all upstream task results included in
+# a single execution prompt.  Budget is split evenly between dependencies.
+max_total_input_chars = 3000
+
+# Maximum characters from a single tool-call result before it is truncated.
+max_tool_result_chars = 2000
+
+# Number of most-recent tool-call entries kept in the executor's history
+# context per turn.  Older entries are dropped to keep prompts short.
+max_history_entries = 3
+
+# ── File-based LLM (development / testing only) ───────────────────────────────
+[file_llm]
+
+# Seconds between polls when waiting for a response in the file-based backend.
+poll_interval = 0.5
+
+# Seconds before the file-based backend raises TimeoutError.
+timeout = 300
+
+# Seconds between progress-log messages while waiting for a response.
+progress_log_interval = 2
 
 # ── Web / terminal server ─────────────────────────────────────────────────────
 [server]
@@ -240,7 +278,6 @@ def preflight_check(cfg: dict) -> list[dict]:
     llama_cfg = cfg.get("llamacpp", {})
 
     # ── Cross-backend: API key present but wrong backend ──────────────────────
-    # Most common new-user mistake: set an API key, didn't change the backend.
     if backend == "llamacpp":
         if os.environ.get("ANTHROPIC_API_KEY"):
             issues.append({
@@ -258,8 +295,6 @@ def preflight_check(cfg: dict) -> list[dict]:
     # ── llamacpp checks ───────────────────────────────────────────────────────
     if backend == "llamacpp":
         llama_installed = False
-
-        # 1. Package installed?
         try:
             import llama_cpp  # noqa: F401
             llama_installed = True
@@ -271,7 +306,6 @@ def preflight_check(cfg: dict) -> list[dict]:
                            "(add GPU build flags for acceleration — see docs)",
             })
 
-        # 2. GPU support compiled in?
         if llama_installed:
             n_gpu = llama_cfg.get("n_gpu_layers", -1)
             if n_gpu != 0 and not _llama_has_gpu_support():
@@ -291,7 +325,6 @@ def preflight_check(cfg: dict) -> list[dict]:
                     ),
                 })
 
-        # 3. Model file exists?
         try:
             resolve_model_path(cfg)
         except FileNotFoundError:
@@ -354,6 +387,52 @@ def preflight_check(cfg: dict) -> list[dict]:
     return issues
 
 
+# ── Config section accessors ──────────────────────────────────────────────────
+# Convenience helpers used by __main__.py to read the new sections with
+# sensible defaults (so configs written before these sections were added
+# continue to work without requiring a manual edit).
+
+def get_executor_cfg(cfg: dict) -> dict:
+    """Return the [executor] section with defaults filled in."""
+    c = cfg.get("executor", {})
+    return {
+        "max_inline_result_chars": c.get("max_inline_result_chars", 3000),
+        "max_total_input_chars":   c.get("max_total_input_chars",   3000),
+        "max_tool_result_chars":   c.get("max_tool_result_chars",   2000),
+        "max_history_entries":     c.get("max_history_entries",     3),
+    }
+
+
+def get_planner_cfg(cfg: dict) -> dict:
+    """Return the [planner] section with defaults filled in."""
+    c = cfg.get("planner", {})
+    return {
+        "min_tasks_per_goal": c.get("min_tasks_per_goal", 3),
+        "max_tasks_per_goal": c.get("max_tasks_per_goal", 8),
+    }
+
+
+def get_orchestrator_cfg(cfg: dict) -> dict:
+    """Return the [orchestrator] section with defaults filled in."""
+    c = cfg.get("orchestrator", {})
+    return {
+        "max_workers":          c.get("max_workers",          1),
+        "max_turns":            c.get("max_turns",            5),
+        "max_gap_fill_attempts": c.get("max_gap_fill_attempts", 2),
+        "idle_sleep":           c.get("idle_sleep",           0.5),
+    }
+
+
+def get_file_llm_cfg(cfg: dict) -> dict:
+    """Return the [file_llm] section with defaults filled in."""
+    c = cfg.get("file_llm", {})
+    return {
+        "poll_interval":         c.get("poll_interval",         0.5),
+        "timeout":               c.get("timeout",               300),
+        "progress_log_interval": c.get("progress_log_interval", 2),
+    }
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _detect_backend() -> str:
@@ -365,18 +444,23 @@ def _detect_backend() -> str:
     return "llamacpp"
 
 
+def _model_size_hint(filename: str) -> str:
+    upper = filename.upper()
+    for tag, size in _MODEL_SIZES.items():
+        if tag in upper:
+            return size
+    return ""
+
+
 def _llama_has_gpu_support() -> bool:
-    """Return True if the installed llama-cpp-python was built with GPU support."""
     try:
         from llama_cpp import llama_supports_gpu_offload
         return bool(llama_supports_gpu_offload())
     except (ImportError, AttributeError):
-        # Older versions don't expose this function — assume no GPU to be safe.
         return False
 
 
 def _print_first_run_notice(backend: str) -> None:
-    """Print a first-run notice to stderr (always visible, even before the UI opens)."""
     sep = "─" * 60
     lines = [
         "",
@@ -404,9 +488,9 @@ def _print_first_run_notice(backend: str) -> None:
             "",
             "  Quick setup options:",
             "    • Cloud API (easier):  edit config.toml and set",
-            "        backend = \"claude\"  then  export ANTHROPIC_API_KEY=sk-ant-...",
+            '        backend = "claude"  then  export ANTHROPIC_API_KEY=sk-ant-...',
             "      or",
-            "        backend = \"openai\"  then  export OPENAI_API_KEY=sk-...",
+            '        backend = "openai"  then  export OPENAI_API_KEY=sk-...',
             "",
             "    • Local model:  install GPU support and download a GGUF model.",
             "        See docs/configuration.md for platform-specific instructions.",
