@@ -738,6 +738,51 @@ body {
   animation: spin 0.7s linear infinite;
 }
 .sw-loading-msg { color: #94a3b8; font-size: 13px; }
+
+/* ── Export dropdown ─────────────────────────────────────────────────── */
+.export-wrap {
+  position: relative;
+  display: flex;
+}
+.export-wrap .export-main {
+  border-radius: 6px 0 0 6px;
+  border-right: none;
+}
+.export-wrap .export-caret {
+  border-radius: 0 6px 6px 0;
+  padding: 5px 8px;
+  font-size: 10px;
+}
+.export-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+  min-width: 178px;
+  z-index: 50;
+  overflow: hidden;
+}
+.export-menu.hidden { display: none; }
+.export-item {
+  display: block;
+  width: 100%;
+  padding: 9px 13px;
+  text-align: left;
+  font-size: 12px;
+  font-family: inherit;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.export-item:hover { background: var(--surface2); color: var(--text); }
+.export-item + .export-item {
+  border-top: 1px solid var(--border);
+}
 </style>
 </head>
 <body>
@@ -776,7 +821,14 @@ body {
 
   <button class="toolbar-btn" id="btn-llm-toggle" onclick="toggleLLM()">⏸ Pause LLM</button>
   <button class="toolbar-btn" onclick="addNodePrompt()">＋ Add Node</button>
-  <button class="toolbar-btn primary" onclick="exportMD()">↓ Export</button>
+  <div class="export-wrap" id="export-wrap">
+  <button class="toolbar-btn primary export-main" onclick="exportMD()">↓ Export</button>
+  <button class="toolbar-btn primary export-caret" onclick="toggleExportMenu(event)" title="More export options">▾</button>
+  <div class="export-menu hidden" id="export-menu">
+    <button class="export-item" onclick="exportMD(); closeExportMenu()">📄 Markdown report</button>
+    <button class="export-item" onclick="exportHTML(); closeExportMenu()">🌐 Snapshot HTML</button>
+  </div>
+</div>
   <div id="conn-dot" title="WebSocket connection"></div>
 </div>
 
@@ -1473,6 +1525,27 @@ function exportMD() {
     if (data.ok) toast(`Exported → ${data.path.split('/').pop()}`);
   });
 }
+
+function exportHTML() {
+  api('POST', '/api/export/html').then(data => {
+    if (data.ok) toast(`Snapshot HTML → ${data.path.split('/').pop()}`);
+  });
+}
+
+function toggleExportMenu(e) {
+  e.stopPropagation();
+  document.getElementById('export-menu').classList.toggle('hidden');
+}
+
+function closeExportMenu() {
+  document.getElementById('export-menu').classList.add('hidden');
+}
+
+// Close the menu when clicking anywhere outside it
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('export-wrap');
+  if (wrap && !wrap.contains(e.target)) closeExportMenu();
+});
 
 // ── Zoom controls ─────────────────────────────────────────────────────────────
 

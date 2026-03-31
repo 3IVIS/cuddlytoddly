@@ -20,6 +20,7 @@ import asyncio
 import json
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -85,8 +86,49 @@ def _build_payload(orchestrator) -> dict:
         "paused":   orchestrator.llm_stopped,
         "activity": orchestrator.current_activity,
         "elapsed":  elapsed,
-        "tokens":   orchestrator.token_counts,   # ADD
+        "tokens":   orchestrator.token_counts,
     }
+
+
+# ── Static HTML export ────────────────────────────────────────────────────────
+
+def _build_static_html(snapshot: dict, run_dir: Path) -> tuple[str, Path]:
+    """
+    Generate a standalone, self-contained HTML file from the current snapshot.
+
+    The template (web_ui_static.html) contains two placeholder tokens:
+      "SNAPSHOT_DATA_PLACEHOLDER"  — replaced with the serialised nodes JSON
+      "EXPORT_META_PLACEHOLDER"    — replaced with {goal, timestamp} JSON
+
+    The file is written to <run_dir>/outputs/ and the path is returned alongside
+    the HTML string so callers can both save it and return the path to the client.
+    """
+    template = (_HERE / "web_ui_static.html").read_text(encoding="utf-8")
+
+    nodes_json = json.dumps(snapshot, default=str, ensure_ascii=False)
+
+    goal_node = next(
+        (n for n in snapshot.values() if n.get("node_type") == "goal"), None
+    )
+    goal_title = (
+        (goal_node.get("metadata") or {}).get("description") or goal_node.get("id", "")
+        if goal_node else ""
+    )
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    meta_json = json.dumps({"goal": goal_title, "timestamp": ts})
+
+    html = (
+        template
+        .replace('"SNAPSHOT_DATA_PLACEHOLDER"', nodes_json)
+        .replace('"EXPORT_META_PLACEHOLDER"',   meta_json)
+    )
+
+    safe_ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path  = run_dir / "outputs" / f"dag_snapshot_{safe_ts}.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html, encoding="utf-8")
+
+    return html, out_path
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -181,9 +223,9 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                     "node_id": node_id, "depends_on": added,
                 }))
         if "dependents" in body:
-            snap2     = orchestrator.get_snapshot()
-            old_deps  = {nid for nid, n in snap2.items() if node_id in n.dependencies}
-            new_deps  = {d for d in body["dependents"] if d in snap2 and d != node_id}
+            snap2    = orchestrator.get_snapshot()
+            old_deps = {nid for nid, n in snap2.items() if node_id in n.dependencies}
+            new_deps = {d for d in body["dependents"] if d in snap2 and d != node_id}
             for removed in old_deps - new_deps:
                 orchestrator.event_queue.put(Event(REMOVE_DEPENDENCY, {
                     "node_id": removed, "depends_on": node_id,
@@ -195,24 +237,8 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                 }))
                 orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": added}))
 
-        # ── Cascade decision ──────────────────────────────────────────────
-        # Only cascade when something that feeds into downstream LLM prompts
-        # actually changed (_resolve_inputs reads: description, output metadata,
-        # and result from each upstream node).
-        #
-        # Lazy cascade strategy:
-        # • result changed  → SET_RESULT (node keeps status) + RESET_NODE on
-        #                     each done direct child only.  _on_node_done in the
-        #                     orchestrator compares each child's new result to its
-        #                     previous result and cascades further only if changed,
-        #                     propagating all the way to the leaf nodes.
-        # • desc/deps changed → RESET_NODE on the node itself only.  After it
-        #                     reruns, the same orchestrator logic cascades to done
-        #                     children if the result changes.
-        # • status-only or no LLM-relevant change → no cascade.
         result_changed = (
-            "result" in body
-            and body.get("result", "") != (node.result or "")
+            "result" in body and body.get("result", "") != (node.result or "")
         )
         desc_changed = (
             "description" in body
@@ -224,8 +250,6 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
         )
 
         if result_changed:
-            # Preserve node status; reset only done direct children.
-            # _on_node_done cascades further when each child finishes.
             orchestrator.event_queue.put(Event(SET_RESULT, {
                 "node_id": node_id,
                 "result":  body["result"] if body["result"] else None,
@@ -235,9 +259,7 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                 if child and child.status == "done":
                     orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
         elif desc_changed or deps_changed:
-            # Reset node itself only; _on_node_done cascades if result changes.
             orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": node_id}))
-        # else: status-only or no LLM-relevant change → no cascade
 
         return {"ok": True}
 
@@ -304,6 +326,15 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
         except Exception as e:
             raise HTTPException(500, str(e))
 
+    @app.post("/api/export/html")
+    async def export_html():
+        snap = _serialize_snapshot(orchestrator.get_snapshot())
+        try:
+            _, path = await asyncio.to_thread(_build_static_html, snap, run_dir)
+            return {"ok": True, "path": str(path)}
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
     @app.post("/api/switch")
     async def switch_goal():
         raise HTTPException(
@@ -314,6 +345,7 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
         )
 
     return app
+
 
 # ── Unified run_web_ui ────────────────────────────────────────────────────────
 
@@ -338,11 +370,8 @@ def run_web_ui(
     import webbrowser
 
     if orchestrator is not None:
-        # ── Option A: already have an orchestrator — skip startup screen ──────
         app = create_app(orchestrator, run_dir)
     else:
-        # ── Option B: deferred init — build a unified app that shows the
-        #    startup screen until init is complete, then serves the DAG UI ─────
         app = _create_unified_app(repo_root, init_fn)
 
     def _serve():
@@ -379,8 +408,6 @@ def _create_unified_app(
     """
     app = FastAPI(title="cuddlytoddly")
 
-    # Mutable state shared between the init thread and the async handlers.
-    # We use a list-wrapped dict so closures can rebind it.
     state = {
         "orchestrator": None,
         "run_dir":      None,
@@ -421,12 +448,6 @@ def _create_unified_app(
 
     @app.get("/api/preflight")
     async def api_preflight():
-        """
-        Return pre-flight configuration issues for the current backend.
-        The startup UI fetches this on load and displays a banner if issues exist.
-        Response shape:
-            { "issues": [ { "level": "error"|"warning", "message": "...", "fix": "..." } ] }
-        """
         if cfg is None:
             return {"issues": []}
         from cuddlytoddly.config import preflight_check
@@ -483,17 +504,12 @@ def _create_unified_app(
         def _init():
             try:
                 if mode == "existing":
-                    # Two-phase init: set state["ready"] as soon as the graph
-                    # is rebuilt (before the LLM finishes loading) so the browser
-                    # can show the DAG immediately.
                     def _on_graph_ready(orch, rd):
                         state["orchestrator"] = orch
                         state["run_dir"]      = rd
                         state["ready"]        = True
                         logger.info("[WEB] Graph ready — DAG visible (%d nodes)",
                                     len(orch.graph.nodes))
-                    # init_fn returns after on_graph_ready fires; the real LLM
-                    # continues loading in a daemon thread managed by _init_system.
                     init_fn(choice, on_graph_ready=_on_graph_ready)
                 else:
                     orch, rd              = init_fn(choice)
@@ -518,13 +534,11 @@ def _create_unified_app(
         await websocket.accept()
         logger.info("[WEB] WebSocket connected")
 
-        # If not ready yet, wait here — the browser may connect immediately
-        # after navigation, before the orchestrator is fully up.
         waited = 0
         while not state["ready"]:
             await asyncio.sleep(0.5)
             waited += 1
-            if waited > 1200:   # 10 min timeout
+            if waited > 1200:
                 logger.warning("[WEB] WebSocket timed out waiting for init")
                 await websocket.close()
                 return
@@ -544,8 +558,7 @@ def _create_unified_app(
         except Exception as e:
             logger.info("[WEB] WebSocket closed: %s", e)
 
-    # ── DAG REST routes — identical to create_app ─────────────────────────────
-    # These return 503 until the system is ready.
+    # ── DAG REST routes ───────────────────────────────────────────────────────
 
     def _require_ready():
         if not state["ready"]:
@@ -660,12 +673,23 @@ def _create_unified_app(
         _orch().resume_llm_calls()
         return {"ok": True}
 
+    # ── Export ────────────────────────────────────────────────────────────────
+
     @app.post("/api/export")
     async def export_md():
         from cuddlytoddly.ui.curses_ui import export_results_to_markdown
         snap = _orch().get_snapshot()
         try:
             path = export_results_to_markdown(snap, _run_dir())
+            return {"ok": True, "path": str(path)}
+        except Exception as e:
+            raise HTTPException(500, str(e))
+
+    @app.post("/api/export/html")
+    async def export_html():
+        snap = _serialize_snapshot(_orch().get_snapshot())
+        try:
+            _, path = await asyncio.to_thread(_build_static_html, snap, _run_dir())
             return {"ok": True, "path": str(path)}
         except Exception as e:
             raise HTTPException(500, str(e))
