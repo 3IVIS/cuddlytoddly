@@ -60,7 +60,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 cuddlytoddly "Write a market analysis for electric scooters"
 ```
 
-On first run, a `config.toml` is written to your user data directory with all defaults pre-filled. Open it to change backends, model settings, temperature, and more — no code editing required.
+On first run, a `config.toml` is written to your user data directory with all defaults pre-filled. Open it to change backends, model settings, temperature, and more — **no code editing required**.
 
 ```bash
 # Print the config file location
@@ -168,11 +168,9 @@ huggingface-cli download bartowski/Llama-3.3-70B-Instruct-GGUF Llama-3.3-70B-Ins
 export CUDDLYTODDLY_MODEL_PATH=/path/to/your-model.gguf
 ```
 
-For machines with less VRAM, consider a smaller quantisation or a smaller model entirely (e.g. `Llama-3.2-3B-Instruct-Q8_0.gguf`). Any instruction-tuned GGUF that supports a chat template will work — just set `CUDDLYTODDLY_MODEL_PATH` to point to it.
-
 ### Step 3 — Configure the backend
 
-Open your `config.toml` (path printed by `python -c "from cuddlytoddly.config import CONFIG_PATH; print(CONFIG_PATH)"`) and set:
+Open your `config.toml` and set:
 
 ```toml
 [llm]
@@ -205,6 +203,19 @@ See [docs/configuration.md](docs/configuration.md) for the complete config file 
 
 ---
 
+## Customising prompts and schemas
+
+All LLM prompt templates and JSON output schemas are consolidated into two files — you never need to dig through the implementation to adjust them:
+
+| File | What it contains |
+|---|---|
+| `cuddlytoddly/planning/prompts.py` | Every prompt template sent to the LLM: planner, executor, verify-result, check-dependencies, plus the system prompt constants |
+| `cuddlytoddly/planning/schemas.py` | Every JSON schema used for structured output: `PLAN_SCHEMA`, `EXECUTION_TURN_SCHEMA`, `RESULT_VERIFICATION_SCHEMA`, etc. |
+
+Each function in `prompts.py` is documented with its parameters so it's clear what context is injected where. Edit the text freely — the functions use standard Python f-strings with named parameters.
+
+---
+
 ## Adding skills
 
 Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/skills/`. The `SkillLoader` discovers it automatically. See [docs/skills.md](docs/skills.md) for the full format.
@@ -214,7 +225,7 @@ Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/ski
 ## Documentation
 
 - [Architecture](docs/architecture.md) — how the components fit together
-- [Configuration](docs/configuration.md) — LLM backends, run directory, environment variables
+- [Configuration](docs/configuration.md) — LLM backends, run directory, tuning parameters, environment variables
 - [Skills](docs/skills.md) — built-in skills and how to add custom ones
 - [API Reference](docs/api.md) — public Python API
 
@@ -234,6 +245,7 @@ python -c "from platformdirs import user_data_dir; print(user_data_dir('cuddlyto
 ~/Library/Application Support/cuddlytoddly/  ← macOS
 %LOCALAPPDATA%\3IVIS\cuddlytoddly\  ← Windows
 
+├── config.toml
 ├── models/
 │   └── Llama-3.3-70B-Instruct-Q4_K_M.gguf
 └── runs/
@@ -252,7 +264,13 @@ cuddlytoddly/
 ├── core/           # TaskGraph, events, reducer, ID generator
 ├── engine/         # SimpleOrchestrator, QualityGate, ExecutionStepReporter
 ├── infra/          # Logging, EventQueue, EventLog, replay
-├── planning/       # LLM interface, LLMPlanner, LLMExecutor, output validator
+├── planning/
+│   ├── prompts.py      ← all LLM prompt templates (edit here)
+│   ├── schemas.py      ← all JSON output schemas (edit here)
+│   ├── llm_interface.py
+│   ├── llm_planner.py
+│   ├── llm_executor.py
+│   └── llm_output_validator.py
 ├── skills/         # SkillLoader + built-in skill packs
 │   ├── code_execution/
 │   └── file_ops/
@@ -303,6 +321,8 @@ apply_event(graph, Event(ADD_NODE, {
 orchestrator.start()
 # orchestrator runs in the background — block however suits your use case
 ```
+
+All numeric limits (`max_turns`, `max_workers`, etc.) default to the values in `config.toml` when the system is started via the CLI. When constructing components programmatically you can pass them as keyword arguments — see [docs/api.md](docs/api.md) for the full signature of each class.
 
 ---
 

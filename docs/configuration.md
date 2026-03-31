@@ -1,8 +1,9 @@
 # Configuration
 
 cuddlytoddly is configured through a single TOML file in the user data directory.
-No environment variables are required for basic operation, and nothing is hardcoded
-inside the package itself.
+No environment variables are required for basic operation, and no values are hardcoded
+inside the package — every numeric limit and behavioural parameter lives in `config.toml`
+and can be changed without editing source code.
 
 ## Config file location
 
@@ -83,8 +84,58 @@ max_tokens  = 8192
 # Keep at 1 when backend = "llamacpp" — llama.cpp is not thread-safe.
 max_workers = 1
 
-# Maximum LLM turns per task node before marking it failed
+# Maximum LLM turns per task node before marking it failed.
 max_turns = 5
+
+# Maximum times a bridge node is injected for a single blocked task before
+# giving up and executing the task anyway.
+max_gap_fill_attempts = 2
+
+# Seconds the orchestrator loop sleeps when there is no planning or execution
+# work to do. Lower values are more responsive; higher values reduce CPU load.
+idle_sleep = 0.5
+
+# ── Planner ───────────────────────────────────────────────────────────────────
+[planner]
+
+# Task count range the planner is instructed to stay within when decomposing
+# a goal. Increasing max_tasks_per_goal allows finer-grained plans; decreasing
+# it keeps plans coarser but faster to generate.
+min_tasks_per_goal = 3
+max_tasks_per_goal = 8
+
+# ── Executor ──────────────────────────────────────────────────────────────────
+[executor]
+
+# Maximum characters a task result may contain before the executor asks the
+# LLM to write the content to a file instead of returning it inline.
+# Increase if tasks routinely need to return large text blobs.
+max_inline_result_chars = 3000
+
+# Total character budget shared across all upstream results included in a
+# single execution prompt. Budget is split evenly between dependencies.
+# Increase if tasks need more context from upstream nodes.
+max_total_input_chars = 3000
+
+# Maximum characters from a single tool-call result before it is truncated.
+# Tools that return large outputs (e.g. web pages) are clipped to this length.
+max_tool_result_chars = 2000
+
+# Number of most-recent tool-call entries kept in the executor's history per
+# turn. Older entries are dropped to keep prompts short.
+max_history_entries = 3
+
+# ── File-based LLM (development / testing only) ───────────────────────────────
+[file_llm]
+
+# Seconds between polls when waiting for a human-written response.
+poll_interval = 0.5
+
+# Seconds before the file-based backend raises TimeoutError.
+timeout = 300
+
+# Seconds between "still waiting" log messages.
+progress_log_interval = 2
 
 # ── Web / terminal server ─────────────────────────────────────────────────────
 [server]
@@ -92,6 +143,21 @@ max_turns = 5
 host = "127.0.0.1"
 port = 8765
 ```
+
+---
+
+## Sections at a glance
+
+| Section | Tunes |
+|---|---|
+| `[llm]` | Which backend is active |
+| `[llamacpp]` | Local model file, GPU offload, context size, temperature |
+| `[claude]` / `[openai]` | Remote model name, temperature, token limit |
+| `[orchestrator]` | Parallelism, turn limits, gap-fill retries, idle polling rate |
+| `[planner]` | Task count range per goal decomposition |
+| `[executor]` | Character budgets for inputs, tool results, and inline results |
+| `[file_llm]` | Polling and timeout for the file-based development backend |
+| `[server]` | Host and port for the web UI |
 
 ---
 
@@ -167,6 +233,69 @@ model    = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 base_url = "https://api.together.xyz/v1"
 api_key  = "..."    # or set OPENAI_API_KEY
 ```
+
+---
+
+## Tuning guide
+
+### Tasks feel too coarse / too granular
+
+Adjust `[planner] min_tasks_per_goal` and `max_tasks_per_goal`. The planner prompt instructs the LLM to stay within this range.
+
+```toml
+[planner]
+min_tasks_per_goal = 4
+max_tasks_per_goal = 12
+```
+
+### Tasks hit the turn limit before finishing
+
+Raise `[orchestrator] max_turns`. This allows the executor more LLM iterations per task before it is marked failed.
+
+```toml
+[orchestrator]
+max_turns = 10
+```
+
+### Upstream context is being truncated
+
+Raise `[executor] max_total_input_chars` to give tasks more of their upstream results. Note that larger values mean larger prompts and higher token costs.
+
+```toml
+[executor]
+max_total_input_chars = 6000
+```
+
+### Tool results are cut off
+
+Raise `[executor] max_tool_result_chars` if tools that return long text (web fetches, file reads) are being truncated too aggressively.
+
+```toml
+[executor]
+max_tool_result_chars = 4000
+```
+
+### Gap-fill bridge nodes keep being injected
+
+Lower `[orchestrator] max_gap_fill_attempts` to reduce how many bridging nodes are injected before the system gives up and executes the task with what it has.
+
+```toml
+[orchestrator]
+max_gap_fill_attempts = 1
+```
+
+---
+
+## Customising prompts and schemas
+
+All prompt templates and JSON output schemas live in dedicated files — not scattered across implementation modules:
+
+| File | Contents |
+|---|---|
+| `cuddlytoddly/planning/prompts.py` | All prompt text: planner decomposition, executor task prompt, quality-gate verification and dependency-check prompts, system prompt constants |
+| `cuddlytoddly/planning/schemas.py` | All JSON schemas: `PLAN_SCHEMA`, `EXECUTION_TURN_SCHEMA`, `RESULT_VERIFICATION_SCHEMA`, `DEPENDENCY_CHECK_SCHEMA`, and the shared sub-schemas |
+
+Edit those files directly to change what the LLM sees. Prompt functions use standard Python f-strings; schema dicts are plain Python — no DSL or templating engine to learn.
 
 ---
 
