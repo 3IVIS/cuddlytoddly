@@ -809,47 +809,36 @@ class ApiLLM(BaseLLM):
     # ── OpenAI call ───────────────────────────────────────────────────────────
 
     def _ask_openai(self, prompt: str, schema: dict | None) -> str:
+        # When a schema is provided, inject it into the prompt text and use
+        # json_object mode — the same strategy used by the Claude path.
+        #
+        # Why not use OpenAI's json_schema response_format?
+        # For complex nested schemas (e.g. PLAN_SCHEMA with its oneOf items),
+        # GPT-4o may mirror the schema definition back as the response body
+        # (with the actual content buried in an "examples" field) instead of
+        # generating content that *conforms* to the schema.  Schema-in-prompt
+        # + json_object is simpler, more portable, and produces correct output.
+        if schema is not None:
+            prompt_to_send = self._inject_schema_into_prompt(prompt, schema)
+        else:
+            prompt_to_send = prompt
+
         messages = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user",   "content": prompt},
+            {"role": "user",   "content": prompt_to_send},
         ]
+
         kwargs: dict[str, Any] = dict(
             model=self.model,
             messages=messages,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            response_format={"type": "json_object"},
         )
-
-        if schema is not None:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name":   "response",
-                    "schema": schema,
-                    "strict": False,
-                },
-            }
-        else:
-            kwargs["response_format"] = {"type": "json_object"}
 
         logger.debug("[API] Sending OpenAI request  model=%s  schema=%s",
                      self.model, "yes" if schema else "no")
-        try:
-            response = self._client.chat.completions.create(**kwargs)
-        except Exception as e:
-            err_str = str(e).lower()
-            if schema is not None and (
-                "json_schema" in err_str or "response_format" in err_str
-                or "unsupported" in err_str
-            ):
-                logger.warning(
-                    "[API] Structured outputs not supported by this model/endpoint "
-                    "— falling back to json_object mode"
-                )
-                kwargs["response_format"] = {"type": "json_object"}
-                response = self._client.chat.completions.create(**kwargs)
-            else:
-                raise
+        response = self._client.chat.completions.create(**kwargs)
 
         if response.usage:
             token_counter.add(response.usage.prompt_tokens,
