@@ -4,8 +4,8 @@
 #
 # Each function takes pre-computed context strings and returns the final
 # prompt that is sent to the LLM.  Callers in llm_executor.py,
-# llm_planner.py, and quality_gate.py handle all the data extraction and
-# formatting; only the template text lives here.
+# llm_planner.py, quality_gate.py, and plan_constraint_checker.py handle
+# all the data extraction and formatting; only the template text lives here.
 #
 # ── How to edit prompts ───────────────────────────────────────────────────────
 # Change the text in the functions below.  Variable substitution uses
@@ -26,7 +26,7 @@ LLM_SYSTEM_PROMPT = (
 )
 
 # Injected into the llama.cpp chat template when the model supports it.
-# Used verbatim as the <system> turn of the Llama-3 template as a fallback.
+# Used verbatim as the <s> turn of the Llama-3 template as a fallback.
 LLAMACPP_SYSTEM_PROMPT = (
     "You are a DAG planning assistant. "
     "Always respond with a valid JSON array and nothing else. "
@@ -472,6 +472,113 @@ No commentary, apologies, or text outside the JSON object.
 If the draft plan is already fully correct on all checks above, reproduce it
 unchanged.
 """
+
+
+# ---------------------------------------------------------------------------
+# Ghost node resolution prompt
+# ---------------------------------------------------------------------------
+
+def build_ghost_node_resolution_prompt(
+    *,
+    ghost_node_id: str,
+    ghost_description: str,
+    new_nodes: dict,
+    existing_nodes: dict,
+    active_goal_id: str,
+    edges: set,
+    valid_candidates: set,
+) -> str:
+    """
+    Build the prompt used to resolve a ghost node — a new plan node that has
+    no dependents (nothing in the plan depends on it, so its output goes unused).
+
+    The LLM is shown the full plan context and a pre-filtered list of valid
+    candidate dependents (ancestors excluded to prevent introducing cycles) and
+    asked to choose the node that would most naturally consume the ghost's output.
+
+    Parameters
+    ----------
+    ghost_node_id     : ID of the node with no dependents.
+    ghost_description : Description of the ghost node.
+    new_nodes         : dict[node_id → description] for all proposed new nodes.
+    existing_nodes    : dict[node_id → description] for all live graph nodes.
+    active_goal_id    : ID of the goal being planned for.
+    edges             : set of (node_id, depends_on) tuples from the current plan.
+    valid_candidates  : Pre-computed set of node IDs that may legally depend on
+                        the ghost (ancestors excluded).
+    """
+    # ── Format plan nodes ─────────────────────────────────────────────────────
+    nodes_lines = []
+    for nid, desc in sorted(new_nodes.items()):
+        marker = "  ◀ NO DEPENDENT" if nid == ghost_node_id else ""
+        nodes_lines.append(f"  [{nid}]{marker}\n    {desc}")
+    nodes_text = "\n".join(nodes_lines) or "  (none)"
+
+    # ── Format current dependency edges ───────────────────────────────────────
+    # Edge (A, B) means "A depends on B" — B must complete before A.
+    edges_lines = [
+        f"  {src} waits for {dep}"
+        for src, dep in sorted(edges)
+    ]
+    edges_text = "\n".join(edges_lines) or "  (none)"
+
+    # ── Format valid candidates ───────────────────────────────────────────────
+    candidate_lines = []
+    for nid in sorted(valid_candidates):
+        if nid == active_goal_id:
+            desc = "(the overall goal — signals that ghost node completion is required)"
+        elif nid in new_nodes:
+            desc = new_nodes[nid]
+        else:
+            desc = existing_nodes.get(nid, "")
+        candidate_lines.append(f"  [{nid}]: {desc}")
+    candidates_text = "\n".join(candidate_lines) or "  (none available)"
+
+    return f"""\
+You are reviewing a DAG execution plan where one node has no dependents.
+
+A node with no dependents means its output is never consumed — it is a "ghost node"
+that produces results no other task or goal uses.  Your job is to decide which node
+should depend on it, i.e. which node should run AFTER it and use its output.
+
+"A depends on B" means B must complete before A can start.
+You are choosing a new A for the ghost node (which will be B).
+
+══════════════════════════════════════════════════════════════════════════════
+GHOST NODE (has no dependents)
+══════════════════════════════════════════════════════════════════════════════
+ID:          {ghost_node_id}
+Description: {ghost_description}
+
+══════════════════════════════════════════════════════════════════════════════
+ALL NODES IN THE CURRENT PLAN
+══════════════════════════════════════════════════════════════════════════════
+{nodes_text}
+
+══════════════════════════════════════════════════════════════════════════════
+CURRENT DEPENDENCY EDGES  (format: A waits for B)
+══════════════════════════════════════════════════════════════════════════════
+{edges_text}
+
+══════════════════════════════════════════════════════════════════════════════
+VALID CANDIDATES  (nodes that may legally depend on the ghost node)
+══════════════════════════════════════════════════════════════════════════════
+{candidates_text}
+
+══════════════════════════════════════════════════════════════════════════════
+YOUR TASK
+══════════════════════════════════════════════════════════════════════════════
+Choose the single best candidate from the VALID CANDIDATES list above.
+Pick the node whose work would most naturally consume the output of [{ghost_node_id}].
+
+If no specific task clearly needs this output, choose [{active_goal_id}] — this
+signals that the ghost node's completion is a required prerequisite for the goal
+even if its output is not consumed by another task directly.
+
+You MUST choose from the VALID CANDIDATES list.  Do not invent new node IDs.
+Respond only in JSON matching the schema.
+"""
+
 
 # ---------------------------------------------------------------------------
 # Quality-gate prompts

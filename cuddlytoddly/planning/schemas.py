@@ -3,10 +3,11 @@
 # Single source of truth for every JSON schema used by the LLM backends.
 #
 # Schemas are imported by:
-#   llm_interface.py  — EVENT_LIST_SCHEMA, PLAN_SCHEMA, GOAL_SUMMARY_SCHEMA,
-#                        REFINER_OUTPUT_SCHEMA
-#   llm_executor.py   — EXECUTION_TURN_SCHEMA
-#   quality_gate.py   — RESULT_VERIFICATION_SCHEMA, DEPENDENCY_CHECK_SCHEMA
+#   llm_interface.py         — EVENT_LIST_SCHEMA, PLAN_SCHEMA, GOAL_SUMMARY_SCHEMA,
+#                               REFINER_OUTPUT_SCHEMA
+#   llm_executor.py          — EXECUTION_TURN_SCHEMA
+#   quality_gate.py          — RESULT_VERIFICATION_SCHEMA, DEPENDENCY_CHECK_SCHEMA
+#   plan_constraint_checker  — GHOST_NODE_RESOLUTION_SCHEMA
 #
 # Edit the schemas here to change the structured-output contract with the LLM.
 
@@ -279,4 +280,32 @@ DEPENDENCY_CHECK_SCHEMA = {
         },
     },
     "required": ["ok"],
+}
+
+# ---------------------------------------------------------------------------
+# Plan constraint checker schema
+# ---------------------------------------------------------------------------
+
+GHOST_NODE_RESOLUTION_SCHEMA = {
+    "type": "object",
+    "required": ["dependent_node_id", "reasoning"],
+    "additionalProperties": False,
+    "properties": {
+        "dependent_node_id": {
+            "type": "string",
+            "description": (
+                "The ID of the node that should depend on the ghost node — "
+                "i.e. the node whose work would most naturally consume the "
+                "ghost node's output. Must be one of the valid candidates "
+                "listed in the prompt."
+            ),
+        },
+        "reasoning": {
+            "type": "string",
+            "description": (
+                "One sentence explaining why this node is the best dependent "
+                "for the ghost node's output."
+            ),
+        },
+    },
 }

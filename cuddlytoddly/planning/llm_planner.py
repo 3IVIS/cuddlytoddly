@@ -10,6 +10,7 @@ from cuddlytoddly.planning.prompts import (
     build_plan_scrutinizer_prompt,
 )
 from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
+from cuddlytoddly.planning.plan_constraint_checker import PlanConstraintChecker
 from cuddlytoddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
@@ -45,6 +46,7 @@ class LLMPlanner:
         self.min_tasks_per_goal  = min_tasks_per_goal
         self.max_tasks_per_goal  = max_tasks_per_goal
         self.scrutinize_plan     = scrutinize_plan
+        self.constraint_checker  = PlanConstraintChecker(graph, llm_client)
 
     def propose(self, context):
         snapshot = context.snapshot
@@ -78,6 +80,14 @@ class LLMPlanner:
         validator   = LLMOutputValidator(self.graph)
         safe_events = validator.validate_and_normalize(
             raw_events, forced_origin="planning"
+        )
+
+        # ── Constraint checks ──────────────────────────────────────────────────
+        # Runs after structural validation so the checker operates on a clean,
+        # already-normalised event list.  Enforces: dedup, cycle detection,
+        # required_input consistency, and ghost node resolution.
+        safe_events = self.constraint_checker.check_and_repair(
+            safe_events, active_goal.id
         )
 
         for evt in safe_events:
