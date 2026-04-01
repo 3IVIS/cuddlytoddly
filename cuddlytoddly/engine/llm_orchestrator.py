@@ -318,6 +318,10 @@ class SimpleOrchestrator:
         for node in ready:
             if self._stop_event.is_set():
                 break
+            if self.llm_stopped:
+                # LLM is paused — leave ready nodes as-is so they resume
+                # automatically the moment the user unpauses.
+                break
 
             with self.graph_lock:
                 current = self.graph.nodes.get(node.id)
@@ -431,6 +435,25 @@ class SimpleOrchestrator:
             with self.graph_lock:
                 if node_id not in self.graph.nodes:
                     return
+
+                # If the executor returned None because the LLM was paused
+                # mid-run, reset the node to pending so it picks up cleanly
+                # when the user unpauses.  Execution step nodes are detached
+                # so the next run starts with a fresh reporter.
+                if self.llm_stopped:
+                    logger.info(
+                        "[EXEC] Node %s interrupted by LLM pause — "
+                        "resetting to pending",
+                        node_id,
+                    )
+                    if reporter:
+                        for step_id in list(reporter._all_step_ids):
+                            if step_id in self.graph.nodes:
+                                self.graph.detach_node(step_id)
+                    self._apply(Event(RESET_NODE, {"node_id": node_id}))
+                    return
+
+                # Genuine failure (max turns, JSON parse error, tool error, …)
                 if reporter:
                     reporter.expose_all()
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
