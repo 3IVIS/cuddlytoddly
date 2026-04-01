@@ -172,15 +172,23 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
     async def ws_endpoint(websocket: WebSocket):
         await websocket.accept()
         logger.info("[WEB] WebSocket connected")
-        last_sv = last_ev = -1
+        last_sv       = last_ev = -1
+        last_paused   = None   # sentinel — forces a push on first tick
+        last_activity = None
         try:
             while True:
-                sv = orchestrator.graph.structure_version
-                ev = orchestrator.graph.execution_version
-                if sv != last_sv or ev != last_ev:
+                sv       = orchestrator.graph.structure_version
+                ev       = orchestrator.graph.execution_version
+                paused   = orchestrator.llm_stopped
+                activity = orchestrator.current_activity
+                if (sv != last_sv or ev != last_ev
+                        or paused != last_paused
+                        or activity != last_activity):
                     payload = await asyncio.to_thread(_build_payload, orchestrator)
                     await websocket.send_text(json.dumps(payload, default=str))
-                    last_sv, last_ev = sv, ev
+                    last_sv, last_ev   = sv, ev
+                    last_paused        = paused
+                    last_activity      = activity
                 await asyncio.sleep(0.25)
         except Exception as e:
             logger.info("[WEB] WebSocket disconnected: %s", e)
@@ -563,17 +571,25 @@ def _create_unified_app(
                 await websocket.close()
                 return
 
-        orch    = state["orchestrator"]
-        last_sv = last_ev = -1
+        orch          = state["orchestrator"]
+        last_sv       = last_ev = -1
+        last_paused   = None
+        last_activity = None
 
         try:
             while True:
-                sv = orch.graph.structure_version
-                ev = orch.graph.execution_version
-                if sv != last_sv or ev != last_ev:
+                sv       = orch.graph.structure_version
+                ev       = orch.graph.execution_version
+                paused   = orch.llm_stopped
+                activity = orch.current_activity
+                if (sv != last_sv or ev != last_ev
+                        or paused != last_paused
+                        or activity != last_activity):
                     payload = await asyncio.to_thread(_build_payload, orch)
                     await websocket.send_text(json.dumps(payload, default=str))
-                    last_sv, last_ev = sv, ev
+                    last_sv, last_ev   = sv, ev
+                    last_paused        = paused
+                    last_activity      = activity
                 await asyncio.sleep(0.25)
         except Exception as e:
             logger.info("[WEB] WebSocket closed: %s", e)

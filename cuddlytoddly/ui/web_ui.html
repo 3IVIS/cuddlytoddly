@@ -819,7 +819,7 @@ body {
   </div>
   <div id="toolbar-activity"><span id="activity-text" style="color:var(--text-muted)">idle</span></div>
 
-  <button class="toolbar-btn" id="btn-llm-toggle" onclick="toggleLLM()">⏸ Pause LLM</button>
+  <button class="toolbar-btn" id="btn-llm-toggle" onclick="toggleLLM()">⏸ Pause</button>
   <button class="toolbar-btn" onclick="addNodePrompt()">＋ Add Node</button>
   <div class="export-wrap" id="export-wrap">
   <button class="toolbar-btn primary export-main" onclick="exportMD()">↓ Export</button>
@@ -956,13 +956,13 @@ function handleMessage(data) {
     actEl.innerHTML = `${spin} ${esc(data.activity)}${elapsed}`;
   } else {
     actEl.innerHTML = paused
-      ? '<span style="color:var(--s-running)">⏸ LLM paused</span>'
+      ? '<span style="color:var(--s-running)">⏸ Paused</span>'
       : '<span style="color:var(--text-muted)">idle</span>';
   }
 
   // LLM button
   const llmBtn = document.getElementById('btn-llm-toggle');
-  llmBtn.textContent = paused ? '▶ Resume LLM' : '⏸ Pause LLM';
+  llmBtn.textContent = paused ? '▶ Resume' : '⏸ Pause';
   llmBtn.classList.toggle('active', paused);
 
   // Empty state

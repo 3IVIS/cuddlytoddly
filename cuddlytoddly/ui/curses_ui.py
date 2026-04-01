@@ -1223,7 +1223,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                 # Status bars
                 node_label      = current_node if current_node else "<empty>"
                 llm_paused      = orchestrator.llm_stopped
-                paused_indicator = " | [LLM PAUSED]" if llm_paused else ""
+                paused_indicator = " | [PAUSED]" if llm_paused else ""
                 activity        = orchestrator.current_activity
                 started         = orchestrator.activity_started
 
@@ -1237,7 +1237,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                     "Up/Down/Left/Right/[/]: move | "
                     f"j/k </> scroll info | "
                     f"e: edit | a: add | x: remove | p: export | "
-                    f"s: {'resume' if llm_paused else 'pause'} LLM | g: switch goal | q: quit"
+                    f"s: {'resume' if llm_paused else 'pause'} | g: switch goal | q: quit"
                     f"{paused_indicator}"
                 )
                 tc = orchestrator.token_counts
