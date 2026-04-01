@@ -193,7 +193,7 @@ Change `model_filename` to match whatever you downloaded. Everything else can st
 cuddlytoddly "Write a market analysis for electric scooters"
 ```
 
-The first run will load the model into memory (10–30 seconds depending on hardware), then proceed normally. Subsequent runs reuse the response cache (`llamacpp_cache.json`) to skip identical prompts.
+The first run will load the model into memory (10–30 seconds depending on hardware), then proceed normally. Subsequent runs reuse the response cache (`llamacpp_cache.json`) to skip identical prompts. The same caching applies to the `claude` and `openai` backends too (`api_cache.json`).
 
 ---
 
@@ -251,7 +251,9 @@ python -c "from platformdirs import user_data_dir; print(user_data_dir('cuddlyto
 └── runs/
     └── write_a_market_analysis.../
         ├── events.jsonl         # full event log — enables crash recovery
-        ├── llamacpp_cache.json  # LLM response cache
+        ├── llamacpp_cache.json  # response cache (llamacpp backend)
+        ├── api_cache.json       # response cache (claude / openai backends)
+        ├── file_llm_cache.json  # response cache (file backend)
         ├── logs/
         ├── outputs/             # working directory for file-writing tools
         └── dag_repo/            # Git repo mirroring the DAG

@@ -83,17 +83,23 @@ cache_enabled = true
 [claude]
 
 # Requires the ANTHROPIC_API_KEY environment variable.
-model       = "claude-opus-4-6"
-temperature = 0.1
-max_tokens  = 8192
+model         = "claude-opus-4-6"
+temperature   = 0.1
+max_tokens    = 8192
+
+# Cache API responses to disk; avoids re-sending identical prompts
+cache_enabled = true
 
 # ── OpenAI-compatible API ─────────────────────────────────────────────────────
 [openai]
 
 # Requires the OPENAI_API_KEY environment variable (or api_key below).
-model       = "gpt-4o"
-temperature = 0.1
-max_tokens  = 8192
+model         = "gpt-4o"
+temperature   = 0.1
+max_tokens    = 8192
+
+# Cache API responses to disk; avoids re-sending identical prompts
+cache_enabled = true
 
 # Uncomment for OpenAI-compatible providers (Together, Groq, Mistral, etc.)
 # base_url = "https://api.together.xyz/v1"
@@ -153,6 +159,9 @@ timeout = 300
 
 # Seconds between progress-log messages while waiting for a response.
 progress_log_interval = 2
+
+# Cache responses to disk; on a cache hit the poll loop is skipped entirely.
+cache_enabled = true
 
 # ── Web / terminal server ─────────────────────────────────────────────────────
 [server]
@@ -430,6 +439,7 @@ def get_file_llm_cfg(cfg: dict) -> dict:
         "poll_interval":         c.get("poll_interval",         0.5),
         "timeout":               c.get("timeout",               300),
         "progress_log_interval": c.get("progress_log_interval", 2),
+        "cache_enabled":         c.get("cache_enabled",         True),
     }
 
 

@@ -31,6 +31,8 @@ User goal (string)
 
 **LLM backends are interchangeable.** `planning/llm_interface.py` defines one `BaseLLM` with `.ask()` and `.generate()`. Swap between Anthropic Claude, OpenAI-compatible endpoints, and local llama.cpp models by changing one argument to `create_llm_client()`.
 
+**Caching is uniform across all backends.** Every backend (`LlamaCppLLM`, `ApiLLM`, `FileBasedLLM`) accepts a `cache_path` argument and uses the same `LlamaCppCache` implementation — a SHA-256-keyed JSON file. Cache key: `prompt` (no schema) or `prompt + "\x00" + schema_json` (with schema). A hit returns immediately without touching the model or API. Enabled by default via `cache_enabled = true` in the respective config section.
+
 **Prompts and schemas are separated from logic.** All LLM prompt text lives in `planning/prompts.py` and all JSON schemas in `planning/schemas.py`. Implementation files import from these modules rather than embedding strings inline, so prompt engineering and schema tuning never require touching execution logic.
 
 **No hardcoded parameters.** Every numeric limit — character budgets, turn counts, retry thresholds, polling intervals — is read from `config.toml` at startup and passed down through constructors. Changing behaviour requires only a config edit, not a code change.

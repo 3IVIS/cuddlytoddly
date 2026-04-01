@@ -429,18 +429,30 @@ def _build_llm_client(cfg: dict, run_dir: Path):
         )
 
     if backend == "claude":
+        cache_path = (
+            str(run_dir / "api_cache.json")
+            if llm_cfg.get("cache_enabled", True)
+            else None
+        )
         return create_llm_client(
             "claude",
             model       = llm_cfg.get("model",       "claude-opus-4-6"),
             temperature = llm_cfg.get("temperature", 0.1),
             max_tokens  = llm_cfg.get("max_tokens",  8192),
+            cache_path  = cache_path,
         )
 
     if backend == "openai":
+        cache_path = (
+            str(run_dir / "api_cache.json")
+            if llm_cfg.get("cache_enabled", True)
+            else None
+        )
         kwargs: dict = dict(
             model       = llm_cfg.get("model",       "gpt-4o"),
             temperature = llm_cfg.get("temperature", 0.1),
             max_tokens  = llm_cfg.get("max_tokens",  8192),
+            cache_path  = cache_path,
         )
         if "base_url" in llm_cfg:
             kwargs["base_url"] = llm_cfg["base_url"]
@@ -449,12 +461,18 @@ def _build_llm_client(cfg: dict, run_dir: Path):
         return create_llm_client("openai", **kwargs)
 
     if backend == "file":
-        file_cfg = get_file_llm_cfg(cfg)
+        file_cfg   = get_file_llm_cfg(cfg)
+        cache_path = (
+            str(run_dir / "file_llm_cache.json")
+            if file_cfg.get("cache_enabled", True)
+            else None
+        )
         return create_llm_client(
             "file",
             poll_interval         = file_cfg["poll_interval"],
             timeout               = file_cfg["timeout"],
             progress_log_interval = file_cfg["progress_log_interval"],
+            cache_path            = cache_path,
         )
 
     # Should never reach here — _validate() in load_config() guards this.

@@ -80,10 +80,12 @@ Factory for LLM clients. Returns a `BaseLLM` instance.
 
 | `backend` value | Class returned | Required kwargs |
 |---|---|---|
-| `"claude"` | `ApiLLM` | `model`, optional `temperature`, `max_tokens`, `system_prompt` |
-| `"openai"` | `ApiLLM` | `model`, optional `base_url`, `temperature`, `max_tokens`, `system_prompt` |
+| `"claude"` | `ApiLLM` | `model`, optional `temperature`, `max_tokens`, `system_prompt`, `cache_path` |
+| `"openai"` | `ApiLLM` | `model`, optional `base_url`, `temperature`, `max_tokens`, `system_prompt`, `cache_path` |
 | `"llamacpp"` | `LlamaCppLLM` | `model_path`, optional `n_gpu_layers`, `n_ctx`, `max_tokens`, `temperature`, `cache_path` |
-| `"file"` | `FileBasedLLM` | optional `poll_interval`, `timeout`, `progress_log_interval` |
+| `"file"` | `FileBasedLLM` | optional `poll_interval`, `timeout`, `progress_log_interval`, `cache_path` |
+
+All backends accept an optional `cache_path` kwarg. When provided, a `LlamaCppCache` instance is attached: hits are served immediately without calling the model or API; misses are stored after a successful response. Pass `None` (or omit) to disable caching.
 
 ### `BaseLLM`
 
@@ -106,9 +108,33 @@ def generate(self, prompt: str) -> str:
 
 > **Note:** The `schema` keyword argument for structured output is supported by `ApiLLM` and `LlamaCppLLM`, but is not part of the `BaseLLM` abstract interface.
 
-### `FileBasedLLM(response_file, prompt_log_file, poll_interval, timeout, progress_log_interval)`
+### `FileBasedLLM(response_file, prompt_log_file, poll_interval, timeout, progress_log_interval, cache_path=None)`
 
 Development/testing backend that reads prompts and responses from plain text files. All timing values default to the `[file_llm]` section of `config.toml`.
+
+When `cache_path` is provided, a cache hit skips the poll loop entirely — useful for replaying runs without re-entering responses. Cache key is the raw prompt string.
+
+### `ApiLLM(provider, model, temperature, max_tokens, system_prompt, cache_path=None)`
+
+Remote API backend (OpenAI or Anthropic Claude). Constructed via `create_llm_client("claude", ...)` or `create_llm_client("openai", ...)`.
+
+When `cache_path` is provided, a cache hit is served immediately without any network call. Cache key is `prompt` when `schema=None`, or `prompt + "\x00" + sorted_json(schema)` when a schema is passed — identical to how `LlamaCppLLM` keys its cache, so the approach is consistent across backends.
+
+### `LlamaCppCache(cache_path)`
+
+Persistent JSON cache shared by all three backends. Stores `{sha256(key): {prompt, response}}` pairs. Loaded into memory at construction; written atomically to disk on every new entry.
+
+```python
+from cuddlytoddly.planning.llm_interface import LlamaCppCache
+
+cache = LlamaCppCache("my_cache.json")
+cache.set(prompt, response)
+cached = cache.get(prompt)   # None on miss
+len(cache)                   # entry count
+cache.clear()                # wipe all entries
+```
+
+All backend classes expose a `clear_cache()` convenience method that delegates here.
 
 ---
 

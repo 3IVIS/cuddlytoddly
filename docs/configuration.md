@@ -61,17 +61,25 @@ cache_enabled = true
 [claude]
 
 # Requires the ANTHROPIC_API_KEY environment variable.
-model       = "claude-opus-4-6"
-temperature = 0.1
-max_tokens  = 8192
+model         = "claude-opus-4-6"
+temperature   = 0.1
+max_tokens    = 8192
+
+# Cache API responses to disk; avoids re-sending identical prompts.
+# Cache file: <run_dir>/api_cache.json
+cache_enabled = true
 
 # ── OpenAI-compatible API ─────────────────────────────────────────────────────
 [openai]
 
 # API key can be set here or via the OPENAI_API_KEY environment variable.
-model       = "gpt-4o"
-temperature = 0.1
-max_tokens  = 8192
+model         = "gpt-4o"
+temperature   = 0.1
+max_tokens    = 8192
+
+# Cache API responses to disk; avoids re-sending identical prompts.
+# Cache file: <run_dir>/api_cache.json
+cache_enabled = true
 
 # Uncomment for OpenAI-compatible providers (Together, Groq, Mistral, etc.)
 # base_url = "https://api.together.xyz/v1"
@@ -137,6 +145,10 @@ timeout = 300
 # Seconds between "still waiting" log messages.
 progress_log_interval = 2
 
+# Cache responses to disk; on a cache hit the poll loop is skipped entirely.
+# Cache file: <run_dir>/file_llm_cache.json
+cache_enabled = true
+
 # ── Web / terminal server ─────────────────────────────────────────────────────
 [server]
 
@@ -151,12 +163,12 @@ port = 8765
 | Section | Tunes |
 |---|---|
 | `[llm]` | Which backend is active |
-| `[llamacpp]` | Local model file, GPU offload, context size, temperature |
-| `[claude]` / `[openai]` | Remote model name, temperature, token limit |
+| `[llamacpp]` | Local model file, GPU offload, context size, temperature, caching |
+| `[claude]` / `[openai]` | Remote model name, temperature, token limit, caching |
 | `[orchestrator]` | Parallelism, turn limits, gap-fill retries, idle polling rate |
 | `[planner]` | Task count range per goal decomposition |
 | `[executor]` | Character budgets for inputs, tool results, and inline results |
-| `[file_llm]` | Polling and timeout for the file-based development backend |
+| `[file_llm]` | Polling, timeout, and caching for the file-based development backend |
 | `[server]` | Host and port for the web UI |
 
 ---
@@ -199,7 +211,8 @@ for other hardware (ROCm, Vulkan, CPU-only).
 backend = "claude"
 
 [claude]
-model = "claude-opus-4-6"
+model         = "claude-opus-4-6"
+cache_enabled = true
 ```
 
 ```bash
@@ -214,7 +227,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 backend = "openai"
 
 [openai]
-model = "gpt-4o"
+model         = "gpt-4o"
+cache_enabled = true
 ```
 
 ```bash
@@ -235,6 +249,29 @@ api_key  = "..."    # or set OPENAI_API_KEY
 ```
 
 ---
+
+## Response caching
+
+All three backends support caching prompt → response pairs to a JSON file in the run directory. On a cache hit the backend returns immediately without making any API call or local inference.
+
+| Backend | Cache file | Key |
+|---|---|---|
+| `llamacpp` | `<run_dir>/llamacpp_cache.json` | `prompt` or `prompt + schema` |
+| `claude` / `openai` | `<run_dir>/api_cache.json` | `prompt` or `prompt + schema` |
+| `file` | `<run_dir>/file_llm_cache.json` | `prompt` |
+
+The cache is **per run** — each goal slug gets its own directory so caches from different runs don't interfere. Resuming a run reuses the existing cache, which means tasks whose prompts haven't changed (e.g. a planning call for a goal that was already expanded before the crash) return instantly on restart.
+
+**Disabling the cache** for a single backend:
+
+```toml
+[claude]
+cache_enabled = false
+```
+
+**Clearing the cache** while the server is running: use `orchestrator.planner.llm.clear_cache()` (or the equivalent for the executor's client) from a Python console, or simply delete the JSON file from the run directory.
+
+**When to disable:** during active prompt engineering, where you want every call to reach the model so you can see the effect of your edits immediately.
 
 ## Tuning guide
 
@@ -341,9 +378,11 @@ supported.
 ├── models/                  ← optional: place .gguf files here
 └── runs/
     └── <goal_slug>/
-        ├── events.jsonl     ← full event log (enables crash recovery)
-        ├── llamacpp_cache.json
+        ├── events.jsonl         ← full event log (enables crash recovery)
+        ├── llamacpp_cache.json  ← response cache for the llamacpp backend
+        ├── api_cache.json       ← response cache for claude / openai backends
+        ├── file_llm_cache.json  ← response cache for the file-based backend
         ├── logs/
-        ├── outputs/         ← working directory for file-writing tools
-        └── dag_repo/        ← Git repo mirroring the DAG
+        ├── outputs/             ← working directory for file-writing tools
+        └── dag_repo/            ← Git repo mirroring the DAG
 ```

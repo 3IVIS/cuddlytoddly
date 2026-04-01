@@ -180,6 +180,9 @@ class FileBasedLLM(BaseLLM):
 
     All timing constants come from the application config (passed via __init__)
     so they can be adjusted without editing source code.
+
+    When cache_path is provided, a cache hit skips the file-based poll loop
+    entirely — useful for replaying a run without re-entering responses.
     """
 
     def __init__(
@@ -189,6 +192,7 @@ class FileBasedLLM(BaseLLM):
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
         timeout: float = _DEFAULT_TIMEOUT,
         progress_log_interval: float = _DEFAULT_PROGRESS_LOG_INTERVAL,
+        cache_path: Path | str | None = None,
     ):
         super().__init__()
         self.response_file         = Path(response_file)
@@ -196,9 +200,12 @@ class FileBasedLLM(BaseLLM):
         self.poll_interval         = poll_interval
         self.timeout               = timeout
         self.progress_log_interval = progress_log_interval
+        self._cache = LlamaCppCache(cache_path) if cache_path is not None else None
         logger.info("[LLM] Initialized FileBasedLLM")
         logger.info("[LLM] Prompt file path: %s", self.prompt_log_file.resolve())
         logger.info("[LLM] Response file path: %s", self.response_file.resolve())
+        logger.info("[LLM] Cache: %s",
+                    f"enabled ({len(self._cache)} entries)" if self._cache else "disabled")
 
     def send_prompt(self, prompt: str) -> str:
         logger.info("[LLM] send_prompt() called")
@@ -284,21 +291,44 @@ class FileBasedLLM(BaseLLM):
     def ask(self, prompt: str) -> str:
         self._check_stop()
         logger.info("[LLM] ask() called")
+
+        if self._cache is not None:
+            cached = self._cache.get(prompt)
+            if cached is not None:
+                logger.info("[LLM] Cache HIT — skipping file poll")
+                token_counter.add(len(prompt) // 4, len(cached) // 4)
+                return cached
+
         prompt_id = self.send_prompt(prompt)
         logger.info("[LLM] ask() obtained prompt_id=%s", prompt_id)
         response = self.get_response(prompt_id)
         logger.info("[LLM] ask() completed for id=%s", prompt_id)
         token_counter.add(len(prompt) // 4, len(response) // 4)
+
+        if self._cache is not None:
+            self._cache.set(prompt, response)
+
         return response
+
+    def clear_cache(self) -> None:
+        if self._cache is not None:
+            self._cache.clear()
+            logger.info("[LLM] FileBasedLLM cache cleared")
+        else:
+            logger.info("[LLM] FileBasedLLM cache is disabled")
 
 
 # ---------------------------------------------------------------------------
-# Prompt-response cache for LlamaCppLLM
+# Prompt-response cache  (used by all three backends)
 # ---------------------------------------------------------------------------
 
 class LlamaCppCache:
     """
-    Persistent, disk-backed cache for LlamaCppLLM prompt/response pairs.
+    Persistent, disk-backed cache for prompt → response pairs.
+
+    Originally written for LlamaCppLLM; now used by all backends (ApiLLM and
+    FileBasedLLM included) so that identical prompts never hit the model or
+    API twice within the same run — or across runs when the cache is reused.
 
     The cache is stored as a JSON file mapping SHA-256 prompt hashes to their
     responses. Both an in-memory dict and the JSON file are kept in sync so
@@ -694,6 +724,7 @@ class ApiLLM(BaseLLM):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         system_prompt: str | None = None,
+        cache_path: Path | str | None = None,
     ):
         super().__init__()
         provider = provider.lower()
@@ -710,11 +741,14 @@ class ApiLLM(BaseLLM):
         self.max_tokens    = max_tokens
         # System prompt text defaults to prompts.py; callers can still override.
         self.system_prompt = system_prompt or LLM_SYSTEM_PROMPT
+        self._cache = LlamaCppCache(cache_path) if cache_path is not None else None
 
         logger.info("[API] Initialized ApiLLM  provider=%s  model=%s",
                     self.provider, self.model)
         if base_url:
             logger.info("[API] Using custom base_url: %s", base_url)
+        logger.info("[API] Cache: %s",
+                    f"enabled ({len(self._cache)} entries)" if self._cache else "disabled")
 
         self._client = None   # lazy-loaded
 
@@ -867,6 +901,17 @@ class ApiLLM(BaseLLM):
         self._load()
         logger.debug("[API] Prompt (first 200 chars): %.200s", prompt)
 
+        # Cache key matches LlamaCppLLM: prompt-only (no schema) or prompt+schema.
+        cache_key = (
+            prompt if schema is None
+            else prompt + "\x00" + json.dumps(schema, sort_keys=True)
+        )
+        if self._cache is not None:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                logger.info("[API] Cache HIT")
+                return cached
+
         for attempt in range(2):
             try:
                 if self.provider == "openai":
@@ -886,6 +931,8 @@ class ApiLLM(BaseLLM):
                 parsed = json.loads(raw)
                 if not parsed and parsed != 0:
                     raise ValueError("Empty JSON response")
+                if self._cache is not None:
+                    self._cache.set(cache_key, raw)
                 return raw
             except Exception as e:
                 logger.warning("[API] Invalid JSON on attempt %d: %s  raw=%.200s",
@@ -897,6 +944,13 @@ class ApiLLM(BaseLLM):
         raise ValueError(
             f"[API] {self.provider} returned invalid JSON after 2 attempts"
         )
+
+    def clear_cache(self) -> None:
+        if self._cache is not None:
+            self._cache.clear()
+            logger.info("[API] Cache cleared")
+        else:
+            logger.info("[API] Cache is disabled")
 
 
 # ---------------------------------------------------------------------------
