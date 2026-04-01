@@ -364,13 +364,19 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
             raise HTTPException(500, str(e))
 
     @app.post("/api/switch")
-    async def switch_goal():
-        raise HTTPException(
-            501,
-            "Goal switching is only available when the server was started in "
-            "web-startup mode (--web with no inline goal). "
-            "Restart with a new goal instead."
-        )
+    async def switch_goal(body: dict = None):
+        # create_app is used when the server was launched with a pre-built
+        # orchestrator (inline goal).  Switching requires the unified app
+        # (started without an inline goal) which holds init_fn.  Return a
+        # proper JSON error so the UI displays a readable message instead of
+        # failing to parse an HTTPException response.
+        return {
+            "ok": False,
+            "error": (
+                "Goal switching is not available when the server was started "
+                "with an inline goal. Restart without a goal argument to enable switching."
+            ),
+        }
 
     return app
 
@@ -553,6 +559,100 @@ def _create_unified_app(
                 state["loading"] = False
 
         threading.Thread(target=_init, daemon=True, name="web-init").start()
+        return {"ok": True}
+
+    # ── Switch goal ───────────────────────────────────────────────────────────
+
+    @app.post("/api/switch")
+    async def api_switch(body: dict):
+        """
+        Tear down the current orchestrator and start a new one.
+
+        Accepts the same body shape as /api/startup so the frontend can reuse
+        the same payload-building logic for both initial start and mid-session
+        switching.  After returning {ok: true} the client polls /api/status
+        (same as after /api/startup) and reloads when initialized flips true.
+        """
+        if state["loading"]:
+            return {"ok": False, "error": "Already loading — wait for the current operation to finish"}
+        if init_fn is None:
+            return {"ok": False, "error": "No init_fn configured"}
+
+        from cuddlytoddly.ui.startup import StartupChoice, parse_manual_plan
+        from cuddlytoddly.__main__ import make_run_dir
+
+        mode      = body.get("mode", "new_goal")
+        goal_text = body.get("goal_text", "").strip()
+        plan_text = body.get("plan_text", "").strip()
+        run_path  = body.get("run_dir", "")
+
+        if mode == "existing":
+            if not run_path:
+                return {"ok": False, "error": "run_dir required"}
+            choice = StartupChoice(
+                mode="existing", run_dir=Path(run_path),
+                goal_text=goal_text or Path(run_path).name.replace("_", " "),
+                is_fresh=False,
+            )
+        elif mode == "manual_plan":
+            if not plan_text:
+                return {"ok": False, "error": "plan_text required"}
+            gt, evts = parse_manual_plan(plan_text)
+            if not gt:
+                return {"ok": False, "error": "Could not parse plan — add a goal line"}
+            choice = StartupChoice(
+                mode="manual_plan",
+                run_dir=make_run_dir(gt).resolve(),
+                goal_text=gt, plan_events=evts, is_fresh=True,
+            )
+        else:  # new_goal
+            if not goal_text:
+                return {"ok": False, "error": "goal_text required"}
+            choice = StartupChoice(
+                mode="new_goal",
+                run_dir=make_run_dir(goal_text).resolve(),
+                goal_text=goal_text, is_fresh=True,
+            )
+
+        # Stop the running orchestrator before replacing it so its background
+        # thread and thread-pool don't keep consuming resources.
+        old_orch = state["orchestrator"]
+        if old_orch is not None:
+            try:
+                old_orch.stop()
+            except Exception as exc:
+                logger.warning("[WEB] Could not cleanly stop old orchestrator: %s", exc)
+
+        state["orchestrator"] = None
+        state["run_dir"]      = None
+        state["ready"]        = False
+        state["loading"]      = True
+        state["error"]        = ""
+
+        def _switch():
+            try:
+                if mode == "existing":
+                    def _on_graph_ready(orch, rd):
+                        state["orchestrator"] = orch
+                        state["run_dir"]      = rd
+                        state["ready"]        = True
+                        logger.info("[WEB] Switch complete — DAG visible (%d nodes)",
+                                    len(orch.graph.nodes))
+                    init_fn(choice, on_graph_ready=_on_graph_ready)
+                else:
+                    orch, rd              = init_fn(choice)
+                    state["orchestrator"] = orch
+                    state["run_dir"]      = rd
+                    state["ready"]        = True
+                    logger.info("[WEB] Switch complete — DAG has %d nodes",
+                                len(orch.graph.nodes))
+            except Exception as e:
+                logger.exception("[WEB] switch failed: %s", e)
+                state["error"] = str(e)
+            finally:
+                state["loading"] = False
+
+        threading.Thread(target=_switch, daemon=True, name="web-switch").start()
         return {"ok": True}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
