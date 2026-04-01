@@ -324,6 +324,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
         skills_summary=skills.prompt_summary,
         min_tasks_per_goal=planner_cfg["min_tasks_per_goal"],
         max_tasks_per_goal=planner_cfg["max_tasks_per_goal"],
+        scrutinize_plan=planner_cfg["scrutinize_plan"],
     )
 
     executor = LLMExecutor(

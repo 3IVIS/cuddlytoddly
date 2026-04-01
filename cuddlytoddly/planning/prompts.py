@@ -341,6 +341,139 @@ def build_planner_skills_block(skills_summary: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Plan scrutinizer prompt
+# ---------------------------------------------------------------------------
+
+def build_plan_scrutinizer_prompt(
+    *,
+    original_planning_prompt: str,
+    draft_plan_json: str,
+    min_tasks: int = 3,
+    max_tasks: int = 8,
+) -> str:
+    """
+    Build the prompt used to scrutinize and improve a draft plan.
+
+    The LLM is shown its own draft plan alongside the complete set of
+    constraints from the original planning call.  It is asked to evaluate
+    the plan's content and realism first, structural correctness second,
+    then produce an improved plan in the same JSON format.
+
+    Parameters
+    ----------
+    original_planning_prompt : The full prompt that produced the draft plan.
+                               Embedding it here means every constraint
+                               (DAG snapshot, goals, existing IDs, skills,
+                               task-count limits, dependency semantics, format
+                               rules) is visible during scrutiny — no context
+                               is lost between the two LLM calls.
+    draft_plan_json          : The raw JSON string returned by the first call.
+    min_tasks                : Minimum tasks per goal (from config, for the
+                               explicit reminder in the scrutiny instructions).
+    max_tasks                : Maximum tasks per goal (same reason).
+    """
+    return f"""\
+You are a DAG planning assistant performing a critical self-review of a draft plan.
+Your primary job here is to evaluate whether the plan will actually work — whether
+the tasks are realistic, sufficient, and well-described — not just whether the JSON
+is correctly shaped.
+
+══════════════════════════════════════════════════════════════════════════════
+ORIGINAL PLANNING REQUEST (all constraints apply unchanged)
+══════════════════════════════════════════════════════════════════════════════
+{original_planning_prompt}
+
+══════════════════════════════════════════════════════════════════════════════
+DRAFT PLAN TO SCRUTINIZE
+══════════════════════════════════════════════════════════════════════════════
+{draft_plan_json}
+
+══════════════════════════════════════════════════════════════════════════════
+SCRUTINY INSTRUCTIONS
+══════════════════════════════════════════════════════════════════════════════
+Work through the following checks in order. For every problem you find,
+fix it in the output — do not just note it.
+
+── CONTENT AND REALISM (most important) ──────────────────────────────────────
+
+1. GOAL COVERAGE — Imagine the tasks completing one by one. When every task
+   is done, does the goal stated in the original request actually get achieved?
+   Ask yourself: what would be missing? If the goal would not be fully met,
+   add the tasks needed to close the gap. Be specific about what is missing
+   and why, not just that something feels incomplete.
+
+2. TASK REALISM — For each task, ask: could an autonomous agent actually
+   execute this given only its description and the declared inputs?
+   Flag and rewrite any task where:
+   - The description is too vague for an executor to know what to do
+     (e.g. "process the data" without saying what processing means).
+   - The task implicitly assumes knowledge or context that is not provided
+     in its required_input or available skills.
+   - The expected effort is wildly disproportionate — a single task that
+     would realistically take many separate steps should be split; a chain
+     of trivial tasks that could obviously be one should be merged.
+
+3. OUTPUT COMPLETENESS — For each task's declared outputs, ask: is this
+   output specific enough that a downstream task could use it without
+   guessing? A description like "report" or "data" is not sufficient.
+   Each output description must state what the content actually contains.
+   Rewrite any output description that is generic or circular (restating
+   the output name rather than its contents).
+
+4. MISSING IMPLICIT STEPS — Look for gaps the plan skips over. Common
+   examples: a task that writes a report but no prior task gathered the
+   raw information; a task that merges results but no task produced one
+   of those results; a task that calls an API but no task obtained the
+   credentials or endpoint. Add any missing bridging tasks.
+
+5. REDUNDANCY — Identify tasks that duplicate each other's work or whose
+   outputs are never consumed by any downstream task or by the goal.
+   Remove or merge redundant tasks and update dependencies accordingly.
+
+── CONSISTENCY (important) ───────────────────────────────────────────────────
+
+6. INPUT / OUTPUT ALIGNMENT — For every dependency edge A → B, confirm
+   that task A's outputs contain something task B's required_input needs.
+   If a required_input item has no producing task in dependencies, either
+   add the missing producer or remove the input. If a dependency exists
+   but nothing flows across it, remove the dependency.
+
+7. TASK DESCRIPTIONS VS METADATA — Each task's description must match
+   what its output list says it produces, and what its required_input says
+   it consumes. Fix any description that contradicts the metadata.
+
+── STRUCTURAL CONSTRAINTS (required, but secondary) ──────────────────────────
+
+8. Apply these mechanical rules to the final set of tasks and edges:
+   - Task count: between {min_tasks} and {max_tasks} tasks per goal.
+   - No ADD_NODE for IDs already listed in the "Nodes already in the DAG"
+     section of the original request.
+   - Tasks with no shared data dependency must share a parallel_group.
+   - Event format: key "type" (not "operation"), body key "payload" (not
+     "node"), ADD_DEPENDENCY fields inside "payload", no "status" or
+     "origin" in node payloads.
+
+── FINAL NARRATIVE ───────────────────────────────────────────────────────────
+
+9. Rewrite a_goal_result to reflect the improved plan. It must explain,
+   in concrete terms, how the final set of tasks chains together to
+   achieve the goal: what each task produces, who consumes it, and why
+   that ordering is necessary. If you cannot write this narrative without
+   hand-waving, that is a signal the plan still has gaps — fix them first.
+
+══════════════════════════════════════════════════════════════════════════════
+OUTPUT FORMAT
+══════════════════════════════════════════════════════════════════════════════
+Return the improved plan as a JSON object with exactly two keys:
+  "a_goal_result" — the updated narrative
+  "events"        — the corrected ADD_NODE / ADD_DEPENDENCY array
+
+No commentary, apologies, or text outside the JSON object.
+If the draft plan is already fully correct on all checks above, reproduce it
+unchanged.
+"""
+
+# ---------------------------------------------------------------------------
 # Quality-gate prompts
 # ---------------------------------------------------------------------------
 

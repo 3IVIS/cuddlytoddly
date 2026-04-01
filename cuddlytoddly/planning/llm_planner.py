@@ -4,7 +4,11 @@ import json
 
 from cuddlytoddly.core.events import ADD_NODE, ADD_DEPENDENCY, SET_RESULT
 from cuddlytoddly.planning.schemas import PLAN_SCHEMA
-from cuddlytoddly.planning.prompts import build_planner_prompt, build_planner_skills_block
+from cuddlytoddly.planning.prompts import (
+    build_planner_prompt,
+    build_planner_skills_block,
+    build_plan_scrutinizer_prompt,
+)
 from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
 from cuddlytoddly.infra.logging import get_logger
 
@@ -32,6 +36,7 @@ class LLMPlanner:
         skills_summary: str = "",
         min_tasks_per_goal: int = 3,
         max_tasks_per_goal: int = 8,
+        scrutinize_plan: bool = False,
     ):
         self.llm                 = llm_client
         self.graph               = graph
@@ -39,6 +44,7 @@ class LLMPlanner:
         self.skills_summary      = skills_summary
         self.min_tasks_per_goal  = min_tasks_per_goal
         self.max_tasks_per_goal  = max_tasks_per_goal
+        self.scrutinize_plan     = scrutinize_plan
 
     def propose(self, context):
         snapshot = context.snapshot
@@ -53,6 +59,9 @@ class LLMPlanner:
         prompt     = self._build_prompt(graph_view, goals)
 
         llm_output = self.llm.ask(prompt, schema=PLAN_SCHEMA)
+
+        if self.scrutinize_plan:
+            llm_output = self._scrutinize(prompt, llm_output)
 
         try:
             parsed = json.loads(llm_output)
@@ -86,6 +95,44 @@ class LLMPlanner:
             })
 
         return safe_events
+
+    # ── Scrutinizer ───────────────────────────────────────────────────────────
+
+    def _scrutinize(self, original_prompt: str, draft_json: str) -> str:
+        """
+        Feed the draft plan back to the LLM for self-review.
+
+        The scrutinizer prompt embeds the complete original planning prompt so
+        no constraint (DAG snapshot, existing IDs, task-count limits, dependency
+        semantics, format rules) is lost between the two calls.
+
+        Returns the improved JSON string, or the original draft if the
+        scrutiny call fails to parse.
+        """
+        scrutinizer_prompt = build_plan_scrutinizer_prompt(
+            original_planning_prompt=original_prompt,
+            draft_plan_json=draft_json,
+            min_tasks=self.min_tasks_per_goal,
+            max_tasks=self.max_tasks_per_goal,
+        )
+
+        logger.info("[PLANNER] Running plan scrutiny pass")
+        try:
+            improved = self.llm.ask(scrutinizer_prompt, schema=PLAN_SCHEMA)
+        except Exception as exc:
+            logger.warning("[PLANNER] Scrutiny LLM call failed (%s) — using draft", exc)
+            return draft_json
+
+        # Sanity-check: the improved output must be valid JSON before we
+        # replace the draft.  If not, fall back silently.
+        try:
+            json.loads(improved)
+        except Exception:
+            logger.warning("[PLANNER] Scrutiny output is not valid JSON — using draft")
+            return draft_json
+
+        logger.info("[PLANNER] Scrutiny pass complete — using improved plan")
+        return improved
 
     # ── Snapshot serialization ────────────────────────────────────────────────
 

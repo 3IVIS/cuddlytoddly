@@ -130,6 +130,12 @@ idle_sleep = 0.5
 min_tasks_per_goal = 3
 max_tasks_per_goal = 8
 
+# When true, every planning call is followed by a scrutinizing call where the
+# LLM reviews its own plan against all original constraints and produces an
+# improved version.  The improved plan is what reaches the reducer.
+# Set to false to skip scrutiny and use the raw plan directly (faster, cheaper).
+scrutinize_plan = true
+
 # ── Executor ──────────────────────────────────────────────────────────────────
 [executor]
 
@@ -418,6 +424,7 @@ def get_planner_cfg(cfg: dict) -> dict:
     return {
         "min_tasks_per_goal": c.get("min_tasks_per_goal", 3),
         "max_tasks_per_goal": c.get("max_tasks_per_goal", 8),
+        "scrutinize_plan":    c.get("scrutinize_plan",    False),
     }
 
 
