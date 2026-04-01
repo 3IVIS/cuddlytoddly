@@ -11,6 +11,7 @@
 <script>
 const SNAPSHOT_NODES = "SNAPSHOT_DATA_PLACEHOLDER";
 const EXPORT_META    = "EXPORT_META_PLACEHOLDER";
+const REPLAY_EVENTS  = "REPLAY_EVENTS_PLACEHOLDER";
 </script>
 
 <style>
@@ -330,6 +331,59 @@ body {
 }
 #empty-state.hidden { display: none; }
 #empty-state .big { font-size: 32px; opacity: 0.3; }
+
+/* ── Replay bar ──────────────────────────────────────────────────────── */
+#replay-bar {
+  height: 52px; min-height: 52px;
+  background: var(--surface);
+  border-top: 1px solid var(--border2);
+  display: flex; align-items: center;
+  gap: 10px; padding: 0 14px;
+  z-index: 10; flex-shrink: 0;
+}
+#replay-bar.hidden { display: none; }
+.replay-btn {
+  background: var(--surface2); border: 1px solid var(--border2);
+  color: var(--text-dim); border-radius: 5px;
+  width: 28px; height: 28px; font-size: 13px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.12s; flex-shrink: 0;
+}
+.replay-btn:hover { background: var(--surface3); color: var(--text); }
+.replay-btn.primary {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  width: 32px; height: 32px; font-size: 14px;
+}
+.replay-btn.primary:hover { filter: brightness(1.1); }
+#replay-scrubber {
+  flex: 1; min-width: 80px;
+  accent-color: var(--accent); cursor: pointer;
+}
+#replay-event-label {
+  font-size: 11px; color: var(--text-muted); white-space: nowrap;
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+  font-family: 'SF Mono','Fira Code',monospace;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 7px; flex-shrink: 0;
+}
+#replay-frame-count {
+  font-size: 11px; color: var(--text-muted);
+  white-space: nowrap; min-width: 60px; text-align: right; flex-shrink: 0;
+}
+#replay-speed {
+  background: var(--surface2); border: 1px solid var(--border2);
+  color: var(--text-dim); border-radius: 5px;
+  padding: 3px 6px; font-size: 11px; font-family: inherit;
+  cursor: pointer; outline: none; flex-shrink: 0;
+}
+.toolbar-btn-replay {
+  background: var(--surface2); border: 1px solid var(--border2);
+  color: var(--text-dim); border-radius: 6px;
+  padding: 5px 11px; font-size: 12px; cursor: pointer;
+  transition: all 0.15s; white-space: nowrap;
+}
+.toolbar-btn-replay:hover { background: var(--surface3); color: var(--text); }
+.toolbar-btn-replay.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 </style>
 </head>
 <body>
@@ -360,6 +414,9 @@ body {
   </div>
 
   <span id="toolbar-ts"></span>
+  <button id="btn-replay" class="toolbar-btn-replay hidden"
+          onclick="toggleReplayMode()" title="Animate DAG evolution">▶ Replay
+  </button>
 </div>
 
 <!-- ── Canvas ───────────────────────────────────────────────────────────── -->
@@ -476,7 +533,8 @@ function renderDAG() {
   g.setGraph({ rankdir: 'TB', ranksep: 80, nodesep: 44, marginx: 48, marginy: 48 });
   g.setDefaultEdgeLabel(() => ({}));
 
-  const visible = Object.entries(nodes)
+  const _src = (replayMode ? replayState : nodes);
+  const visible = Object.entries(_src)
     .filter(([, n]) => n.node_type !== 'execution_step');
 
   for (const [id] of visible) {
@@ -501,8 +559,8 @@ function renderDAG() {
   edges.enter().append('path').attr('class', 'edge-path')
     .merge(edges)
     .attr('d', d => line(d.points))
-    .attr('stroke', d => STATUS_COLOR_HEX[nodes[d.v]?.status] || '#2e3f58')
-    .attr('stroke-opacity', d => nodes[d.v]?.status === 'done' ? 0.35 : 0.55);
+    .attr('stroke', d => STATUS_COLOR_HEX[_src[d.v]?.status] || '#2e3f58')
+    .attr('stroke-opacity', d => _src[d.v]?.status === 'done' ? 0.35 : 0.55);
   edges.exit().remove();
 
   // Nodes
@@ -609,7 +667,8 @@ function updatePanel() {
   const output = node.metadata?.output || [];
   const notes  = node.metadata?.reflection_notes || [];
 
-  const stepChildren = Object.values(nodes).filter(n =>
+  const _panelSrc = (replayMode ? replayState : nodes);
+  const stepChildren = Object.values(_panelSrc).filter(n =>
     n.node_type === 'execution_step' &&
     n.dependencies.includes(selectedId) &&
     !n.metadata?.hidden
@@ -777,6 +836,251 @@ function trunc(s, n) {
   return s.length > n ? s.slice(0, n-1) + '…' : s;
 }
 
+
+// ── Replay engine ────────────────────────────────────────────────────────────
+
+let replayMode    = false;
+let replayState   = {};
+let replayFrame   = 0;
+let replayPlaying = false;
+let replayTimer   = null;
+let replayFirstFit = true;
+
+const CHECKPOINT_EVERY = 20;
+let   replayCheckpoints = [];
+
+// Pre-compute checkpoints at page load (runs synchronously, fast for typical logs)
+(function buildCheckpoints() {
+  if (!REPLAY_EVENTS || !REPLAY_EVENTS.length) return;
+  let state = {};
+  replayCheckpoints.push({});          // checkpoint[0] = empty graph
+  for (let i = 0; i < REPLAY_EVENTS.length; i++) {
+    applyEventInPlace(state, REPLAY_EVENTS[i]);
+    recomputeReadiness(state);
+    if ((i + 1) % CHECKPOINT_EVERY === 0) {
+      replayCheckpoints.push(deepCopyState(state));
+    }
+  }
+  document.getElementById('btn-replay').classList.remove('hidden');
+})();
+
+// ── Mini reducer ─────────────────────────────────────────────────────────────
+
+function applyEventInPlace(state, event) {
+  const t = event.type, p = event.payload || {}, id = p.node_id;
+  if (t === 'ADD_NODE' || t === 'INSERT_NODE') {
+    if (!state[id]) {
+      const deps = (p.dependencies || []);
+      state[id] = { id, node_type: p.node_type||'task', status: 'pending',
+        dependencies: deps.slice(), children: [], result: null,
+        metadata: Object.assign({}, p.metadata||{}), origin: p.origin||'system' };
+      for (const dep of deps)
+        if (state[dep] && !state[dep].children.includes(id)) state[dep].children.push(id);
+    } else {
+      const prev = state[id].metadata.description || '';
+      Object.assign(state[id].metadata, p.metadata||{});
+      if (prev) state[id].metadata.description = prev;
+      if (p.node_type) state[id].node_type = p.node_type;
+    }
+  } else if (t === 'REMOVE_NODE') {
+    if (state[id]) {
+      for (const dep of state[id].dependencies)
+        if (state[dep]) state[dep].children = state[dep].children.filter(c => c !== id);
+      for (const child of state[id].children)
+        if (state[child]) state[child].dependencies = state[child].dependencies.filter(d => d !== id);
+      delete state[id];
+    }
+  } else if (t === 'ADD_DEPENDENCY') {
+    const [s, dep] = [p.node_id, p.depends_on];
+    if (state[s]   && !state[s].dependencies.includes(dep)) state[s].dependencies.push(dep);
+    if (state[dep] && !state[dep].children.includes(s))     state[dep].children.push(s);
+  } else if (t === 'REMOVE_DEPENDENCY') {
+    const [s, dep] = [p.node_id, p.depends_on];
+    if (state[s])   state[s].dependencies = state[s].dependencies.filter(d => d !== dep);
+    if (state[dep]) state[dep].children   = state[dep].children.filter(c => c !== s);
+  } else if (t === 'MARK_RUNNING') {
+    if (state[id]) state[id].status = 'running';
+  } else if (t === 'MARK_DONE') {
+    if (state[id]) { state[id].status = 'done'; if (p.result !== undefined) state[id].result = p.result; }
+  } else if (t === 'MARK_FAILED') {
+    if (state[id]) state[id].status = 'failed';
+  } else if (t === 'RESET_NODE') {
+    if (state[id]) { state[id].status = 'pending'; state[id].result = null; }
+  } else if (t === 'SET_RESULT') {
+    if (state[id] && p.result !== undefined) state[id].result = p.result;
+  } else if (t === 'UPDATE_STATUS') {
+    if (state[id]) state[id].status = p.status;
+  } else if (t === 'SET_NODE_TYPE') {
+    if (state[id]) state[id].node_type = p.node_type;
+  } else if (t === 'UPDATE_METADATA') {
+    if (state[id]) {
+      const prev = state[id].metadata.description || '';
+      Object.assign(state[id].metadata, p.metadata||{});
+      if (prev && p.origin !== 'user') state[id].metadata.description = prev;
+    }
+  } else if (t === 'DETACH_NODE') {
+    if (state[id]) {
+      for (const dep of state[id].dependencies)
+        if (state[dep]) state[dep].children = state[dep].children.filter(c => c !== id);
+      for (const child of state[id].children)
+        if (state[child]) state[child].dependencies = state[child].dependencies.filter(d => d !== id);
+      delete state[id];
+    }
+  } else if (t === 'RESET_SUBTREE') {
+    const visited = new Set(), queue = [id];
+    while (queue.length) {
+      const nid = queue.shift();
+      if (visited.has(nid) || !state[nid]) continue;
+      visited.add(nid);
+      state[nid].status = 'pending'; state[nid].result = null;
+      queue.push(...(state[nid].children||[]));
+    }
+  }
+}
+
+function recomputeReadiness(state) {
+  for (const node of Object.values(state)) {
+    if (['done','running','failed','to_be_expanded'].includes(node.status)) continue;
+    node.status = node.dependencies.every(d => state[d]?.status === 'done') ? 'ready' : 'pending';
+  }
+}
+
+function deepCopyState(state) {
+  const out = {};
+  for (const [k, n] of Object.entries(state)) {
+    out[k] = { id: n.id, node_type: n.node_type, status: n.status,
+      dependencies: n.dependencies.slice(), children: n.children.slice(),
+      result: n.result, metadata: Object.assign({}, n.metadata), origin: n.origin };
+  }
+  return out;
+}
+
+// ── Jump to frame N (uses nearest checkpoint for instant scrubbing) ───────────
+
+function jumpToFrame(n) {
+  n = Math.max(0, Math.min(n, REPLAY_EVENTS.length));
+  const cpIdx = Math.min(Math.floor(n / CHECKPOINT_EVERY), replayCheckpoints.length - 1);
+  replayState = deepCopyState(replayCheckpoints[cpIdx]);
+  const startFrame = cpIdx * CHECKPOINT_EVERY;
+  for (let i = startFrame; i < n; i++) {
+    applyEventInPlace(replayState, REPLAY_EVENTS[i]);
+    recomputeReadiness(replayState);
+  }
+  replayFrame = n;
+  refreshReplayUI();
+  renderDAG();
+}
+
+// ── Playback controls ─────────────────────────────────────────────────────────
+
+function togglePlay() {
+  if (replayPlaying) pauseReplay(); else startPlay();
+}
+
+function startPlay() {
+  if (replayFrame >= REPLAY_EVENTS.length) jumpToFrame(0);
+  replayPlaying = true;
+  document.getElementById('btn-play-pause').textContent = '⏸';
+  scheduleNextTick();
+}
+
+function pauseReplay() {
+  replayPlaying = false;
+  document.getElementById('btn-play-pause').textContent = '▶';
+  clearTimeout(replayTimer);
+}
+
+function scheduleNextTick() {
+  const ms = parseInt(document.getElementById('replay-speed').value, 10);
+  replayTimer = setTimeout(playTick, ms);
+}
+
+function playTick() {
+  if (!replayPlaying) return;
+  if (replayFrame >= REPLAY_EVENTS.length) { pauseReplay(); return; }
+  applyEventInPlace(replayState, REPLAY_EVENTS[replayFrame]);
+  recomputeReadiness(replayState);
+  replayFrame++;
+  refreshReplayUI();
+  renderDAG();
+  if (replayFirstFit && Object.keys(replayState).length > 0) {
+    fitGraph(); replayFirstFit = false;
+  }
+  scheduleNextTick();
+}
+
+function replayStep(delta) { pauseReplay(); jumpToFrame(replayFrame + delta); }
+function replayJumpStart() { pauseReplay(); jumpToFrame(0); }
+function replayJumpEnd()   { pauseReplay(); jumpToFrame(REPLAY_EVENTS.length); }
+function scrubTo(n)        { pauseReplay(); jumpToFrame(n); }
+
+// ── Enter / exit replay mode ──────────────────────────────────────────────────
+
+function toggleReplayMode() {
+  if (replayMode) exitReplayMode(); else enterReplayMode();
+}
+
+function enterReplayMode() {
+  replayMode = true; replayPlaying = false;
+  replayFirstFit = true; replayState = {}; replayFrame = 0;
+  document.getElementById('btn-replay').classList.add('active');
+  document.getElementById('btn-replay').textContent = '■ Exit replay';
+  document.getElementById('replay-bar').classList.remove('hidden');
+  document.getElementById('replay-scrubber').max = REPLAY_EVENTS.length;
+  document.getElementById('btn-play-pause').textContent = '▶';
+  if (selectedId) closePanel();
+  renderDAG(); refreshReplayUI(); startPlay();
+}
+
+function exitReplayMode() {
+  pauseReplay(); replayMode = false;
+  document.getElementById('btn-replay').classList.remove('active');
+  document.getElementById('btn-replay').textContent = '▶ Replay';
+  document.getElementById('replay-bar').classList.add('hidden');
+  if (selectedId && !nodes[selectedId]) closePanel();
+  renderDAG(); fitGraph();
+}
+
+// ── UI refresh ────────────────────────────────────────────────────────────────
+
+function refreshReplayUI() {
+  document.getElementById('replay-scrubber').value = replayFrame;
+  document.getElementById('replay-frame-count').textContent =
+    replayFrame + ' / ' + REPLAY_EVENTS.length;
+  const evt = REPLAY_EVENTS[Math.max(0, replayFrame - 1)];
+  document.getElementById('replay-event-label').textContent =
+    evt ? describeEvent(evt) : '—';
+}
+
+function describeEvent(evt) {
+  const t = evt.type, p = evt.payload||{};
+  const id = (p.node_id||'').replace(/_/g,' ');
+  switch(t) {
+    case 'ADD_NODE':          return '+ ' + id + ' [' + (p.node_type||'task') + ']';
+    case 'REMOVE_NODE':       return '− ' + id;
+    case 'ADD_DEPENDENCY':    return (p.depends_on||'').replace(/_/g,' ') + ' → ' + id;
+    case 'REMOVE_DEPENDENCY': return 'remove edge → ' + id;
+    case 'MARK_RUNNING':      return '▶ ' + id;
+    case 'MARK_DONE':         return '✓ ' + id;
+    case 'MARK_FAILED':       return '✗ ' + id;
+    case 'RESET_NODE':        return '↺ ' + id;
+    case 'UPDATE_METADATA':   return '· ' + id;
+    case 'SET_RESULT':        return '≡ result → ' + id;
+    case 'SET_NODE_TYPE':     return '⟲ type → ' + id;
+    case 'RESET_SUBTREE':     return '↺ subtree ' + id;
+    default:                  return t.toLowerCase().replace(/_/g,' ');
+  }
+}
+
+// Keyboard shortcuts when in replay mode
+document.addEventListener('keydown', e => {
+  if (!replayMode) return;
+  if (e.key === 'Escape')      exitReplayMode();
+  else if (e.key === ' ')      { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); replayStep(1); }
+  else if (e.key === 'ArrowLeft')  { e.preventDefault(); replayStep(-1); }
+});
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 initSVG();
@@ -789,5 +1093,25 @@ if (hasNodes) {
   fitGraph();
 }
 </script>
+
+<!-- ── Replay bar ──────────────────────────────────────────────────────── -->
+<div id="replay-bar" class="hidden">
+  <button class="replay-btn" onclick="replayJumpStart()" title="Start">⏮</button>
+  <button class="replay-btn" onclick="replayStep(-1)"    title="Step back">◀</button>
+  <button class="replay-btn primary" id="btn-play-pause"
+          onclick="togglePlay()" title="Play / Pause">▶</button>
+  <button class="replay-btn" onclick="replayStep(1)"     title="Step forward">▶</button>
+  <button class="replay-btn" onclick="replayJumpEnd()"   title="End">⏭</button>
+  <span id="replay-event-label">—</span>
+  <input id="replay-scrubber" type="range" min="0" max="0" value="0"
+         oninput="scrubTo(+this.value)">
+  <span id="replay-frame-count">0 / 0</span>
+  <select id="replay-speed">
+    <option value="1000">Slow</option>
+    <option value="300" selected>Normal</option>
+    <option value="100">Fast</option>
+    <option value="30">Faster</option>
+  </select>
+</div>
 </body>
 </html>

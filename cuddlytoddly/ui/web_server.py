@@ -96,12 +96,13 @@ def _build_static_html(snapshot: dict, run_dir: Path) -> tuple[str, Path]:
     """
     Generate a standalone, self-contained HTML file from the current snapshot.
 
-    The template (web_ui_static.html) contains two placeholder tokens:
-      "SNAPSHOT_DATA_PLACEHOLDER"  — replaced with the serialised nodes JSON
-      "EXPORT_META_PLACEHOLDER"    — replaced with {goal, timestamp} JSON
+    The template (web_ui_static.html) contains three placeholder tokens:
+      "SNAPSHOT_DATA_PLACEHOLDER"  — serialised nodes dict
+      "EXPORT_META_PLACEHOLDER"    — {goal, timestamp}
+      "REPLAY_EVENTS_PLACEHOLDER"  — ordered list of events from events.jsonl
+                                     (empty list when the log is not found)
 
-    The file is written to <run_dir>/outputs/ and the path is returned alongside
-    the HTML string so callers can both save it and return the path to the client.
+    The file is written to <run_dir>/outputs/ and (html_string, path) is returned.
     """
     template = (_HERE / "web_ui_static.html").read_text(encoding="utf-8")
 
@@ -117,10 +118,27 @@ def _build_static_html(snapshot: dict, run_dir: Path) -> tuple[str, Path]:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     meta_json = json.dumps({"goal": goal_title, "timestamp": ts})
 
+    # ── Read and embed the event log ──────────────────────────────────────────
+    # Events are read in order from events.jsonl and embedded verbatim so the
+    # standalone file can replay the full history without any server connection.
+    events: list[dict] = []
+    events_path = run_dir / "events.jsonl"
+    if events_path.exists():
+        for raw_line in events_path.read_text(encoding="utf-8").splitlines():
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                events.append(json.loads(raw_line))
+            except json.JSONDecodeError:
+                logger.warning("[EXPORT] Skipping corrupt event line: %.80s", raw_line)
+    events_json = json.dumps(events, default=str, ensure_ascii=False)
+
     html = (
         template
         .replace('"SNAPSHOT_DATA_PLACEHOLDER"', nodes_json)
         .replace('"EXPORT_META_PLACEHOLDER"',   meta_json)
+        .replace('"REPLAY_EVENTS_PLACEHOLDER"',  events_json)
     )
 
     safe_ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -128,6 +146,8 @@ def _build_static_html(snapshot: dict, run_dir: Path) -> tuple[str, Path]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
 
+    logger.info("[EXPORT] Static HTML written to %s (%d events embedded)",
+                out_path, len(events))
     return html, out_path
 
 
