@@ -16,9 +16,8 @@ from cuddlytoddly.core.events import (
 from cuddlytoddly.core.reducer import apply_event
 from cuddlytoddly.infra.event_queue import EventQueue
 from cuddlytoddly.infra.logging import get_logger
-from cuddlytoddly.planning.llm_interface import LLMStoppedError
+from cuddlytoddly.planning.llm_interface import LLMStoppedError, BaseLLM, token_counter
 from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
-from cuddlytoddly.planning.llm_interface import token_counter
 
 logger = get_logger(__name__)
 
@@ -85,13 +84,17 @@ class SimpleOrchestrator:
         self._thread: threading.Thread | None = None
         self._prev_results: dict[str, object] = {}
 
-        # LLM clients for pause/resume — collected from planner and executor
+        # LLM clients for pause/resume — collected from planner and executor.
+        # Only real BaseLLM instances are registered; MagicMock/stub objects in
+        # tests auto-create any attribute, so the old hasattr() check would
+        # accidentally register them and make llm_stopped always return True.
         self._llm_clients = []
         self._reporters: dict[str, ExecutionStepReporter] = {}
 
         for component in (planner, executor, quality_gate):
-            if component is not None and hasattr(component, "llm"):
-                self._llm_clients.append(component.llm)
+            client = getattr(component, "llm", None)
+            if isinstance(client, BaseLLM):
+                self._llm_clients.append(client)
 
     # ── LLM pause / resume ───────────────────────────────────────────────────
 
