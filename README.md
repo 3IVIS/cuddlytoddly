@@ -15,20 +15,20 @@ Think of it as holding the model's hand while it learns to walk through complex 
 ## How it works
 
 1. A plain-English **goal** is seeded into the graph.
-2. The **LLMPlanner** decomposes it into a DAG of tasks with explicit dependencies.
+2. The **LLMPlanner** decomposes it into a DAG of tasks with explicit dependencies. Each plan passes through an optional LLM scrutiny pass, structural validation, and deterministic constraint checks before any node reaches the graph.
 3. The **SimpleOrchestrator** picks up ready nodes and hands them to the **LLMExecutor**.
 4. The executor runs a multi-turn LLM loop, calling tools (code execution, file I/O, custom skills) until the task is done.
 5. The **QualityGate** checks the result against declared outputs; if something is missing it injects a bridging task automatically.
 6. Every mutation is written to an **event log** — crash and resume with no lost work.
 
 ```
-goal → LLMPlanner → TaskGraph (DAG)
-                        │
-              SimpleOrchestrator
-              ├── LLMExecutor + tools
-              └── QualityGate (verify / bridge)
-                        │
-                   EventLog (JSONL) → replay on restart
+goal → LLMPlanner → [scrutinize?] → [validate] → [constraint check] → TaskGraph (DAG)
+                                                                              │
+                                                                  SimpleOrchestrator
+                                                                  ├── LLMExecutor + tools
+                                                                  └── QualityGate (verify / bridge)
+                                                                              │
+                                                                         EventLog (JSONL) → replay on restart
 ```
 
 ---
@@ -67,7 +67,7 @@ On first run, a `config.toml` is written to your user data directory with all de
 python -c "from cuddlytoddly.config import CONFIG_PATH; print(CONFIG_PATH)"
 ```
 
-Pass no argument to open the startup screen (resume a previous run, load a manual plan, etc.). The web UI opens automatically. Run data is stored locally and can be resumed — the event log preserves all state.
+Pass no argument to open the startup screen (resume a previous run, load a manual plan, etc.). The web UI opens automatically and supports switching to a different goal mid-session. Run data is stored locally and can be resumed — the event log preserves all state.
 
 ### Switching backends
 
@@ -209,8 +209,8 @@ All LLM prompt templates and JSON output schemas are consolidated into two files
 
 | File | What it contains |
 |---|---|
-| `cuddlytoddly/planning/prompts.py` | Every prompt template sent to the LLM: planner, executor, verify-result, check-dependencies, plus the system prompt constants |
-| `cuddlytoddly/planning/schemas.py` | Every JSON schema used for structured output: `PLAN_SCHEMA`, `EXECUTION_TURN_SCHEMA`, `RESULT_VERIFICATION_SCHEMA`, etc. |
+| `cuddlytoddly/planning/prompts.py` | Every prompt template sent to the LLM: planner, scrutinizer, ghost node resolution, executor, verify-result, check-dependencies, plus the system prompt constants |
+| `cuddlytoddly/planning/schemas.py` | Every JSON schema used for structured output: `PLAN_SCHEMA`, `EXECUTION_TURN_SCHEMA`, `RESULT_VERIFICATION_SCHEMA`, `GHOST_NODE_RESOLUTION_SCHEMA`, etc. |
 
 Each function in `prompts.py` is documented with its parameters so it's clear what context is injected where. Edit the text freely — the functions use standard Python f-strings with named parameters.
 
@@ -267,12 +267,13 @@ cuddlytoddly/
 ├── engine/         # SimpleOrchestrator, QualityGate, ExecutionStepReporter
 ├── infra/          # Logging, EventQueue, EventLog, replay
 ├── planning/
-│   ├── prompts.py      ← all LLM prompt templates (edit here)
-│   ├── schemas.py      ← all JSON output schemas (edit here)
+│   ├── prompts.py              ← all LLM prompt templates (edit here)
+│   ├── schemas.py              ← all JSON output schemas (edit here)
 │   ├── llm_interface.py
 │   ├── llm_planner.py
 │   ├── llm_executor.py
-│   └── llm_output_validator.py
+│   ├── llm_output_validator.py
+│   └── plan_constraint_checker.py
 ├── skills/         # SkillLoader + built-in skill packs
 │   ├── code_execution/
 │   └── file_ops/
@@ -304,7 +305,12 @@ llm = create_llm_client("claude", model="claude-opus-4-6")
 
 graph    = TaskGraph()
 skills   = SkillLoader()
-planner  = LLMPlanner(llm_client=llm, graph=graph, skills_summary=skills.prompt_summary)
+planner  = LLMPlanner(
+    llm_client=llm,
+    graph=graph,
+    skills_summary=skills.prompt_summary,
+    scrutinize_plan=False,   # set True to enable post-planning LLM self-review
+)
 executor = LLMExecutor(llm_client=llm, tool_registry=skills.registry)
 gate     = QualityGate(llm_client=llm, tool_registry=skills.registry)
 

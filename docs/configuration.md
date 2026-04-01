@@ -112,6 +112,20 @@ idle_sleep = 0.5
 min_tasks_per_goal = 3
 max_tasks_per_goal = 8
 
+# When true, every planning call is followed by a scrutinizing call where the
+# LLM reviews its own draft plan for content quality and realism — checking
+# goal coverage, task descriptions, output completeness, missing steps, and
+# input/output alignment — and produces an improved version.  The improved
+# plan is what enters the validator pipeline; the raw draft is discarded.
+#
+# Cost: one extra LLM call per planning cycle (same model, same backend).
+# Benefit: measurably fewer vague tasks, orphaned outputs, and missing
+# intermediate steps reaching the executor.
+#
+# Recommended: true for production goals where plan quality matters more than
+# speed; false for fast iteration or when using a slow/expensive model.
+scrutinize_plan = false
+
 # ── Executor ──────────────────────────────────────────────────────────────────
 [executor]
 
@@ -166,7 +180,7 @@ port = 8765
 | `[llamacpp]` | Local model file, GPU offload, context size, temperature, caching |
 | `[claude]` / `[openai]` | Remote model name, temperature, token limit, caching |
 | `[orchestrator]` | Parallelism, turn limits, gap-fill retries, idle polling rate |
-| `[planner]` | Task count range per goal decomposition |
+| `[planner]` | Task count range per goal decomposition; optional scrutiny pass |
 | `[executor]` | Character budgets for inputs, tool results, and inline results |
 | `[file_llm]` | Polling, timeout, and caching for the file-based development backend |
 | `[server]` | Host and port for the web UI |
@@ -262,6 +276,8 @@ All three backends support caching prompt → response pairs to a JSON file in t
 
 The cache is **per run** — each goal slug gets its own directory so caches from different runs don't interfere. Resuming a run reuses the existing cache, which means tasks whose prompts haven't changed (e.g. a planning call for a goal that was already expanded before the crash) return instantly on restart.
 
+**Note on scrutiny caching:** when `scrutinize_plan = true`, both the planning call and the scrutiny call are cached independently. Because the scrutiny prompt embeds the full planning prompt verbatim, its cache key is necessarily different from the planning call's key — there is no risk of collision.
+
 **Disabling the cache** for a single backend:
 
 ```toml
@@ -272,6 +288,8 @@ cache_enabled = false
 **Clearing the cache** while the server is running: use `orchestrator.planner.llm.clear_cache()` (or the equivalent for the executor's client) from a Python console, or simply delete the JSON file from the run directory.
 
 **When to disable:** during active prompt engineering, where you want every call to reach the model so you can see the effect of your edits immediately.
+
+---
 
 ## Tuning guide
 
@@ -284,6 +302,17 @@ Adjust `[planner] min_tasks_per_goal` and `max_tasks_per_goal`. The planner prom
 min_tasks_per_goal = 4
 max_tasks_per_goal = 12
 ```
+
+### Plans have vague tasks, missing steps, or weak descriptions
+
+Enable the scrutiny pass. The scrutinizer reviews each draft plan for goal coverage, task realism, output completeness, and input/output alignment before the plan enters the validator.
+
+```toml
+[planner]
+scrutinize_plan = true
+```
+
+This adds one LLM call per planning cycle. If you are using a slow or expensive model and the plans are generally acceptable, leave this off. Enable it when plan quality is the bottleneck — vague executor failures, tasks that assume context they don't have, or chains that don't actually produce what the goal needs.
 
 ### Tasks hit the turn limit before finishing
 
@@ -329,8 +358,8 @@ All prompt templates and JSON output schemas live in dedicated files — not sca
 
 | File | Contents |
 |---|---|
-| `cuddlytoddly/planning/prompts.py` | All prompt text: planner decomposition, executor task prompt, quality-gate verification and dependency-check prompts, system prompt constants |
-| `cuddlytoddly/planning/schemas.py` | All JSON schemas: `PLAN_SCHEMA`, `EXECUTION_TURN_SCHEMA`, `RESULT_VERIFICATION_SCHEMA`, `DEPENDENCY_CHECK_SCHEMA`, and the shared sub-schemas |
+| `cuddlytoddly/planning/prompts.py` | All prompt text: planner decomposition, scrutinizer self-review, executor task prompt, ghost node resolution, quality-gate verification and dependency-check prompts, system prompt constants |
+| `cuddlytoddly/planning/schemas.py` | All JSON schemas: `PLAN_SCHEMA`, `EXECUTION_TURN_SCHEMA`, `RESULT_VERIFICATION_SCHEMA`, `DEPENDENCY_CHECK_SCHEMA`, `GHOST_NODE_RESOLUTION_SCHEMA`, and the shared sub-schemas |
 
 Edit those files directly to change what the LLM sees. Prompt functions use standard Python f-strings; schema dicts are plain Python — no DSL or templating engine to learn.
 

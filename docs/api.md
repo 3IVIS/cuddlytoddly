@@ -17,6 +17,7 @@ All JSON schemas used for structured LLM output are defined here and imported by
 | `EXECUTION_TURN_SCHEMA` | Executor (single tool/result turn) |
 | `RESULT_VERIFICATION_SCHEMA` | QualityGate `verify_result` |
 | `DEPENDENCY_CHECK_SCHEMA` | QualityGate `check_dependencies` |
+| `GHOST_NODE_RESOLUTION_SCHEMA` | `PlanConstraintChecker` ghost node resolution |
 
 All schemas from this module are also re-exported by `cuddlytoddly.planning.llm_interface` for backward compatibility.
 
@@ -46,6 +47,23 @@ build_planner_prompt(
 ```
 
 Assembles the planner decomposition prompt. Called by `LLMPlanner._build_prompt()`.
+
+```python
+build_plan_scrutinizer_prompt(
+    *, original_planning_prompt, draft_plan_json, min_tasks=3, max_tasks=8
+) -> str
+```
+
+Assembles the scrutinizer prompt used to self-review a draft plan. The full original planning prompt is embedded verbatim so every constraint (DAG snapshot, existing node IDs, task-count limits, dependency semantics, format rules) remains in context during the second call. Called by `LLMPlanner._scrutinize()` when `scrutinize_plan=True`.
+
+```python
+build_ghost_node_resolution_prompt(
+    *, ghost_node_id, ghost_description, new_nodes, existing_nodes,
+    active_goal_id, edges, valid_candidates
+) -> str
+```
+
+Assembles the prompt used to resolve a ghost node — a new plan node whose output is consumed by nothing. The LLM is shown the full plan context and a pre-filtered candidate list (ancestors excluded to prevent cycles) and asked to choose the best dependent. Called by `PlanConstraintChecker._resolve_ghost_nodes()`.
 
 ```python
 build_verify_result_prompt(
@@ -140,7 +158,7 @@ All backend classes expose a `clear_cache()` convenience method that delegates h
 
 ## `cuddlytoddly.planning.llm_planner`
 
-### `LLMPlanner(llm_client, graph, skills_summary="", min_tasks_per_goal=3, max_tasks_per_goal=8)`
+### `LLMPlanner(llm_client, graph, skills_summary="", min_tasks_per_goal=3, max_tasks_per_goal=8, scrutinize_plan=False)`
 
 Decomposes unexpanded goal nodes into child tasks.
 
@@ -149,13 +167,43 @@ planner = LLMPlanner(
     llm_client=llm,
     graph=graph,
     skills_summary=skills.prompt_summary,
-    min_tasks_per_goal=3,   # from config [planner]
-    max_tasks_per_goal=8,   # from config [planner]
+    min_tasks_per_goal=3,     # from config [planner]
+    max_tasks_per_goal=8,     # from config [planner]
+    scrutinize_plan=False,    # from config [planner]
 )
 events: list[dict] = planner.propose(context)
 ```
 
 `min_tasks_per_goal` and `max_tasks_per_goal` are injected into the planner prompt to guide the LLM's decomposition granularity. They default to the `[planner]` values in `config.toml` when the system is started via the CLI.
+
+When `scrutinize_plan=True`, every planning call is followed by a second LLM call using `build_plan_scrutinizer_prompt()`. The scrutinizer reviews the draft for goal coverage, task realism, output completeness, missing steps, redundancy, and input/output alignment — and produces a corrected version that replaces the draft before it enters the validator pipeline. See [configuration.md](configuration.md#scrutinize_plan) for the trade-offs.
+
+After structural validation by `LLMOutputValidator`, the plan passes through `PlanConstraintChecker` before the final events are returned to the orchestrator.
+
+---
+
+## `cuddlytoddly.planning.plan_constraint_checker`
+
+### `PlanConstraintChecker(graph, llm_client)`
+
+Post-validator constraint checker that enforces plan-level invariants on the `safe_events` list produced by `LLMOutputValidator`. Constructed automatically by `LLMPlanner` and called at the end of every `propose()` call.
+
+```python
+checker = PlanConstraintChecker(graph=graph, llm_client=llm)
+repaired_events = checker.check_and_repair(safe_events, active_goal_id)
+```
+
+Checks are applied in this order, as earlier repairs affect what later checks see:
+
+| # | Check | Action on violation |
+|---|---|---|
+| 7 | Duplicate `ADD_DEPENDENCY` edges | Silent deduplication |
+| 4 | Cycles in the proposed subgraph | Drop all cycle-member nodes and incident edges; log each dropped node |
+| 6b | `required_input` items on a node with no dependencies | Strip orphaned items in-place; warn |
+| 6a | Dependencies with no corresponding `required_input` | Warn only — may be a valid ordering constraint |
+| Ghost | New node with no dependents (nothing depends on it) | LLM call to select the best dependent; emit `ADD_DEPENDENCY` if valid candidate returned |
+
+**Ghost node resolution** fires one focused LLM call per ghost node using `build_ghost_node_resolution_prompt()` and `GHOST_NODE_RESOLUTION_SCHEMA`. The candidate list passed to the LLM is pre-filtered to exclude all ancestors of the ghost node, preventing the LLM from suggesting a dependent that would introduce a cycle. If the LLM returns an invalid candidate or the call fails, the ghost node is left unconnected (logged as a warning) — the plan proceeds and the orchestrator will re-plan on the next cycle.
 
 ---
 
@@ -341,10 +389,12 @@ Loads `config.toml`, creating it with auto-detected defaults on first run.
 
 Convenience accessors that return the named config section as a flat dict with defaults filled in. Old `config.toml` files that predate a section will work without requiring a manual edit.
 
+`get_planner_cfg` returns `min_tasks_per_goal`, `max_tasks_per_goal`, and `scrutinize_plan`.
+
 ```python
-from cuddlytoddly.config import load_config, get_executor_cfg
+from cuddlytoddly.config import load_config, get_planner_cfg
 
 cfg = load_config()
-exec_cfg = get_executor_cfg(cfg)
-# {"max_inline_result_chars": 3000, "max_total_input_chars": 3000, ...}
+planner_cfg = get_planner_cfg(cfg)
+# {"min_tasks_per_goal": 3, "max_tasks_per_goal": 8, "scrutinize_plan": False}
 ```
