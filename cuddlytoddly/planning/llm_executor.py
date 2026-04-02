@@ -103,7 +103,12 @@ class LLMExecutor:
 
     def _tool_schema_summary(self):
         if not self.tools:
-            return "No tools available."
+            return (
+                "NO TOOLS ARE AVAILABLE FOR THIS TASK.\n"
+                "Do NOT attempt to call any tool or function — there are none registered.\n"
+                "You must complete this task using your own knowledge and reasoning.\n"
+                "Set done=true with a result based on what you know."
+            )
         lines = []
         for name, tool in self.tools.tools.items():
             desc   = getattr(tool, "description", "no description")
@@ -313,8 +318,25 @@ class LLMExecutor:
                 history.append({
                     "name":   tool_name,
                     "args":   tool_args,
-                    "result": f"ERROR: tool '{tool_name}' not found",
+                    "result": (
+                        f"ERROR: tool '{tool_name}' not found. "
+                        "No tools are available — you must complete this task "
+                        "using your own knowledge. Set done=true with a result "
+                        "based on what you know; do not call any tool."
+                    ),
                 })
+                # Early exit if every turn so far has been a tool-not-found
+                # error — the LLM is stuck in a loop and won't self-correct.
+                if all(
+                    h.get("result", "").startswith("ERROR: tool") and "not found" in h.get("result", "")
+                    for h in history
+                ):
+                    logger.error(
+                        "[EXECUTOR] Node %s: all %d turn(s) hit tool-not-found — "
+                        "aborting early, no tools registered for this task",
+                        node.id, len(history),
+                    )
+                    return None
                 continue
 
             logger.info("[EXECUTOR] Node %s calling tool '%s'", node.id, tool_name)

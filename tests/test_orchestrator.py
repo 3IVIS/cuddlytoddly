@@ -1,4 +1,4 @@
-"""Tests for cuddlytoddly.engine.llm_orchestrator.SimpleOrchestrator."""
+"""Tests for cuddlytoddly.engine.llm_orchestrator.Orchestrator."""
 import json
 import time
 import threading
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from cuddlytoddly.core.task_graph import TaskGraph
 from cuddlytoddly.core.events import Event, ADD_NODE, MARK_DONE, RESET_SUBTREE
 from cuddlytoddly.core.reducer import apply_event
-from cuddlytoddly.engine.llm_orchestrator import SimpleOrchestrator
+from cuddlytoddly.engine.llm_orchestrator import Orchestrator
 from cuddlytoddly.infra.event_queue import EventQueue
 from conftest import FakeLLM, add_node, mark_done
 
@@ -25,7 +25,7 @@ def make_orchestrator(graph=None, planner=None, executor=None,
     mock_gate.verify_result.return_value = (True, "ok")
     mock_gate.check_dependencies.return_value = None
 
-    orch = SimpleOrchestrator(
+    orch = Orchestrator(
         graph=g,
         planner=mock_planner,
         executor=mock_executor,

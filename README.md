@@ -19,7 +19,7 @@ Think of it as holding AI's hand through planning and into execution — not bli
 1. A plain-English **goal** is seeded into the graph. Nothing runs yet.
 2. The **LLMPlanner** builds an explicit plan — a DAG of tasks with declared dependencies and expected outputs — before any execution begins. The draft plan passes through an optional self-review pass, structural validation, and deterministic constraint checks before any node is committed to the graph.
 3. **You can inspect and edit the plan** at this point, or at any point during execution. Pause the LLM, change a task description, add or remove a dependency, promote a task to a subgoal for finer breakdown, or switch goals entirely. Only affected branches re-run — completed work is preserved.
-4. The **SimpleOrchestrator** picks up ready nodes and dispatches them to the **LLMExecutor** concurrently.
+4. The **Orchestrator** picks up ready nodes and dispatches them to the **LLMExecutor** concurrently.
 5. The executor runs a multi-turn LLM loop, calling real tools (code execution, file I/O, custom skills) until the task produces a concrete result.
 6. The **QualityGate** checks each result against declared outputs; if something is missing it injects a bridging task automatically.
 7. Every mutation is written to an **event log** — crash and resume from exactly where you left off, with no lost work.
@@ -29,7 +29,7 @@ goal → [clarification fields] → LLMPlanner → [scrutinize?] → [validate] 
                ↑ user can edit                                                      │
                └── on confirm → resets children → partial replan              TaskGraph (DAG)
                                                                                     │
-                                                                        SimpleOrchestrator
+                                                                        Orchestrator
                                                                         ├── LLMExecutor + tools
                                                                         └── QualityGate (verify / bridge)
                                                                                     │
@@ -269,7 +269,7 @@ python -c "from platformdirs import user_data_dir; print(user_data_dir('cuddlyto
 ```
 cuddlytoddly/
 ├── core/           # TaskGraph, events, reducer, ID generator
-├── engine/         # SimpleOrchestrator, QualityGate, ExecutionStepReporter
+├── engine/         # Orchestrator, QualityGate, ExecutionStepReporter
 ├── infra/          # Logging, EventQueue, EventLog, replay
 ├── planning/
 │   ├── prompts.py              ← all LLM prompt templates (edit here)
@@ -302,7 +302,7 @@ from cuddlytoddly.planning.llm_interface import create_llm_client
 from cuddlytoddly.planning.llm_planner import LLMPlanner
 from cuddlytoddly.planning.llm_executor import LLMExecutor
 from cuddlytoddly.engine.quality_gate import QualityGate
-from cuddlytoddly.engine.llm_orchestrator import SimpleOrchestrator
+from cuddlytoddly.engine.llm_orchestrator import Orchestrator
 from cuddlytoddly.skills.skill_loader import SkillLoader
 
 # Swap "claude" for "openai" or "llamacpp" — everything else is identical
@@ -319,7 +319,7 @@ planner  = LLMPlanner(
 executor = LLMExecutor(llm_client=llm, tool_registry=skills.registry)
 gate     = QualityGate(llm_client=llm, tool_registry=skills.registry)
 
-orchestrator = SimpleOrchestrator(
+orchestrator = Orchestrator(
     graph=graph, planner=planner, executor=executor,
     quality_gate=gate, event_queue=EventQueue(),
 )

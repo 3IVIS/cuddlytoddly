@@ -18,7 +18,7 @@ from cuddlytoddly.planning.llm_interface import create_llm_client
 from cuddlytoddly.planning.llm_planner import LLMPlanner
 from cuddlytoddly.planning.llm_executor import LLMExecutor
 from cuddlytoddly.engine.quality_gate import QualityGate
-from cuddlytoddly.engine.llm_orchestrator import SimpleOrchestrator
+from cuddlytoddly.engine.llm_orchestrator import Orchestrator
 from cuddlytoddly.skills.skill_loader import SkillLoader
 from cuddlytoddly.ui.curses_ui import run_ui
 from cuddlytoddly.ui.startup import StartupChoice
@@ -340,7 +340,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
     quality_gate = QualityGate(llm_client=shared_llm, tool_registry=registry)
 
     queue        = EventQueue()
-    orchestrator = SimpleOrchestrator(
+    orchestrator = Orchestrator(
         graph=graph,
         planner=planner,
         executor=executor,

@@ -262,12 +262,12 @@ All numeric parameters default to reasonable values when constructing programmat
 
 ## `cuddlytoddly.engine.llm_orchestrator`
 
-### `SimpleOrchestrator(graph, planner, executor, event_log, event_queue, max_workers, quality_gate, max_gap_fill_attempts, idle_sleep)`
+### `Orchestrator(graph, planner, executor, event_log, event_queue, max_workers, quality_gate, max_gap_fill_attempts, idle_sleep)`
 
 The top-level plan→execute loop.
 
 ```python
-orchestrator = SimpleOrchestrator(
+orchestrator = Orchestrator(
     graph=graph,
     planner=planner,
     executor=executor,

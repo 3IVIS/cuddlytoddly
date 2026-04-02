@@ -141,23 +141,32 @@ class LLMPlanner:
         safe_events = validator.validate_and_normalize(
             raw_events, forced_origin="planning"
         )
+        # Pass clarif_id so the checker knows root tasks will get a dependency
+        # on the clarification node even though it is not in this event batch.
+        # Without this: root tasks look dependency-free → 6b strips their
+        # required_input; if nothing else depends on them they look like ghosts.
         safe_events = self.constraint_checker.check_and_repair(
-            safe_events, active_goal.id
+            safe_events, active_goal.id,
+            known_dep_id=clarif_id,
         )
 
         # ── Wire clarification node as dependency of all root task nodes ───────
-        # Root tasks are new nodes whose dependencies contain no other new nodes.
+        # Root tasks: new nodes whose deps don't reference any other new node.
+        # IMPORTANT: these events must go AFTER safe_events so task ADD_NODE
+        # events have already been applied when the reducer processes these edges.
+        # add_dependency() silently no-ops if either node doesn't exist yet.
         new_node_ids = {
             evt["payload"]["node_id"]
             for evt in safe_events
             if evt["type"] == ADD_NODE
         }
+        wiring_events = []
         for evt in safe_events:
             if evt["type"] == ADD_NODE:
                 node_id = evt["payload"]["node_id"]
                 deps    = set(evt["payload"].get("dependencies", []))
                 if not (deps & new_node_ids):
-                    clarif_events.append({
+                    wiring_events.append({
                         "type": ADD_DEPENDENCY,
                         "payload": {
                             "node_id":    node_id,
@@ -181,9 +190,10 @@ class LLMPlanner:
                 },
             })
 
-        # clarif_events must be first so the clarification node exists before
-        # any ADD_DEPENDENCY events referencing it are applied.
-        return clarif_events + safe_events
+        # clarif_events first: clarification node must exist before safe_events
+        # reference it.  wiring_events last: task ADD_NODE events must have
+        # been applied before these ADD_DEPENDENCY edges can be wired.
+        return clarif_events + safe_events + wiring_events
 
     # ── Clarification node generation (Call 1) ────────────────────────────────
 
@@ -232,9 +242,12 @@ class LLMPlanner:
                     },
                 },
             },
-            # Mark done immediately — execution proceeds on best-guess values.
+            # MARK_DONE (not SET_RESULT) — sets both status="done" and result so
+            # recompute_readiness() will promote dependent root tasks to "ready".
+            # SET_RESULT only updates node.result without touching status, which
+            # would leave the node at "ready" and block all dependent tasks.
             {
-                "type": SET_RESULT,
+                "type": "MARK_DONE",
                 "payload": {
                     "node_id": clarif_id,
                     "result":  json.dumps(fields, ensure_ascii=False),

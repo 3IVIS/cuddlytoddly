@@ -330,6 +330,10 @@ def build_clarification_context_block(fields: list, clarification_prompt: str) -
     """
     Render clarification fields into a prompt block for the planner.
 
+    Known and unknown fields are presented in separate sections with explicit
+    instructions so the LLM uses known values directly and works around unknowns
+    rather than creating tasks to gather the missing information.
+
     The original clarification prompt is embedded so the planner understands
     what was asked and can add fields via additional_clarification_fields if
     it identifies further important unknowns during decomposition.
@@ -343,16 +347,32 @@ def build_clarification_context_block(fields: list, clarification_prompt: str) -
     if not fields:
         return ""
 
-    lines = ["\nGoal context (use this to tailor the plan — do not modify these fields):"]
-    for f in fields:
-        value_display = f.get("value", "unknown")
-        lines.append(
-            f"  {f['label']}\n"
-            f"    value:    {value_display}\n"
-            f"    rationale: {f['rationale']}"
-        )
+    known   = [f for f in fields if f.get("value") and f.get("value") != "unknown"]
+    unknown = [f for f in fields if not f.get("value") or f.get("value") == "unknown"]
+
+    lines = ["\nGoal context — treat this as given input, not as open questions to research."]
     lines.append(
-        "\nIf you identify additional context that would significantly improve the plan "
+        "CRITICAL: Do NOT create tasks to gather, research, or look up any of the "
+        "information listed here, whether known or unknown.\n"
+    )
+
+    if known:
+        lines.append("Known — use these values directly when building the plan:")
+        for f in known:
+            lines.append(f"  {f.get('label', f.get('key', ''))}: {f['value']}")
+        lines.append("")
+
+    if unknown:
+        lines.append(
+            "Unknown — the user has not provided these values. "
+            "Work around their absence. Do NOT create tasks to find or estimate them:"
+        )
+        for f in unknown:
+            lines.append(f"  {f.get('label', f.get('key', ''))}: unknown")
+        lines.append("")
+
+    lines.append(
+        "If you identify additional context that would significantly improve the plan "
         "and is not covered above, add it to additional_clarification_fields using the same "
         "field schema (key, label, value, rationale).\n"
         "The original clarification prompt that generated these fields was:\n"

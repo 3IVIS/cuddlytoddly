@@ -21,7 +21,7 @@ class QualityGate:
     """
     LLM-based quality checks for the orchestrator.
 
-    Kept separate from SimpleOrchestrator so the orchestration logic
+    Kept separate from Orchestrator so the orchestration logic
     (graph mutation, scheduling) stays decoupled from the verification logic
     (prompt building, LLM calls, schema parsing).
 

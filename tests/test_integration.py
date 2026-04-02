@@ -17,7 +17,7 @@ from cuddlytoddly.infra.event_log import EventLog
 from cuddlytoddly.infra.event_queue import EventQueue
 from cuddlytoddly.infra.replay import rebuild_graph_from_log
 from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
-from cuddlytoddly.engine.llm_orchestrator import SimpleOrchestrator
+from cuddlytoddly.engine.llm_orchestrator import Orchestrator
 from conftest import FakeLLM, add_node, mark_done
 
 
@@ -139,7 +139,7 @@ class TestOrchestratorExecutionFlow:
         mock_planner = MagicMock()
         mock_planner.propose.return_value = []
 
-        orch = SimpleOrchestrator(
+        orch = Orchestrator(
             graph=g, planner=mock_planner, executor=mock_executor,
             quality_gate=mock_gate, event_queue=EventQueue(), max_workers=1,
         )
@@ -180,7 +180,7 @@ class TestOrchestratorExecutionFlow:
         mock_planner = MagicMock()
         mock_planner.propose.return_value = []
 
-        orch = SimpleOrchestrator(
+        orch = Orchestrator(
             graph=g, planner=mock_planner, executor=mock_executor,
             quality_gate=mock_gate, event_queue=EventQueue(), max_workers=1,
         )
@@ -219,7 +219,7 @@ class TestOrchestratorExecutionFlow:
         mock_planner = MagicMock()
         mock_planner.propose.return_value = []
 
-        orch = SimpleOrchestrator(
+        orch = Orchestrator(
             graph=g, planner=mock_planner, executor=mock_executor,
             quality_gate=mock_gate, event_queue=EventQueue(), max_workers=2,
         )
@@ -266,7 +266,7 @@ class TestPlannerExecutorStub:
         mock_gate.verify_result.return_value = (True, "ok")
         mock_gate.check_dependencies.return_value = None
 
-        orch = SimpleOrchestrator(
+        orch = Orchestrator(
             graph=g, planner=mock_planner, executor=mock_executor,
             quality_gate=mock_gate, event_queue=EventQueue(), max_workers=1,
         )

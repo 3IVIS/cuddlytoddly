@@ -30,16 +30,33 @@ class PlanConstraintChecker:
         self.graph = graph
         self.llm   = llm_client
 
-    def check_and_repair(self, safe_events: list, active_goal_id: str) -> list:
+    def check_and_repair(
+        self,
+        safe_events: list,
+        active_goal_id: str,
+        known_dep_id: str | None = None,
+    ) -> list:
         """
         Run all constraint checks on safe_events and return the repaired list.
         Non-destructive: returns a new list; the input is never mutated.
+
+        Parameters
+        ----------
+        safe_events     : Validated event list from LLMOutputValidator.
+        active_goal_id  : ID of the goal being planned.
+        known_dep_id    : Optional node ID that will be wired as a dependency of
+                          all root tasks AFTER the constraint checker runs (e.g.
+                          the clarification node).  Telling the checker about it
+                          prevents false-positive 6b strips (root tasks declared
+                          with required_input look orphaned without this) and
+                          false-positive ghost detection (root tasks with no
+                          batch dependents look like ghosts without this).
         """
         events = list(safe_events)
         events = self._dedup_edges(events)
         events = self._remove_cycles(events)
-        events = self._check_required_input(events)
-        events = self._resolve_ghost_nodes(events, active_goal_id)
+        events = self._check_required_input(events, known_dep_id=known_dep_id)
+        events = self._resolve_ghost_nodes(events, active_goal_id, known_dep_id=known_dep_id)
         return events
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -175,10 +192,13 @@ class PlanConstraintChecker:
 
     # ── Check 6: required_input consistency ───────────────────────────────────
 
-    def _check_required_input(self, events: list) -> list:
+    def _check_required_input(self, events: list, known_dep_id: str | None = None) -> list:
         """
         6b — strip required_input from any task node that has no dependencies:
              those items are orphaned (no upstream producer can satisfy them).
+             Exception: if known_dep_id is set, root tasks (no batch deps) are
+             expected to depend on that external node, so their required_input
+             is legitimate — warn but do not strip.
         6a — warn when a task has dependencies but no required_input:
              the dependency may be a sequencing constraint with no data flow,
              which is allowed but worth flagging.
@@ -191,6 +211,9 @@ class PlanConstraintChecker:
             if src in all_deps:
                 all_deps[src].add(dep)
 
+        # Pre-compute new_node_ids for root-task detection
+        new_node_ids = set(new_nodes.keys())
+
         result = []
         for evt in events:
             if evt.get("type") == ADD_NODE:
@@ -200,20 +223,34 @@ class PlanConstraintChecker:
                 req_in   = metadata.get("required_input", [])
                 ntype    = evt["payload"].get("node_type", "task")
 
+                # A root task has no dependencies on other new nodes.
+                # If known_dep_id is provided it will be wired as a dependency
+                # of all root tasks after the checker runs, so required_input
+                # on a root task is NOT orphaned — skip the 6b strip.
+                is_root_task = not (deps & new_node_ids)
+
                 if req_in and not deps:
-                    # 6b: orphaned required_input — strip in place
-                    logger.warning(
-                        "[CHECKER] Node %s declares required_input but has no "
-                        "dependencies — stripping required_input",
-                        nid,
-                    )
-                    evt = {
-                        **evt,
-                        "payload": {
-                            **evt["payload"],
-                            "metadata": {**metadata, "required_input": []},
-                        },
-                    }
+                    if known_dep_id and is_root_task:
+                        # Expected — root task will depend on known_dep_id
+                        logger.debug(
+                            "[CHECKER] Node %s has required_input and no batch deps "
+                            "— will depend on %s, skipping 6b strip",
+                            nid, known_dep_id,
+                        )
+                    else:
+                        # 6b: genuinely orphaned required_input — strip it
+                        logger.warning(
+                            "[CHECKER] Node %s declares required_input but has no "
+                            "dependencies — stripping required_input",
+                            nid,
+                        )
+                        evt = {
+                            **evt,
+                            "payload": {
+                                **evt["payload"],
+                                "metadata": {**metadata, "required_input": []},
+                            },
+                        }
 
                 elif deps and not req_in and ntype == "task":
                     # 6a: phantom dependency — warn, do not mutate
@@ -230,19 +267,25 @@ class PlanConstraintChecker:
 
     # ── Ghost node + goal connection ──────────────────────────────────────────
 
-    def _resolve_ghost_nodes(self, events: list, active_goal_id: str) -> list:
+    def _resolve_ghost_nodes(
+        self,
+        events: list,
+        active_goal_id: str,
+        known_dep_id: str | None = None,
+    ) -> list:
         """
         Detect new nodes that have no dependents (nothing depends on them) and
         resolve each one with a targeted LLM call.
 
-        The LLM is shown the full plan context and the set of valid candidate
-        dependents (ancestors excluded to prevent introducing new cycles) and
-        asked which node should depend on the ghost.
-
-        The resulting ADD_DEPENDENCY events are appended to the event list.
+        Root tasks — nodes with no dependencies on other new nodes — will have
+        known_dep_id wired as their dependency after the checker runs.  They
+        are legitimately expected to produce output for the plan and should not
+        be treated as ghost nodes.  They are excluded from ghost detection when
+        known_dep_id is provided.
         """
         new_nodes, edges = self._parse_events(events)
         existing_ids     = set(self.graph.nodes.keys())
+        new_node_ids     = set(new_nodes.keys())
 
         # Build dependents map for new nodes only
         dependents: dict[str, set] = {nid: set() for nid in new_nodes}
@@ -250,7 +293,19 @@ class PlanConstraintChecker:
             if dep in dependents:
                 dependents[dep].add(src)
 
-        ghost_ids = [nid for nid, deps in dependents.items() if not deps]
+        # Root tasks: no deps on other new nodes.  They will depend on
+        # known_dep_id once wiring runs, so they are not ghosts.
+        root_task_ids: set = set()
+        if known_dep_id:
+            for nid, p in new_nodes.items():
+                batch_deps = {d for d in p.get("dependencies", []) if d in new_node_ids}
+                if not batch_deps:
+                    root_task_ids.add(nid)
+
+        ghost_ids = [
+            nid for nid, deps in dependents.items()
+            if not deps and nid not in root_task_ids
+        ]
         if not ghost_ids:
             return events
 

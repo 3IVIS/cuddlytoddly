@@ -12,7 +12,7 @@ User goal (string)
        │                                                              │
        │                                                    recompute_readiness()
        │                                                              │
-  SimpleOrchestrator  ◄──── polls ready nodes ─────────────────────┘
+  Orchestrator  ◄──── polls ready nodes ─────────────────────┘
        │
        ├── LLMExecutor  (runs one node via LLM + tools)
        │        │
@@ -61,7 +61,7 @@ User goal (string)
 
 ### Execution phase
 
-1. `SimpleOrchestrator` picks up nodes whose status is `ready` and dispatches them to the `ThreadPoolExecutor`.
+1. `Orchestrator` picks up nodes whose status is `ready` and dispatches them to the `ThreadPoolExecutor`.
 2. Before launching, `QualityGate.check_dependencies()` checks whether upstream results cover the node's declared `required_input`. If a gap is found, a bridge node is injected (up to `max_gap_fill_attempts` times).
 3. `LLMExecutor.execute(node)` drives a multi-turn LLM loop using `prompts.build_executor_prompt()` and `EXECUTION_TURN_SCHEMA`. The LLM calls tools via JSON responses; each tool call is tracked as a child `execution_step` node by `ExecutionStepReporter`.
 4. On success, `QualityGate.verify_result()` checks the result against the node's declared outputs using `RESULT_VERIFICATION_SCHEMA`. On failure the node is retried or failed.
@@ -144,7 +144,7 @@ config.toml
     ▼
 config.load_config()
     │
-    ├── get_orchestrator_cfg() ──► SimpleOrchestrator(max_gap_fill_attempts, idle_sleep, ...)
+    ├── get_orchestrator_cfg() ──► Orchestrator(max_gap_fill_attempts, idle_sleep, ...)
     ├── get_executor_cfg()     ──► LLMExecutor(max_inline_result_chars, max_tool_result_chars, ...)
     ├── get_planner_cfg()      ──► LLMPlanner(min_tasks_per_goal, max_tasks_per_goal, scrutinize_plan)
     └── get_file_llm_cfg()     ──► FileBasedLLM(poll_interval, timeout, ...)

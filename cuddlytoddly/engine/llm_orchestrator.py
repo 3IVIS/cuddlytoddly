@@ -31,7 +31,7 @@ PlanningContext = namedtuple(
 _NO_PREV = object()
 
 
-class SimpleOrchestrator:
+class Orchestrator:
     """
     Minimal orchestrator: LLM plans, executor runs, user edits via the UI.
 
