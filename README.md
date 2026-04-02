@@ -1,34 +1,39 @@
 # cuddlytoddly
 
-An LLM-driven autonomous planning and execution system built around a DAG (directed acyclic graph) of tasks. Give it a goal; it breaks the goal into tasks, executes them with tools, verifies results, and fills in gaps — continuously, with live terminal and web UIs.
+*Holding AI's hand through planning and into execution.*
+
+Give it a goal and cuddlytoddly builds an explicit plan — a visible, editable graph of tasks and dependencies — before touching anything. Inspect it, change it, or redirect it at any point. When you're ready, it carries the plan out with real tools, quality-checks the results, and keeps going until the job is done.
 
 **Why "cuddlytoddly"?**
 
-Large language models are powerful at generating text and solving well-scoped problems, but they are widely recognized as weak at long-horizon, complex planning. Left alone, they often miss dependencies, overlook edge cases, or wander off track.
+AI models are capable, but left alone on long-horizon goals they miss dependencies, skip implicit steps, and wander off track. The problem isn't intelligence — it's the absence of structure and oversight.
 
-cuddlytoddly takes a different approach: instead of expecting the LLM to plan everything autonomously, we provide a structured framework where humans and the system collaborate. The LLM handles decomposition, execution, and verification, while the framework ensures tasks are organized, dependencies are respected, and gaps are bridged.
+cuddlytoddly's answer is to make the plan explicit and keep the human in control of it. Before a single tool is called, the system produces a full task graph you can read and edit. You can pause execution at any point, change a task's description, add or remove a dependency, promote a task into a subgoal for a finer breakdown, or switch goals entirely — and execution resumes from the updated state. Nothing runs without a declared intent, and no intent is locked in.
 
-Think of it as holding the model's hand while it learns to walk through complex goals — hence the name cuddlytoddly. It's not about blind autonomy; it's about guided, reliable progress.
+Think of it as holding AI's hand through planning and into execution — not blind autonomy, but guided, inspectable, interruptible progress. Hence the name.
 
 ---
 
 ## How it works
 
-1. A plain-English **goal** is seeded into the graph.
-2. The **LLMPlanner** decomposes it into a DAG of tasks with explicit dependencies. Each plan passes through an optional LLM scrutiny pass, structural validation, and deterministic constraint checks before any node reaches the graph.
-3. The **SimpleOrchestrator** picks up ready nodes and hands them to the **LLMExecutor**.
-4. The executor runs a multi-turn LLM loop, calling tools (code execution, file I/O, custom skills) until the task is done.
-5. The **QualityGate** checks the result against declared outputs; if something is missing it injects a bridging task automatically.
-6. Every mutation is written to an **event log** — crash and resume with no lost work.
+1. A plain-English **goal** is seeded into the graph. Nothing runs yet.
+2. The **LLMPlanner** builds an explicit plan — a DAG of tasks with declared dependencies and expected outputs — before any execution begins. The draft plan passes through an optional self-review pass, structural validation, and deterministic constraint checks before any node is committed to the graph.
+3. **You can inspect and edit the plan** at this point, or at any point during execution. Pause the LLM, change a task description, add or remove a dependency, promote a task to a subgoal for finer breakdown, or switch goals entirely. Only affected branches re-run — completed work is preserved.
+4. The **SimpleOrchestrator** picks up ready nodes and dispatches them to the **LLMExecutor** concurrently.
+5. The executor runs a multi-turn LLM loop, calling real tools (code execution, file I/O, custom skills) until the task produces a concrete result.
+6. The **QualityGate** checks each result against declared outputs; if something is missing it injects a bridging task automatically.
+7. Every mutation is written to an **event log** — crash and resume from exactly where you left off, with no lost work.
 
 ```
-goal → LLMPlanner → [scrutinize?] → [validate] → [constraint check] → TaskGraph (DAG)
-                                                                              │
-                                                                  SimpleOrchestrator
-                                                                  ├── LLMExecutor + tools
-                                                                  └── QualityGate (verify / bridge)
-                                                                              │
-                                                                         EventLog (JSONL) → replay on restart
+goal → LLMPlanner → [scrutinize?] → [validate] → [constraint check]
+                                                          │
+                                                   TaskGraph (DAG)  ← inspect & edit anytime
+                                                          │
+                                              SimpleOrchestrator
+                                              ├── LLMExecutor + tools + skills
+                                              └── QualityGate (verify / bridge)
+                                                          │
+                                                     EventLog (JSONL) → crash-proof replay
 ```
 
 ---
@@ -67,7 +72,7 @@ On first run, a `config.toml` is written to your user data directory with all de
 python -c "from cuddlytoddly.config import CONFIG_PATH; print(CONFIG_PATH)"
 ```
 
-Pass no argument to open the startup screen (resume a previous run, load a manual plan, etc.). The web UI opens automatically and supports switching to a different goal mid-session. Run data is stored locally and can be resumed — the event log preserves all state.
+Pass no argument to open the startup screen (resume a previous run, load a manual plan, etc.). The web UI opens automatically showing the full task plan — inspect or edit it before execution starts, or just let it run. You can pause, redirect, or promote any task to a subgoal at any time. Run data is stored locally and can be resumed — the event log preserves all state.
 
 ### Switching backends
 
@@ -199,7 +204,7 @@ The first run will load the model into memory (10–30 seconds depending on hard
 
 ## LLM backends — full reference
 
-See [docs/configuration.md](docs/configuration.md) for the complete config file reference and all available options per backend.
+See [docs/configuration.md](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/configuration.md) for the complete config file reference and all available options per backend.
 
 ---
 
@@ -218,16 +223,16 @@ Each function in `prompts.py` is documented with its parameters so it's clear wh
 
 ## Adding skills
 
-Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/skills/`. The `SkillLoader` discovers it automatically. See [docs/skills.md](docs/skills.md) for the full format.
+Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/skills/`. The `SkillLoader` discovers it automatically. See [docs/skills.md](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/skills.md) for the full format.
 
 ---
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — how the components fit together
-- [Configuration](docs/configuration.md) — LLM backends, run directory, tuning parameters, environment variables
-- [Skills](docs/skills.md) — built-in skills and how to add custom ones
-- [API Reference](docs/api.md) — public Python API
+- [Architecture](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/architecture.md) — how the components fit together
+- [Configuration](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/configuration.md) — LLM backends, run directory, tuning parameters, environment variables
+- [Skills](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/skills.md) — built-in skills and how to add custom ones
+- [API Reference](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/api.md) — public Python API
 
 ---
 
@@ -327,10 +332,19 @@ apply_event(graph, Event(ADD_NODE, {
 }))
 
 orchestrator.start()
-# orchestrator runs in the background — block however suits your use case
+# The graph is live and editable at any point during execution.
+
+# Pause the LLM — in-flight tasks complete, no new ones start:
+orchestrator.stop_llm_calls()
+
+# Resume:
+orchestrator.resume_llm_calls()
+
+# Promote a task to a subgoal for a finer-grained breakdown:
+# set its node_type → "goal", expanded → False; the planner picks it up next cycle
 ```
 
-All numeric limits (`max_turns`, `max_workers`, etc.) default to the values in `config.toml` when the system is started via the CLI. When constructing components programmatically you can pass them as keyword arguments — see [docs/api.md](docs/api.md) for the full signature of each class.
+All numeric limits (`max_turns`, `max_workers`, etc.) default to the values in `config.toml` when the system is started via the CLI. When constructing components programmatically you can pass them as keyword arguments — see [docs/api.md](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/api.md) for the full signature of each class.
 
 ---
 
