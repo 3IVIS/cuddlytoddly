@@ -60,7 +60,7 @@ EVENT_LIST_SCHEMA = {
                             "node_id":      {"type": "string"},
                             "node_type":    {
                                 "type": "string",
-                                "enum": ["task", "goal", "reflection"],
+                                "enum": ["task", "goal", "reflection", "clarification"],
                             },
                             "dependencies": {
                                 "type": "array",
@@ -133,6 +133,24 @@ PLAN_SCHEMA = {
         "events": {
             "type": "array",
             "items": EVENT_LIST_SCHEMA["items"],   # reuses item definitions above
+        },
+        "additional_clarification_fields": {
+            "type": "array",
+            "description": (
+                "Optional extra fields the planner wants to add to the clarification node. "
+                "Same schema as clarification fields: key, label, value, rationale."
+            ),
+            "items": {
+                "type": "object",
+                "required": ["key", "label", "value", "rationale"],
+                "additionalProperties": False,
+                "properties": {
+                    "key":      {"type": "string", "description": "snake_case identifier"},
+                    "label":    {"type": "string", "description": "Human-readable question"},
+                    "value":    {"type": "string", "description": "Best-guess answer or 'unknown'"},
+                    "rationale":{"type": "string", "description": "One sentence: why this matters"},
+                },
+            },
         },
     },
 }
@@ -280,6 +298,49 @@ DEPENDENCY_CHECK_SCHEMA = {
         },
     },
     "required": ["ok"],
+}
+
+
+# ---------------------------------------------------------------------------
+# Clarification generation schema
+# ---------------------------------------------------------------------------
+
+CLARIFICATION_GENERATION_SCHEMA = {
+    "type": "object",
+    "required": ["fields"],
+    "additionalProperties": False,
+    "properties": {
+        "fields": {
+            "type": "array",
+            "description": "Structured context fields that would most improve the plan.",
+            "items": {
+                "type": "object",
+                "required": ["key", "label", "value", "rationale"],
+                "additionalProperties": False,
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "snake_case machine-readable identifier, e.g. 'current_salary'",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Human-readable question, e.g. 'What is your current salary?'",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": (
+                            "Best-guess answer as a string, or 'unknown' if no reasonable "
+                            "guess can be made. Never leave blank — always use 'unknown'."
+                        ),
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One sentence explaining why this information would significantly improve the plan.",
+                    },
+                },
+            },
+        },
+    },
 }
 
 # ---------------------------------------------------------------------------

@@ -323,18 +323,61 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
         orchestrator.retry_node(node_id)
         return {"ok": True}
 
+    @app.post("/api/node/{node_id:path}/clarification/confirm")
+    async def confirm_clarification(node_id: str, body: dict):
+        """
+        Confirm user edits to a clarification node.
+
+        Accepts updated_fields — the full list of field dicts with user-edited
+        values.  Updates the node result and resets its direct children so the
+        plan re-executes with the new context.  Also marks the parent goal
+        unexpanded so the planner can add tasks on the next cycle if needed.
+        """
+        snap = orchestrator.get_snapshot()
+        node = snap.get(node_id)
+        if not node or node.node_type != "clarification":
+            raise HTTPException(404, "clarification node not found")
+
+        updated_fields = body.get("updated_fields")
+        if not isinstance(updated_fields, list):
+            raise HTTPException(400, "updated_fields must be a list")
+
+        import json as _json
+        new_result = _json.dumps(updated_fields, ensure_ascii=False)
+
+        q = orchestrator.event_queue
+        # 1. Update the clarification node metadata and result
+        q.put(Event(UPDATE_METADATA, {
+            "node_id":  node_id,
+            "origin":   "user",
+            "metadata": {"fields": updated_fields},
+        }))
+        q.put(Event(SET_RESULT, {"node_id": node_id, "result": new_result}))
+
+        # 2. Reset direct children only — cascade follows naturally
+        for child_id in node.children:
+            child = snap.get(child_id)
+            if child and child.node_type != "clarification":
+                q.put(Event(RESET_NODE, {"node_id": child_id}))
+
+        # 3. Mark parent goal unexpanded so the planner runs again and can
+        #    add tasks if the updated context warrants it.
+        goal_id = node.metadata.get("parent_goal")
+        if goal_id and goal_id in snap:
+            q.put(Event(UPDATE_METADATA, {
+                "node_id":  goal_id,
+                "origin":   "user",
+                "metadata": {"expanded": False},
+            }))
+
+        return {"ok": True}
+
     # ── Goal mutations ────────────────────────────────────────────────────────
 
     @app.post("/api/goal/{goal_id:path}/replan")
     async def replan_goal(goal_id: str):
         orchestrator.replan_goal(goal_id)
         return {"ok": True}
-
-    # ── LLM control ───────────────────────────────────────────────────────────
-
-    @app.post("/api/llm/pause")
-    async def llm_pause():
-        orchestrator.stop_llm_calls()
         return {"ok": True}
 
     @app.post("/api/llm/resume")
@@ -792,6 +835,44 @@ def _create_unified_app(
     @app.post("/api/node/{node_id:path}/retry")
     async def retry_node(node_id: str):
         _orch().retry_node(node_id)
+        return {"ok": True}
+
+    @app.post("/api/node/{node_id:path}/clarification/confirm")
+    async def confirm_clarification(node_id: str, body: dict):
+        orch = _orch()
+        snap = orch.get_snapshot()
+        node = snap.get(node_id)
+        if not node or node.node_type != "clarification":
+            raise HTTPException(404, "clarification node not found")
+
+        updated_fields = body.get("updated_fields")
+        if not isinstance(updated_fields, list):
+            raise HTTPException(400, "updated_fields must be a list")
+
+        import json as _json
+        new_result = _json.dumps(updated_fields, ensure_ascii=False)
+
+        q = orch.event_queue
+        q.put(Event(UPDATE_METADATA, {
+            "node_id":  node_id,
+            "origin":   "user",
+            "metadata": {"fields": updated_fields},
+        }))
+        q.put(Event(SET_RESULT, {"node_id": node_id, "result": new_result}))
+
+        for child_id in node.children:
+            child = snap.get(child_id)
+            if child and child.node_type != "clarification":
+                q.put(Event(RESET_NODE, {"node_id": child_id}))
+
+        goal_id = node.metadata.get("parent_goal")
+        if goal_id and goal_id in snap:
+            q.put(Event(UPDATE_METADATA, {
+                "node_id":  goal_id,
+                "origin":   "user",
+                "metadata": {"expanded": False},
+            }))
+
         return {"ok": True}
 
     @app.post("/api/goal/{goal_id:path}/replan")

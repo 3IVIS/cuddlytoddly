@@ -21,7 +21,11 @@ from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
 
 logger = get_logger(__name__)
 
-PlanningContext = namedtuple("PlanningContext", ["snapshot", "goals"])
+PlanningContext = namedtuple(
+    "PlanningContext",
+    ["snapshot", "goals", "skip_scrutiny"],
+    defaults=[False],
+)
 
 # Sentinel used to distinguish "never stored" from "stored value was None"
 _NO_PREV = object()
@@ -253,7 +257,11 @@ class SimpleOrchestrator:
             with self.graph_lock:
                 branch = self.graph.get_branch(goal.id)
 
-            context = PlanningContext(snapshot=branch, goals=[goal])
+            context = PlanningContext(
+                snapshot=branch,
+                goals=[goal],
+                skip_scrutiny=bool(goal.children),
+            )
             try:
                 events = self.planner.propose(context)
             except Exception as e:
@@ -315,6 +323,7 @@ class SimpleOrchestrator:
                 n for n in self.graph.nodes.values()
                 if n.status == "ready"
                 and n.node_type == "task"
+                and n.node_type != "clarification"
                 and n.id not in self._running_futures
             ]
 

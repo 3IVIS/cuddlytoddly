@@ -18,6 +18,7 @@ All JSON schemas used for structured LLM output are defined here and imported by
 | `RESULT_VERIFICATION_SCHEMA` | QualityGate `verify_result` |
 | `DEPENDENCY_CHECK_SCHEMA` | QualityGate `check_dependencies` |
 | `GHOST_NODE_RESOLUTION_SCHEMA` | `PlanConstraintChecker` ghost node resolution |
+| `CLARIFICATION_GENERATION_SCHEMA` | `LLMPlanner` clarification field generation (Call 1) |
 
 All schemas from this module are also re-exported by `cuddlytoddly.planning.llm_interface` for backward compatibility.
 
@@ -42,11 +43,11 @@ Assembles the full prompt for one executor turn. Called by `LLMExecutor._build_p
 ```python
 build_planner_prompt(
     *, pruned_view_json, goals_repr_json, existing_ids_note,
-    skills_block, min_tasks=3, max_tasks=8
+    skills_block, min_tasks=3, max_tasks=8, clarification_block=""
 ) -> str
 ```
 
-Assembles the planner decomposition prompt. Called by `LLMPlanner._build_prompt()`.
+Assembles the planner decomposition prompt. Called by `LLMPlanner._build_prompt()`. When a clarification node exists for the goal, `clarification_block` carries the structured field context into the prompt so the planner can produce a tailored plan.
 
 ```python
 build_plan_scrutinizer_prompt(
@@ -55,6 +56,18 @@ build_plan_scrutinizer_prompt(
 ```
 
 Assembles the scrutinizer prompt used to self-review a draft plan. The full original planning prompt is embedded verbatim so every constraint (DAG snapshot, existing node IDs, task-count limits, dependency semantics, format rules) remains in context during the second call. Called by `LLMPlanner._scrutinize()` when `scrutinize_plan=True`.
+
+```python
+build_clarification_prompt(goal_text: str) -> str
+```
+
+Generates the prompt for Call 1 — the dedicated LLM call that produces the clarification node fields before planning begins. Returns 3–8 structured fields (key, label, best-guess value or `"unknown"`, rationale) describing the context that would most improve the plan. The prompt string is stored in the clarification node's metadata so the planner can reference it when adding fields.
+
+```python
+build_clarification_context_block(fields: list, clarification_prompt: str) -> str
+```
+
+Formats clarification fields and the original clarification prompt into a block injected into `build_planner_prompt()`. The original prompt is embedded so the planner understands what was asked and can add fields via `additional_clarification_fields` without repeating questions.
 
 ```python
 build_ghost_node_resolution_prompt(
@@ -176,7 +189,13 @@ events: list[dict] = planner.propose(context)
 
 `min_tasks_per_goal` and `max_tasks_per_goal` are injected into the planner prompt to guide the LLM's decomposition granularity. They default to the `[planner]` values in `config.toml` when the system is started via the CLI.
 
-When `scrutinize_plan=True`, every planning call is followed by a second LLM call using `build_plan_scrutinizer_prompt()`. The scrutinizer reviews the draft for goal coverage, task realism, output completeness, missing steps, redundancy, and input/output alignment — and produces a corrected version that replaces the draft before it enters the validator pipeline. See [configuration.md](configuration.md#scrutinize_plan) for the trade-offs.
+**Planning involves up to four LLM calls per goal:**
+
+**Call 1 — Clarification generation.** Before decomposing the goal, the planner fires a dedicated call using `build_clarification_prompt()` to identify the structured context fields that would most improve the plan (e.g. job title, current salary, years in role). Each field has a best-guess value or `"unknown"`. The result is emitted as a `clarification` node that is immediately marked done and wired as a dependency of all root tasks. On partial replans (when the goal already has children), the existing clarification node is reused so user edits are not overwritten.
+
+**Call 2 — Planning.** `build_planner_prompt()` is called with the clarification context embedded. The planner can add fields to the clarification node via `additional_clarification_fields` in its output.
+
+**Call 3 — Scrutiny (optional).** When `scrutinize_plan=True`, the draft is reviewed by `build_plan_scrutinizer_prompt()` for goal coverage, task realism, output completeness, and missing steps. Skipped on partial replans.
 
 After structural validation by `LLMOutputValidator`, the plan passes through `PlanConstraintChecker` before the final events are returned to the orchestrator.
 
@@ -276,6 +295,31 @@ All arguments after `executor` are keyword arguments. Defaults: `event_log=None`
 | `llm_stopped` | `bool` | True when the LLM is paused |
 | `token_counts` | `dict` | Running totals: `prompt`, `completion`, `total`, `calls` |
 
+
+---
+
+## Web API — clarification node
+
+### `POST /api/node/{node_id}/clarification/confirm`
+
+Commits user edits to a clarification node and triggers a partial replan.
+
+```
+POST /api/node/clarification_my_goal/clarification/confirm
+Content-Type: application/json
+
+{
+  "updated_fields": [
+    {"key": "current_salary", "label": "Current salary", "value": "$95,000", "rationale": "..."},
+    {"key": "years_in_role",  "label": "Years in role",  "value": "3",       "rationale": "..."}
+  ]
+}
+```
+
+On success: updates the clarification node's result, resets its direct children (root tasks) so they re-execute with the updated context, and marks the parent goal `expanded=False` so the orchestrator's next planning cycle can add tasks if the updated context warrants it. The cascade through the rest of the DAG follows naturally from the child resets.
+
+Returns `{"ok": true}`.
+
 ---
 
 ## `cuddlytoddly.engine.quality_gate`
@@ -336,13 +380,13 @@ graph.recompute_readiness()
 |---|---|---|
 | `id` | `str` | Unique node identifier |
 | `status` | `str` | `pending` / `ready` / `running` / `done` / `failed` |
-| `node_type` | `str` | `goal`, `task`, `reflection`, `execution_step` |
+| `node_type` | `str` | `goal`, `task`, `reflection`, `execution_step`, `clarification` |
 | `dependencies` | `set[str]` | IDs of nodes this node depends on |
 | `children` | `set[str]` | IDs of nodes that depend on this node |
 | `result` | `str \| None` | Output of the node once done |
 | `metadata` | `dict` | Arbitrary planner/executor annotations |
 
-> **Node type notes:** `goal` and `task` are planner-created; `reflection` is emitted by the refiner pass; `execution_step` is an internal type created by `ExecutionStepReporter` to track individual tool calls within a task and is pruned on restart.
+> **Node type notes:** `goal` and `task` are planner-created; `clarification` is emitted once per goal before the first task is created (ID: `clarification_{goal_id}`) and holds structured context fields the user can edit; `reflection` is emitted by the refiner pass; `execution_step` is an internal type created by `ExecutionStepReporter` to track individual tool calls within a task and is pruned on restart.
 
 ---
 

@@ -767,7 +767,93 @@ def open_add_modal(snapshot, event_queue, current_node, set_modal):
         on_submit=on_submit,
         on_cancel=lambda: set_modal(None),
     ))
-  
+
+
+def open_clarification_modal(current_node, snapshot, event_queue, set_modal):
+    """
+    Per-field editing modal for clarification nodes.
+
+    Fields are shown one at a time with their label, current value, and
+    rationale.  Tab / arrow keys navigate between fields.  Pressing Enter
+    on the "Confirm & rerun" field commits the edits and triggers a rerun
+    of all direct children of this clarification node.
+    """
+    import json as _json
+
+    node = snapshot[current_node]
+    try:
+        fields = _json.loads(node.result or "[]")
+    except Exception:
+        fields = []
+
+    # Work on a mutable copy so the user can cancel without side effects.
+    draft = [dict(f) for f in fields]
+
+    def on_submit(values):
+        # Merge edited values back into draft using field index labels
+        for i, f in enumerate(draft):
+            key = f"Field {i + 1}: {f.get('label', f['key'])}"
+            if key in values:
+                new_val = values[key].strip() or "unknown"
+                draft[i]["value"] = new_val
+
+        new_result = _json.dumps(draft, ensure_ascii=False)
+
+        # Update the node metadata + result
+        event_queue.put(Event(UPDATE_METADATA, {
+            "node_id":  current_node,
+            "origin":   "user",
+            "metadata": {"fields": draft},
+        }))
+        event_queue.put(Event(SET_RESULT, {
+            "node_id": current_node,
+            "result":  new_result,
+        }))
+
+        # Reset direct children only
+        for child_id in node.children:
+            child = snapshot.get(child_id)
+            if child and child.node_type != "clarification":
+                event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
+
+        # Mark parent goal unexpanded for partial replan
+        goal_id = node.metadata.get("parent_goal")
+        if goal_id and goal_id in snapshot:
+            event_queue.put(Event(UPDATE_METADATA, {
+                "node_id":  goal_id,
+                "origin":   "user",
+                "metadata": {"expanded": False},
+            }))
+
+        set_modal(None)
+
+    # Build one ModalField per clarification field.
+    # The label encodes the field index so on_submit can match values back.
+    modal_fields = []
+    for i, f in enumerate(draft):
+        label     = f"Field {i + 1}: {f.get('label', f['key'])}"
+        cur_value = f.get("value", "unknown")
+        if cur_value == "unknown":
+            cur_value = ""
+        modal_fields.append(ModalField(
+            label=label,
+            value=cur_value,
+        ))
+
+    # Final read-only info field telling the user what Confirm does
+    modal_fields.append(ModalField(
+        label="→ Press Enter on last field or submit to confirm & rerun",
+        value="",
+    ))
+
+    set_modal(Modal(
+        title="Edit goal context  (Tab: next field  Enter: confirm)",
+        fields=modal_fields,
+        on_submit=on_submit,
+        on_cancel=lambda: set_modal(None),
+    ))
+
+
 def open_edit_modal(current_node, snapshot, event_queue, set_modal):
     node = snapshot[current_node]
     node_ids = [nid for nid in snapshot.keys() if nid != current_node]
@@ -1347,7 +1433,11 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
 
         elif k == ord("e"):
             if current_node:
-                open_edit_modal(current_node, snapshot, event_queue, set_modal)
+                node = snapshot.get(current_node)
+                if node and node.node_type == "clarification":
+                    open_clarification_modal(current_node, snapshot, event_queue, set_modal)
+                else:
+                    open_edit_modal(current_node, snapshot, event_queue, set_modal)
 
         elif k == ord("a"):
             open_add_modal(snapshot, event_queue, current_node, set_modal)
@@ -1405,23 +1495,36 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
         " ",
     ]
 
-    desc = node.metadata.get("description")
-    if desc:
-        lines+=[
-        f" Desc:   {desc}"," "
-        ]
+    # ── Clarification node — show fields instead of generic metadata ──────────
+    if node.node_type == "clarification":
+        import json as _json
+        lines.append(" Goal context  (press 'e' to edit, then confirm to rerun)")
+        lines.append(" ")
+        try:
+            fields = _json.loads(node.result or "[]")
+        except Exception:
+            fields = []
+        for f in fields:
+            label = f.get("label") or f.get("key", "?")
+            value = f.get("value", "unknown")
+            flag  = " [?]" if value == "unknown" else ""
+            lines.append(f" {label}{flag}")
+            lines.append(f"   → {value}")
+            lines.append(" ")
+        if not fields:
+            lines.append(" (no fields)")
+    else:
+        desc = node.metadata.get("description")
+        if desc:
+            lines += [f" Desc:   {desc}", " "]
 
-    input = node.metadata.get("required_input")
-    if input:
-        lines+=[
-        f" Input:  {input}"," "
-        ]
+        input = node.metadata.get("required_input")
+        if input:
+            lines += [f" Input:  {input}", " "]
 
-    output = node.metadata.get("output")
-    if output:
-        lines+=[
-        f" Output: {output}"," "
-        ]
+        output = node.metadata.get("output")
+        if output:
+            lines += [f" Output: {output}", " "]
 
     lines += [
         f" Deps:   {', '.join(node.dependencies) or 'none'}",

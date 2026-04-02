@@ -39,24 +39,25 @@ User goal (string)
 
 **Skills are data-driven.** Drop a folder with a `SKILL.md` and optional `tools.py` into `cuddlytoddly/skills/` — the `SkillLoader` discovers and registers them automatically at startup with no code changes required.
 
-**Planning is a pipeline, not a single call.** The planner passes its output through up to three stages before events reach the graph: an optional LLM scrutiny pass (`scrutinize_plan`), structural validation (`LLMOutputValidator`), and deterministic constraint enforcement (`PlanConstraintChecker`). Each stage has a clearly scoped responsibility so failures in one don't cascade into another.
+**Planning is a pipeline, not a single call.** Every goal expansion involves up to four LLM calls and three deterministic stages before any event reaches the graph: a clarification generation call (Call 1), a decomposition call (Call 2), an optional scrutiny call (Call 3), structural validation (`LLMOutputValidator`), and deterministic constraint enforcement (`PlanConstraintChecker`). Each stage has a clearly scoped responsibility so failures in one don't cascade into another.
 
 ## Data Flow
 
 ### Planning phase
 
 1. `LLMPlanner.propose(context)` reads the current snapshot and identifies unexpanded goal nodes.
-2. It builds a prompt via `prompts.build_planner_prompt()` describing the goal and asks the LLM for a list of child tasks, constrained to the `PLAN_SCHEMA`.
-3. **Optional scrutiny pass** — if `scrutinize_plan=True`, the draft plan is passed back to the LLM via `prompts.build_plan_scrutinizer_prompt()`. The scrutinizer evaluates goal coverage, task realism, output completeness, missing steps, and input/output alignment, then returns a corrected plan that replaces the draft.
-4. The JSON is validated by `LLMOutputValidator`: structural checks (self-deps, unknown deps, duplicate nodes, metadata allowlist).
-5. **Constraint checking** — `PlanConstraintChecker.check_and_repair()` runs five deterministic checks in order:
+2. **Call 1 — Clarification generation.** A dedicated LLM call via `build_clarification_prompt()` identifies 3–8 structured context fields that would most improve the plan (e.g. job title, salary, industry). Each field carries a best-guess value or `"unknown"`. A `clarification` node is emitted, immediately marked done, and wired as a dependency of all root tasks. On partial replans the existing clarification node is reused so user edits are preserved.
+3. **Call 2 — Planning.** `build_planner_prompt()` is called with the clarification context embedded. The LLM produces a list of tasks constrained to `PLAN_SCHEMA`. The planner can extend the clarification node with `additional_clarification_fields` in its output.
+4. **Call 3 — Optional scrutiny pass.** If `scrutinize_plan=True`, the draft is passed to `build_plan_scrutinizer_prompt()`. The scrutinizer evaluates goal coverage, task realism, output completeness, and missing steps, then returns a corrected draft. Skipped on partial replans.
+5. The JSON is validated by `LLMOutputValidator`: structural checks (self-deps, unknown deps, duplicate nodes, metadata allowlist).
+6. **Constraint checking** — `PlanConstraintChecker.check_and_repair()` runs five deterministic checks in order:
    - Duplicate `ADD_DEPENDENCY` edges are silently deduplicated.
    - Cycles in the proposed subgraph are detected via DFS and all cycle-member nodes are dropped.
    - `required_input` items on nodes with no dependencies are stripped (they are orphaned — no upstream producer can satisfy them).
    - Nodes with dependencies but no `required_input` are logged as warnings.
    - Ghost nodes (new nodes with no dependents) are resolved by a focused LLM call that selects the best dependent from a cycle-safe candidate list.
-6. The surviving events are emitted as `ADD_NODE` / `ADD_DEPENDENCY` / `SET_RESULT` events.
-7. `apply_event()` applies each event to the graph, then calls `recompute_readiness()`.
+7. The surviving events are emitted as `ADD_NODE` / `ADD_DEPENDENCY` / `SET_RESULT` events.
+8. `apply_event()` applies each event to the graph, then calls `recompute_readiness()`.
 
 ### Execution phase
 
@@ -65,9 +66,11 @@ User goal (string)
 3. `LLMExecutor.execute(node)` drives a multi-turn LLM loop using `prompts.build_executor_prompt()` and `EXECUTION_TURN_SCHEMA`. The LLM calls tools via JSON responses; each tool call is tracked as a child `execution_step` node by `ExecutionStepReporter`.
 4. On success, `QualityGate.verify_result()` checks the result against the node's declared outputs using `RESULT_VERIFICATION_SCHEMA`. On failure the node is retried or failed.
 
-### Web UI — goal switching
+### Web UI — clarification and goal switching
 
-The web server exposes `/api/switch` for mid-session goal switching (available when started without an inline goal argument). On receiving a switch request the server stops the running orchestrator cleanly, resets all state, and initialises a new orchestrator in a background thread. The client polls `/api/status` and reloads when `initialized` becomes `true` — the same flow used for initial startup.
+The web server exposes `/api/node/{id}/clarification/confirm` for committing user edits to a clarification node. On confirm: the node's result is updated, its direct children are reset (triggering re-execution with the updated context), and the parent goal is marked unexpanded so the planner can add tasks on the next cycle if needed. Scrutiny is skipped on this partial replan.
+
+The web server also exposes `/api/switch` for mid-session goal switching (available when started without an inline goal argument). On receiving a switch request the server stops the running orchestrator cleanly, resets all state, and initialises a new orchestrator in a background thread. The client polls `/api/status` and reloads when `initialized` becomes `true` — the same flow used for initial startup.
 
 ### Persistence and replay
 
@@ -91,26 +94,33 @@ All events are appended to an `events.jsonl` file via `EventLog`. On restart, `r
 The full journey from raw LLM output to committed graph events:
 
 ```
-LLM response (JSON string)
+Goal text
        │
        ▼
-LLMPlanner._normalize_events()      ← tolerant shape normalisation
-       │                               (fixes "operation" → "type", etc.)
+LLMPlanner._generate_clarification_node()   ← Call 1: what context would improve this plan?
+       │                                       emits clarification node (immediately done)
        ▼
-[optional] LLMPlanner._scrutinize() ← second LLM call reviews the draft
-       │                               for content/realism (scrutinize_plan=True)
+LLMPlanner._build_prompt()                  ← clarification fields embedded in planning prompt
+       │
        ▼
-LLMOutputValidator.validate_and_normalize()
-       │                             ← structural invariants:
-       │                               self-deps, unknown deps, duplicate nodes,
-       │                               metadata allowlist, goal↔task dep rules
+LLM → raw JSON (PLAN_SCHEMA)                ← Call 2: decompose goal into tasks
+       │
        ▼
-PlanConstraintChecker.check_and_repair()
-       │                             ← plan-level invariants:
-       │                               dedup edges, cycle removal, required_input
-       │                               consistency, ghost node resolution (LLM call)
+LLMPlanner._normalize_events()              ← tolerant shape normalisation
+       │                                       (fixes "operation" → "type", etc.)
        ▼
-Final safe_events list
+[optional] LLMPlanner._scrutinize()         ← Call 3: review draft for content/realism
+       │                                       skipped on partial replans
+       ▼
+LLMOutputValidator.validate_and_normalize() ← structural invariants:
+       │                                       self-deps, unknown deps, duplicate nodes,
+       │                                       metadata allowlist, goal↔task dep rules
+       ▼
+PlanConstraintChecker.check_and_repair()    ← plan-level invariants:
+       │                                       dedup edges, cycle removal, required_input
+       │                                       consistency, ghost node resolution (LLM call)
+       ▼
+clarification events + safe_events list
        │
        ▼
 apply_event() × N  →  TaskGraph
@@ -121,6 +131,8 @@ apply_event() × N  →  TaskGraph
 The orchestrator runs in a background thread. Execution of individual nodes is dispatched to a `ThreadPoolExecutor` with `max_workers` workers (default 1 for llama.cpp, which is not thread-safe). All graph mutations are protected by `graph_lock`. The curses UI runs on the main thread and communicates with the orchestrator exclusively through the shared graph and `event_queue`.
 
 The web server runs in a separate daemon thread (uvicorn). Goal switching stops the old orchestrator thread before starting the new one, ensuring only one orchestrator is live at any time.
+
+When a user confirms clarification edits, the orchestrator's next planning cycle detects the unexpanded goal and runs a partial replan (Calls 1 and 2 only, no scrutiny). The `PlanningContext.skip_scrutiny` flag is set automatically when the planner detects that the goal already has children.
 
 ## Configuration Flow
 

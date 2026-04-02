@@ -25,15 +25,15 @@ Think of it as holding AI's hand through planning and into execution — not bli
 7. Every mutation is written to an **event log** — crash and resume from exactly where you left off, with no lost work.
 
 ```
-goal → LLMPlanner → [scrutinize?] → [validate] → [constraint check]
-                                                          │
-                                                   TaskGraph (DAG)  ← inspect & edit anytime
-                                                          │
-                                              SimpleOrchestrator
-                                              ├── LLMExecutor + tools + skills
-                                              └── QualityGate (verify / bridge)
-                                                          │
-                                                     EventLog (JSONL) → crash-proof replay
+goal → [clarification fields] → LLMPlanner → [scrutinize?] → [validate] → [constraint check]
+               ↑ user can edit                                                      │
+               └── on confirm → resets children → partial replan              TaskGraph (DAG)
+                                                                                    │
+                                                                        SimpleOrchestrator
+                                                                        ├── LLMExecutor + tools
+                                                                        └── QualityGate (verify / bridge)
+                                                                                    │
+                                                                               EventLog (JSONL) → crash-proof replay
 ```
 
 ---
@@ -204,7 +204,7 @@ The first run will load the model into memory (10–30 seconds depending on hard
 
 ## LLM backends — full reference
 
-See [docs/configuration.md](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/configuration.md) for the complete config file reference and all available options per backend.
+See [docs/configuration.md](docs/configuration.md) for the complete config file reference and all available options per backend.
 
 ---
 
@@ -223,16 +223,16 @@ Each function in `prompts.py` is documented with its parameters so it's clear wh
 
 ## Adding skills
 
-Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/skills/`. The `SkillLoader` discovers it automatically. See [docs/skills.md](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/skills.md) for the full format.
+Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/skills/`. The `SkillLoader` discovers it automatically. See [docs/skills.md](docs/skills.md) for the full format.
 
 ---
 
 ## Documentation
 
-- [Architecture](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/architecture.md) — how the components fit together
-- [Configuration](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/configuration.md) — LLM backends, run directory, tuning parameters, environment variables
-- [Skills](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/skills.md) — built-in skills and how to add custom ones
-- [API Reference](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/api.md) — public Python API
+- [Architecture](docs/architecture.md) — how the components fit together
+- [Configuration](docs/configuration.md) — LLM backends, run directory, tuning parameters, environment variables
+- [Skills](docs/skills.md) — built-in skills and how to add custom ones
+- [API Reference](docs/api.md) — public Python API
 
 ---
 
@@ -342,9 +342,13 @@ orchestrator.resume_llm_calls()
 
 # Promote a task to a subgoal for a finer-grained breakdown:
 # set its node_type → "goal", expanded → False; the planner picks it up next cycle
+
+# After the first plan, each goal has a clarification node (clarification_{goal_id})
+# showing the context used. Edit its fields in the UI and click Confirm
+# to reset dependent tasks and trigger a partial replan with the new context.
 ```
 
-All numeric limits (`max_turns`, `max_workers`, etc.) default to the values in `config.toml` when the system is started via the CLI. When constructing components programmatically you can pass them as keyword arguments — see [docs/api.md](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/api.md) for the full signature of each class.
+All numeric limits (`max_turns`, `max_workers`, etc.) default to the values in `config.toml` when the system is started via the CLI. When constructing components programmatically you can pass them as keyword arguments — see [docs/api.md](docs/api.md) for the full signature of each class.
 
 ---
 

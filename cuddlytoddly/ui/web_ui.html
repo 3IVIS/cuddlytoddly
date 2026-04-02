@@ -889,8 +889,8 @@ const STATUS_COLOR_HEX = {
   pending: '#475569', ready: '#3b82f6', running: '#f59e0b',
   done: '#10b981', failed: '#ef4444', to_be_expanded: '#8b5cf6',
 };
-const TYPE_ICON  = { goal: '◎', task: '▣', reflection: '◈', execution_step: '·' };
-const TYPE_COLOR = { goal: '#a78bfa', task: '#7dd3fc', reflection: '#86efac', execution_step: '#475569' };
+const TYPE_ICON  = { goal: '◎', task: '▣', reflection: '◈', execution_step: '·', clarification: '?' };
+const TYPE_COLOR = { goal: '#a78bfa', task: '#7dd3fc', reflection: '#86efac', execution_step: '#475569', clarification: '#f9a825' };
 const NODE_W = 210, NODE_H = 54;
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -1168,24 +1168,49 @@ function updatePanel() {
 
   // Actions
   const actions = document.getElementById('panel-actions');
-  const isGoal = node.node_type === 'goal';
-  const isFailed = node.status === 'failed';
-  const isDone = node.status === 'done';
+  const isGoal          = node.node_type === 'goal';
+  const isFailed        = node.status === 'failed';
+  const isDone          = node.status === 'done';
+  const isClarification = node.node_type === 'clarification';
   actions.innerHTML = `
-    <button class="panel-btn" onclick="openEditModal()">✎ Edit</button>
-    ${(isFailed || isDone) ? `<button class="panel-btn" onclick="retryNode()">↺ Retry</button>` : ''}
+    ${isClarification
+      ? `<button class="panel-btn" onclick="openClarificationModal()" style="color:#f9a825;border-color:#f9a82544">✎ Edit fields</button>
+         <button class="panel-btn" onclick="confirmClarification()" style="background:#f9a825;color:#18171a;border-color:#f9a825">✓ Confirm &amp; rerun</button>`
+      : `<button class="panel-btn" onclick="openEditModal()">✎ Edit</button>`
+    }
+    ${(!isClarification && (isFailed || isDone)) ? `<button class="panel-btn" onclick="retryNode()">↺ Retry</button>` : ''}
     ${isGoal ? `<button class="panel-btn" onclick="replanGoal()">⟳ Replan</button>` : ''}
     <button class="panel-btn danger" onclick="openRemoveModal()">✕ Remove</button>
   `;
 
   // Body
-  const body = document.getElementById('panel-body');
-  const desc = node.metadata?.description || '';
-  const deps = node.dependencies || [];
+  const body   = document.getElementById('panel-body');
+  const desc   = node.metadata?.description || '';
+  const deps   = node.dependencies || [];
   const result = node.result;
-  const notes = node.metadata?.reflection_notes || [];
-  const reqIn = node.metadata?.required_input || [];
+  const notes  = node.metadata?.reflection_notes || [];
+  const reqIn  = node.metadata?.required_input || [];
   const output = node.metadata?.output || [];
+
+  // ── Clarification node — render fields as a structured table ─────────────
+  if (isClarification) {
+    let fields = [];
+    try { fields = JSON.parse(result || '[]'); } catch (_) {}
+    let fhtml = '';
+    if (desc) fhtml += row('', `<span style="color:var(--text-muted);font-size:12px">${esc(desc)}</span>`);
+    fields.forEach(f => {
+      const isUnknown = !f.value || f.value === 'unknown';
+      const valColor  = isUnknown ? 'var(--s-failed)' : 'var(--text)';
+      fhtml += `<div style="padding:8px 0;border-bottom:1px solid var(--border-subtle)">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">${esc(f.label || f.key)}</div>
+        <div style="font-size:13px;color:${valColor};margin-bottom:3px">${esc(isUnknown ? 'unknown' : f.value)}</div>
+        ${f.rationale ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic">${esc(f.rationale)}</div>` : ''}
+      </div>`;
+    });
+    if (!fields.length) fhtml += '<div style="color:var(--text-muted);font-size:12px">No fields generated.</div>';
+    body.innerHTML = fhtml;
+    return;
+  }
 
   const stepChildren = Object.values(nodes).filter(n =>
     n.node_type === 'execution_step' &&
@@ -1368,6 +1393,82 @@ function submitEdit() {
     description: desc, status, dependencies: deps, dependents, result,
   });
   closeModal();
+}
+
+// ── Clarification node editing ────────────────────────────────────────────────
+
+// Holds the in-progress field edits while the modal is open.
+let _clarificationDraft = [];
+
+function openClarificationModal() {
+  const node = nodes[selectedId];
+  if (!node || node.node_type !== 'clarification') return;
+
+  let fields = [];
+  try { fields = JSON.parse(node.result || '[]'); } catch (_) {}
+  _clarificationDraft = fields.map(f => ({ ...f }));  // deep-copy
+
+  modalMode = 'clarification';
+  document.getElementById('modal-title').textContent = 'Edit goal context';
+
+  _renderClarificationFields();
+
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="saveClarificationDraft()">Save draft</button>
+  `;
+  showModal();
+}
+
+function _renderClarificationFields() {
+  const html = _clarificationDraft.map((f, i) => {
+    const isUnknown = !f.value || f.value === 'unknown';
+    return `
+      <div class="form-group" style="border-bottom:1px solid var(--border-subtle);padding-bottom:12px;margin-bottom:12px">
+        <label class="form-label" style="color:var(--amber)">${esc(f.label || f.key)}</label>
+        ${f.rationale ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;font-style:italic">${esc(f.rationale)}</div>` : ''}
+        <input
+          class="form-input"
+          id="clarif-field-${i}"
+          type="text"
+          value="${esc(isUnknown ? '' : f.value)}"
+          placeholder="unknown"
+          style="width:100%;background:var(--bg-code);border:1px solid var(--border);border-radius:4px;padding:6px 8px;color:var(--text);font-size:13px;font-family:var(--mono)"
+          oninput="_clarificationDraft[${i}].value = this.value || 'unknown'"
+        >
+      </div>`;
+  }).join('');
+
+  document.getElementById('modal-body').innerHTML =
+    html || '<div style="color:var(--text-muted);font-size:12px">No fields.</div>';
+}
+
+function saveClarificationDraft() {
+  // Flush any pending input values (in case oninput missed something)
+  _clarificationDraft.forEach((f, i) => {
+    const el = document.getElementById(`clarif-field-${i}`);
+    if (el) f.value = el.value.trim() || 'unknown';
+  });
+  closeModal();
+  // Update the panel to reflect the draft
+  updatePanel();
+}
+
+function confirmClarification() {
+  const node = nodes[selectedId];
+  if (!node || node.node_type !== 'clarification') return;
+
+  // If a draft is pending, use it; otherwise use the current node result
+  let fields = _clarificationDraft.length
+    ? _clarificationDraft
+    : (() => { try { return JSON.parse(node.result || '[]'); } catch (_) { return []; } })();
+
+  api('POST', `/api/node/${encodeURIComponent(selectedId)}/clarification/confirm`, {
+    updated_fields: fields,
+  });
+
+  // Reset draft so the next open starts fresh from the server state
+  _clarificationDraft = [];
 }
 
 function openRemoveModal() {

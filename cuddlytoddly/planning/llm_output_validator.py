@@ -25,7 +25,10 @@ class LLMOutputValidator:
         "description",
         "reflection_notes",
         "skill",
-        "tools"
+        "tools",
+        # clarification node fields
+        "fields",
+        "clarification_prompt",
     }
 
     def __init__(self, graph):

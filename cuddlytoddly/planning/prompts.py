@@ -176,18 +176,21 @@ def build_planner_prompt(
     skills_block: str,
     min_tasks: int = 3,
     max_tasks: int = 8,
+    clarification_block: str = "",
 ) -> str:
     """
     Build the prompt sent to the LLM planner when decomposing a goal into tasks.
 
     Parameters
     ----------
-    pruned_view_json   : JSON string of the relevant DAG nodes (already serialised).
-    goals_repr_json    : JSON string of the goal(s) to expand.
-    existing_ids_note  : Pre-formatted note listing IDs already in the DAG.
-    skills_block       : Skills summary block (empty string if no skills loaded).
-    min_tasks          : Minimum tasks to generate per goal (from config).
-    max_tasks          : Maximum tasks to generate per goal (from config).
+    pruned_view_json    : JSON string of the relevant DAG nodes (already serialised).
+    goals_repr_json     : JSON string of the goal(s) to expand.
+    existing_ids_note   : Pre-formatted note listing IDs already in the DAG.
+    skills_block        : Skills summary block (empty string if no skills loaded).
+    min_tasks           : Minimum tasks to generate per goal (from config).
+    max_tasks           : Maximum tasks to generate per goal (from config).
+    clarification_block : Pre-formatted block of goal context fields (empty string
+                          when no clarification node exists for this goal).
     """
     return f"""
 You are a DAG planning assistant.
@@ -197,7 +200,7 @@ Current DAG snapshot:
 
 Goals to expand:
 {goals_repr_json}
-{existing_ids_note}{skills_block}
+{existing_ids_note}{clarification_block}{skills_block}
 Your task is to decompose each goal into prerequisite tasks.
 
 Guidelines:
@@ -320,6 +323,42 @@ IMPORTANT — response format rules:
 - Do NOT include origin. The system will assign it automatically.
 - Do NOT emit ADD_NODE for any node that already exists in the DAG snapshot.
 """
+
+
+
+def build_clarification_context_block(fields: list, clarification_prompt: str) -> str:
+    """
+    Render clarification fields into a prompt block for the planner.
+
+    The original clarification prompt is embedded so the planner understands
+    what was asked and can add fields via additional_clarification_fields if
+    it identifies further important unknowns during decomposition.
+
+    Parameters
+    ----------
+    fields               : List of field dicts (key, label, value, rationale).
+    clarification_prompt : The prompt that was used to generate the fields
+                           (stored in the clarification node's metadata).
+    """
+    if not fields:
+        return ""
+
+    lines = ["\nGoal context (use this to tailor the plan — do not modify these fields):"]
+    for f in fields:
+        value_display = f.get("value", "unknown")
+        lines.append(
+            f"  {f['label']}\n"
+            f"    value:    {value_display}\n"
+            f"    rationale: {f['rationale']}"
+        )
+    lines.append(
+        "\nIf you identify additional context that would significantly improve the plan "
+        "and is not covered above, add it to additional_clarification_fields using the same "
+        "field schema (key, label, value, rationale).\n"
+        "The original clarification prompt that generated these fields was:\n"
+        f"{clarification_prompt}\n"
+    )
+    return "\n".join(lines) + "\n"
 
 
 def build_planner_skills_block(skills_summary: str) -> str:
@@ -644,5 +683,47 @@ Rules:
   a bridging task should do substantial work, not a trivial lookup.
 - If the task is a root task or the upstream results are sufficient, set ok=true.
 
+Respond only in JSON matching the schema.
+"""
+
+# ---------------------------------------------------------------------------
+# Clarification generation prompt
+# ---------------------------------------------------------------------------
+
+def build_clarification_prompt(goal_text: str) -> str:
+    """
+    Build the prompt for the first LLM call that generates the clarification
+    node fields — structured context that would most improve the plan.
+
+    The prompt is also stored in the clarification node's metadata so the
+    planner can see exactly what was asked when it adds extra fields.
+
+    Parameters
+    ----------
+    goal_text : The raw goal string provided by the user.
+    """
+    return f"""\
+You are preparing to plan how to achieve the following goal:
+
+  {goal_text}
+
+Before planning begins, identify the information that — if known — would most
+significantly improve the quality and specificity of the plan. Focus on facts
+that change what tasks are needed, how they should be done, or what the outputs
+should contain. Do not ask for information that any competent plan could work
+around or that is irrelevant to the goal.
+
+For each important piece of information:
+  - Provide a best-guess value if a reasonable assumption can be made.
+  - Set value to "unknown" if no reasonable guess is possible.
+  - Never leave value blank.
+
+Always include a final field with:
+  key:      "additional_context"
+  label:    "Anything else I should know?"
+  value:    "unknown"
+  rationale: "Free-form context that does not fit the fields above."
+
+Return between 3 and 8 fields total (including the additional_context field).
 Respond only in JSON matching the schema.
 """

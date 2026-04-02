@@ -2,12 +2,17 @@
 
 import json
 
-from cuddlytoddly.core.events import ADD_NODE, ADD_DEPENDENCY, SET_RESULT
-from cuddlytoddly.planning.schemas import PLAN_SCHEMA
+from cuddlytoddly.core.events import ADD_NODE, ADD_DEPENDENCY, SET_RESULT, UPDATE_METADATA
+from cuddlytoddly.planning.schemas import (
+    PLAN_SCHEMA,
+    CLARIFICATION_GENERATION_SCHEMA,
+)
 from cuddlytoddly.planning.prompts import (
     build_planner_prompt,
     build_planner_skills_block,
     build_plan_scrutinizer_prompt,
+    build_clarification_prompt,
+    build_clarification_context_block,
 )
 from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
 from cuddlytoddly.planning.plan_constraint_checker import PlanConstraintChecker
@@ -26,6 +31,10 @@ _VOLATILE_METADATA_KEYS = {
     "reflection_notes",
     "coverage_checked",
 }
+
+
+def _clarification_node_id(goal_id: str) -> str:
+    return f"clarification_{goal_id}"
 
 
 class LLMPlanner:
@@ -49,47 +58,115 @@ class LLMPlanner:
         self.constraint_checker  = PlanConstraintChecker(graph, llm_client)
 
     def propose(self, context):
-        snapshot = context.snapshot
-        goals    = context.goals
+        snapshot      = context.snapshot
+        goals         = context.goals
+        # skip_scrutiny is set to True by the orchestrator on partial replans
+        # (goal already had children) so the expensive scrutiny pass is not
+        # repeated for what is effectively a plan extension.
+        skip_scrutiny = getattr(context, "skip_scrutiny", False)
 
         if not goals:
             return []
 
         active_goal = goals[0]
+        goal_text   = active_goal.metadata.get("description", active_goal.id)
+        clarif_id   = _clarification_node_id(active_goal.id)
 
+        # ── Clarification node ────────────────────────────────────────────────
+        # Call 1: generate clarification fields on first plan only.
+        # On partial replans (goal already has children) the clarification node
+        # already exists — reuse it so user edits are not overwritten.
+        clarif_events: list = []
+        clarif_fields: list = []
+        clarif_prompt: str  = ""
+
+        existing_clarif = self.graph.nodes.get(clarif_id)
+        if existing_clarif is not None:
+            try:
+                clarif_fields = json.loads(existing_clarif.result or "[]")
+            except Exception:
+                clarif_fields = []
+            clarif_prompt = existing_clarif.metadata.get("clarification_prompt", "")
+            logger.info("[PLANNER] Reusing existing clarification node %s", clarif_id)
+        else:
+            clarif_prompt, clarif_fields, clarif_events = \
+                self._generate_clarification_node(goal_text, active_goal.id, clarif_id)
+
+        # ── Call 2: planning ──────────────────────────────────────────────────
         graph_view = self._serialize_snapshot(snapshot)
-        prompt     = self._build_prompt(graph_view, goals)
-
+        prompt     = self._build_prompt(
+            graph_view, goals,
+            clarif_fields=clarif_fields,
+            clarif_prompt=clarif_prompt,
+        )
         llm_output = self.llm.ask(prompt, schema=PLAN_SCHEMA)
 
-        if self.scrutinize_plan:
+        # ── Call 3: scrutiny (skipped on partial replans) ─────────────────────
+        if self.scrutinize_plan and not skip_scrutiny:
             llm_output = self._scrutinize(prompt, llm_output)
 
         try:
             parsed = json.loads(llm_output)
         except Exception as e:
             logger.error("[PLANNER] JSON parse error: %s", e)
-            return []
+            return clarif_events
 
-        # Field is named a_goal_result so it sorts before "events" in the schema,
-        # forcing constrained decoding to generate the reasoning first.
         goal_result = parsed.get("a_goal_result", "").strip()
         raw_events  = parsed.get("events", [])
 
+        # ── Merge extra clarification fields the planner identified ───────────
+        extra_fields = parsed.get("additional_clarification_fields", [])
+        if extra_fields and isinstance(extra_fields, list):
+            added = [
+                f for f in extra_fields
+                if isinstance(f, dict) and f.get("key")
+                and not any(cf["key"] == f["key"] for cf in clarif_fields)
+            ]
+            if added:
+                clarif_fields = clarif_fields + added
+                clarif_events.append({
+                    "type": SET_RESULT,
+                    "payload": {
+                        "node_id": clarif_id,
+                        "result":  json.dumps(clarif_fields, ensure_ascii=False),
+                    },
+                })
+                logger.info(
+                    "[PLANNER] Planner added %d extra clarification field(s)", len(added)
+                )
+
+        # ── Validate and constrain plan events ────────────────────────────────
         raw_events  = self._normalize_events(raw_events)
         validator   = LLMOutputValidator(self.graph)
         safe_events = validator.validate_and_normalize(
             raw_events, forced_origin="planning"
         )
-
-        # ── Constraint checks ──────────────────────────────────────────────────
-        # Runs after structural validation so the checker operates on a clean,
-        # already-normalised event list.  Enforces: dedup, cycle detection,
-        # required_input consistency, and ghost node resolution.
         safe_events = self.constraint_checker.check_and_repair(
             safe_events, active_goal.id
         )
 
+        # ── Wire clarification node as dependency of all root task nodes ───────
+        # Root tasks are new nodes whose dependencies contain no other new nodes.
+        new_node_ids = {
+            evt["payload"]["node_id"]
+            for evt in safe_events
+            if evt["type"] == ADD_NODE
+        }
+        for evt in safe_events:
+            if evt["type"] == ADD_NODE:
+                node_id = evt["payload"]["node_id"]
+                deps    = set(evt["payload"].get("dependencies", []))
+                if not (deps & new_node_ids):
+                    clarif_events.append({
+                        "type": ADD_DEPENDENCY,
+                        "payload": {
+                            "node_id":    node_id,
+                            "depends_on": clarif_id,
+                            "origin":     "planning",
+                        },
+                    })
+
+        # ── Annotate nodes with parent_goal ───────────────────────────────────
         for evt in safe_events:
             if evt["type"] == ADD_NODE:
                 metadata = evt["payload"].setdefault("metadata", {})
@@ -104,7 +181,72 @@ class LLMPlanner:
                 },
             })
 
-        return safe_events
+        # clarif_events must be first so the clarification node exists before
+        # any ADD_DEPENDENCY events referencing it are applied.
+        return clarif_events + safe_events
+
+    # ── Clarification node generation (Call 1) ────────────────────────────────
+
+    def _generate_clarification_node(
+        self,
+        goal_text: str,
+        goal_id: str,
+        clarif_id: str,
+    ) -> tuple:
+        """
+        Generate clarification fields via a dedicated LLM call.
+
+        Returns (clarification_prompt, fields, events) where events contains
+        ADD_NODE + SET_RESULT for the clarification node, ready to be
+        prepended to safe_events so the node exists before tasks reference it.
+        """
+        prompt = build_clarification_prompt(goal_text)
+        logger.info("[PLANNER] Generating clarification node for goal %s", goal_id)
+
+        try:
+            raw    = self.llm.ask(prompt, schema=CLARIFICATION_GENERATION_SCHEMA)
+            parsed = json.loads(raw)
+            fields = parsed.get("fields", [])
+        except Exception as exc:
+            logger.warning(
+                "[PLANNER] Clarification generation failed (%s) — using empty fields", exc
+            )
+            fields = []
+
+        events = [
+            {
+                "type": ADD_NODE,
+                "payload": {
+                    "node_id":      clarif_id,
+                    "node_type":    "clarification",
+                    "dependencies": [],
+                    "origin":       "planning",
+                    "metadata": {
+                        "description": (
+                            "Goal context — review any unknowns and fill them in, "
+                            "then click Confirm to update the plan."
+                        ),
+                        "fields":               fields,
+                        "clarification_prompt": prompt,
+                        "parent_goal":          goal_id,
+                    },
+                },
+            },
+            # Mark done immediately — execution proceeds on best-guess values.
+            {
+                "type": SET_RESULT,
+                "payload": {
+                    "node_id": clarif_id,
+                    "result":  json.dumps(fields, ensure_ascii=False),
+                },
+            },
+        ]
+
+        logger.info(
+            "[PLANNER] Clarification node %s generated with %d field(s)",
+            clarif_id, len(fields),
+        )
+        return prompt, fields, events
 
     # ── Scrutinizer ───────────────────────────────────────────────────────────
 
@@ -112,12 +254,9 @@ class LLMPlanner:
         """
         Feed the draft plan back to the LLM for self-review.
 
-        The scrutinizer prompt embeds the complete original planning prompt so
-        no constraint (DAG snapshot, existing IDs, task-count limits, dependency
-        semantics, format rules) is lost between the two calls.
-
-        Returns the improved JSON string, or the original draft if the
-        scrutiny call fails to parse.
+        Clarification context reaches the scrutinizer automatically because it
+        is embedded verbatim inside original_prompt via build_planner_prompt().
+        Returns the improved JSON string, or the original draft on failure.
         """
         scrutinizer_prompt = build_plan_scrutinizer_prompt(
             original_planning_prompt=original_prompt,
@@ -133,8 +272,6 @@ class LLMPlanner:
             logger.warning("[PLANNER] Scrutiny LLM call failed (%s) — using draft", exc)
             return draft_json
 
-        # Sanity-check: the improved output must be valid JSON before we
-        # replace the draft.  If not, fall back silently.
         try:
             json.loads(improved)
         except Exception:
@@ -172,7 +309,7 @@ class LLMPlanner:
 
     # ── Prompt builder ────────────────────────────────────────────────────────
 
-    def _build_prompt(self, graph_view, goals):
+    def _build_prompt(self, graph_view, goals, clarif_fields=None, clarif_prompt=""):
         node_map = {n["node_id"]: n for n in graph_view}
 
         relevant_ids = set()
@@ -209,7 +346,10 @@ class LLMPlanner:
             + "\n"
         )
 
-        skills_block = build_planner_skills_block(self.skills_summary)
+        skills_block        = build_planner_skills_block(self.skills_summary)
+        clarification_block = build_clarification_context_block(
+            clarif_fields or [], clarif_prompt
+        )
 
         return build_planner_prompt(
             pruned_view_json=json.dumps(pruned_view, indent=2),
@@ -218,6 +358,7 @@ class LLMPlanner:
             skills_block=skills_block,
             min_tasks=self.min_tasks_per_goal,
             max_tasks=self.max_tasks_per_goal,
+            clarification_block=clarification_block,
         )
 
     # ── Event normalizer ──────────────────────────────────────────────────────
