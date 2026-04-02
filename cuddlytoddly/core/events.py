@@ -6,14 +6,14 @@ All mutations must go through reducer.
 
 # core/events.py
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class Event:
     def __init__(self, type, payload, timestamp=None):
         self.type = type
         self.payload = payload
-        self.timestamp = timestamp or datetime.utcnow().isoformat()
+        self.timestamp = timestamp or datetime.now(timezone.utc).isoformat()
 
     def to_dict(self):
         return {

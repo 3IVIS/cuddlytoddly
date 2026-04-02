@@ -30,25 +30,37 @@ def _web_search(args: dict) -> str:
             "Run: pip install duckduckgo-search"
         )
 
-    try:
-        results = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results):
-                results.append(
-                    f"Title: {r.get('title', '')}\n"
-                    f"URL:   {r.get('href', '')}\n"
-                    f"Snippet: {r.get('body', '')}"
+    import time
+
+    last_error = None
+    for attempt in range(3):
+        if attempt > 0:
+            time.sleep(2 ** attempt)  # 2s, 4s backoff on retry
+        try:
+            results = []
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=max_results):
+                    results.append(
+                        f"Title: {r.get('title', '')}\n"
+                        f"URL:   {r.get('href', '')}\n"
+                        f"Snippet: {r.get('body', '')}"
+                    )
+            if results:
+                logger.info(
+                    "[WEB_SEARCH] Query: %r → %d result(s) (attempt %d)",
+                    query, len(results), attempt + 1,
                 )
+                return "\n\n---\n\n".join(results)
+            # Empty results — retry in case of transient rate limiting
+            logger.warning(
+                "[WEB_SEARCH] No results on attempt %d for: %r", attempt + 1, query
+            )
+            last_error = f"No results found for: {query}"
+        except Exception as e:
+            logger.error("[WEB_SEARCH] Attempt %d failed: %s", attempt + 1, e)
+            last_error = f"ERROR: web search failed — {e}"
 
-        if not results:
-            return f"No results found for: {query}"
-
-        logger.info("[WEB_SEARCH] Query: %r → %d result(s)", query, len(results))
-        return "\n\n---\n\n".join(results)
-
-    except Exception as e:
-        logger.error("[WEB_SEARCH] Failed: %s", e)
-        return f"ERROR: web search failed — {e}"
+    return last_error or f"No results found for: {query}"
 
 
 def _fetch_url(args: dict) -> str:

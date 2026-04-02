@@ -238,17 +238,36 @@ class LLMExecutor:
         declared_outputs = node.metadata.get("output", [])
         expected_files   = [_output_name(o) for o in declared_outputs if _is_file(o)]
 
+        # Tool names that count as "searching" for loop detection
+        _SEARCH_TOOLS = {"web_search", "fetch_url", "search", "web_fetch"}
+
         for turn in range(self.max_turns):
             turns_remaining = self.max_turns - turn
-            file_reminder   = ""
+            extra_reminder  = ""
+
+            # ── File-write reminder ───────────────────────────────────────────
             if expected_files and "write_file" not in {h["name"] for h in history}:
-                file_reminder = build_executor_file_reminder(expected_files, turns_remaining)
+                extra_reminder = build_executor_file_reminder(expected_files, turns_remaining)
+
+            # ── Search-loop reminder ──────────────────────────────────────────
+            # If the LLM has made 2+ search calls without setting done=true and
+            # has at most 2 turns left, force it to synthesise what it has.
+            search_calls = sum(1 for h in history if h.get("name", "") in _SEARCH_TOOLS)
+            if search_calls >= 2 and turns_remaining <= 2 and not extra_reminder:
+                extra_reminder = (
+                    f"\nIMPORTANT: You have already made {search_calls} search call(s). "
+                    "Do NOT make any more search calls. "
+                    "Synthesise all results you have gathered so far into a complete, "
+                    "self-contained answer and set done=true now. "
+                    "Use your own knowledge to fill gaps where search results were "
+                    "sparse or missing."
+                )
 
             if reporter:
                 reporter.on_llm_turn(turn)
 
             prompt = self._build_prompt(node, resolved_inputs, history,
-                                        extra_reminder=file_reminder)
+                                        extra_reminder=extra_reminder)
 
             try:
                 raw = self.llm.ask(prompt, schema=EXECUTION_TURN_SCHEMA)

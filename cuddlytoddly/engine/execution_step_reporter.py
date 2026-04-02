@@ -1,7 +1,7 @@
 # engine/execution_step_reporter.py
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from cuddlytoddly.core.events import (
     Event, ADD_NODE, UPDATE_METADATA, MARK_RUNNING, 
     MARK_DONE, MARK_FAILED, REMOVE_DEPENDENCY,
@@ -157,7 +157,7 @@ class ExecutionStepReporter:
             "args":      tool_args,
             "result":    result,
             "status":    "error" if error else "ok",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         with self._graph_lock:
