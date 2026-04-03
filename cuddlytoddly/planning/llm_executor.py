@@ -63,6 +63,35 @@ class LLMExecutor:
 
     # ──────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _parse_clarification_fields(result_json: str) -> tuple[list, list]:
+        """
+        Parse a clarification node result into (known_fields, unknown_fields).
+
+        known_fields   : list of {key, label, value} where value is not a placeholder
+        unknown_fields : list of {key, label} where value was "unknown" or similar
+
+        Used by _resolve_inputs to annotate the executor prompt, and passed
+        to the quality gate so it can flag fabricated values for unknown fields.
+        """
+        _PLACEHOLDERS = {"unknown", "n/a", "not specified", "not provided",
+                         "none", "unspecified", "tbd", ""}
+        try:
+            fields = json.loads(result_json)
+        except Exception:
+            return [], []
+
+        known, unknown = [], []
+        for f in fields:
+            if not isinstance(f, dict):
+                continue
+            val = str(f.get("value", "")).strip().lower()
+            if val in _PLACEHOLDERS:
+                unknown.append({"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))})
+            else:
+                known.append({"key": f.get("key", ""), "label": f.get("label", f.get("key", "")), "value": f.get("value", "")})
+        return known, unknown
+
     def _resolve_inputs(self, node, snapshot):
 
         def _format_output_list(outputs):
@@ -81,6 +110,33 @@ class LLMExecutor:
             dep = snapshot.get(dep_id)
             if not dep or not dep.result:
                 continue
+
+            # ── Clarification node — render as structured known/unknown blocks ──
+            if dep.node_type == "clarification":
+                known, unknown = self._parse_clarification_fields(dep.result)
+                lines = ["[Goal context from clarification node]"]
+                if known:
+                    lines.append("  Known — use these values directly:")
+                    for f in known:
+                        lines.append(f"    {f['label']}: {f['value']}")
+                if unknown:
+                    lines.append(
+                        "  Unknown — the user has not provided these values. "
+                        "Do NOT invent or assume specific values for them. "
+                        "If your task cannot proceed without them, state what is "
+                        "missing and produce a template or general answer instead:"
+                    )
+                    for f in unknown:
+                        lines.append(f"    {f['label']}: not provided")
+                resolved.append({
+                    "node_id":         dep_id,
+                    "description":     dep.metadata.get("description", dep_id),
+                    "declared_output": [],
+                    "result":          "\n".join(lines),
+                    "_unknown_fields": unknown,  # passed to quality gate
+                })
+                continue
+
             resolved.append({
                 "node_id":         dep_id,
                 "description":     dep.metadata.get("description", dep_id),
@@ -222,6 +278,39 @@ class LLMExecutor:
 
     def execute(self, node, snapshot, reporter=None):
         resolved_inputs = self._resolve_inputs(node, snapshot)
+
+        # ── Fix 2: user_input nodes produce a template, not LLM execution ────
+        # These nodes exist because the planner determined the task needs
+        # personal information only the user can supply.  Rather than attempting
+        # to execute (and fabricating data), we emit a structured template the
+        # user can fill in via the clarification node or UI.
+        if node.node_type == "user_input":
+            declared_outputs = node.metadata.get("output", [])
+            output_fields = [
+                o.get("name", str(o)) if isinstance(o, dict) else str(o)
+                for o in declared_outputs
+            ]
+            lines = [
+                f"[Template — please provide the following information]",
+                f"Task: {node.metadata.get('description', node.id)}",
+                "",
+            ]
+            if output_fields:
+                for field in output_fields:
+                    lines.append(f"  {field}: <please fill in>")
+            else:
+                lines.append("  Please provide the requested information above.")
+
+            required = node.metadata.get("required_input", [])
+            if required:
+                lines.append("")
+                lines.append("Required inputs to complete this task:")
+                for r in required:
+                    label = r.get("name", str(r)) if isinstance(r, dict) else str(r)
+                    lines.append(f"  - {label}")
+
+            return "\n".join(lines)
+
         history = []
 
         def _output_name(o):

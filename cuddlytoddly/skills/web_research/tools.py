@@ -6,21 +6,86 @@ from cuddlytoddly.infra.logging import get_logger
 logger = get_logger(__name__)
 
 # Maximum characters returned by fetch_url before truncation.
-# Keeps executor prompt sizes manageable.
 _MAX_FETCH_CHARS = 8_000
+
+# Placeholder values the clarification node uses for missing context.
+# Queries containing only these tokens after stripping noise cannot be
+# answered by any search engine and should not be attempted.
+_PLACEHOLDER_TOKENS = frozenset({
+    "unknown", "n/a", "not specified", "not provided",
+    "none", "unspecified", "tbd", "?",
+})
+
+
+def _sanitise_query(raw: str) -> tuple[str, list[str]]:
+    """
+    Remove placeholder tokens from a search query.
+
+    Returns (clean_query, removed_tokens).  If nothing useful remains
+    after removal the caller should abort the search rather than fire
+    a nonsensical query.
+
+    Examples
+    --------
+    "average salary for job title unknown"
+        → ("average salary for job title", ["unknown"])
+    "key achievements for current salary unknown and job title unknown"
+        → ("key achievements for current salary and job title", ["unknown"])
+    "software engineer salaries"
+        → ("software engineer salaries", [])
+    """
+    removed = []
+    tokens  = raw.split()
+    cleaned = []
+    for tok in tokens:
+        # Strip punctuation from both ends before comparing
+        bare = tok.strip(".,;:\"'()[]").lower()
+        if bare in _PLACEHOLDER_TOKENS:
+            removed.append(tok)
+        else:
+            cleaned.append(tok)
+
+    clean_query = " ".join(cleaned).strip()
+    # Collapse runs of whitespace left by removed tokens
+    clean_query = re.sub(r"\s{2,}", " ", clean_query)
+    return clean_query, removed
 
 
 def _web_search(args: dict) -> str:
     """
     Search the web using DuckDuckGo (no API key required).
 
+    Placeholder tokens such as "unknown" are stripped from the query
+    before the search fires.  If the cleaned query is too short to be
+    meaningful the call returns an informative message rather than
+    submitting a nonsensical query.
+
     Requires:  pip install duckduckgo-search
     """
-    query       = args.get("query", "").strip()
+    raw_query   = args.get("query", "").strip()
     max_results = int(args.get("max_results", 5))
 
-    if not query:
+    if not raw_query:
         return "ERROR: query is required"
+
+    # ── Fix 1: sanitise placeholder tokens ───────────────────────────────────
+    query, removed = _sanitise_query(raw_query)
+
+    if removed:
+        logger.info(
+            "[WEB_SEARCH] Stripped placeholder token(s) from query: %s → %r",
+            removed, query,
+        )
+
+    # If nothing substantive remains, abort rather than search for noise
+    meaningful_words = [w for w in query.split() if len(w) > 2]
+    if len(meaningful_words) < 2:
+        return (
+            f"SEARCH SKIPPED: query '{raw_query}' contained only placeholder "
+            f"values ({removed}) with no specific searchable terms. "
+            "Use your own knowledge to answer this task, or request more "
+            "specific information from the user via the clarification node."
+        )
 
     try:
         from duckduckgo_search import DDGS
@@ -51,7 +116,6 @@ def _web_search(args: dict) -> str:
                     query, len(results), attempt + 1,
                 )
                 return "\n\n---\n\n".join(results)
-            # Empty results — retry in case of transient rate limiting
             logger.warning(
                 "[WEB_SEARCH] No results on attempt %d for: %r", attempt + 1, query
             )
@@ -68,8 +132,6 @@ def _fetch_url(args: dict) -> str:
     Fetch a URL and return its content as cleaned plain text.
 
     Requires:  pip install requests beautifulsoup4
-    HTML tags, scripts, and style blocks are stripped.
-    Content is truncated to _MAX_FETCH_CHARS to keep prompts manageable.
     """
     url = args.get("url", "").strip()
     if not url:
@@ -89,24 +151,19 @@ def _fetch_url(args: dict) -> str:
         resp.raise_for_status()
         content_type = resp.headers.get("content-type", "")
 
-        # Return plain-text responses directly
         if "text/plain" in content_type:
             text = resp.text
         else:
-            # Try BeautifulSoup for HTML; fall back to regex stripping
             try:
                 from bs4 import BeautifulSoup
                 soup = BeautifulSoup(resp.text, "html.parser")
-                # Remove boilerplate elements
                 for tag in soup(["script", "style", "nav", "footer",
                                  "header", "aside", "form"]):
                     tag.decompose()
                 text = soup.get_text(separator="\n")
             except ImportError:
-                # Regex fallback — less clean but no extra dependency
                 text = re.sub(r"<[^>]+>", " ", resp.text)
 
-        # Collapse whitespace
         text = re.sub(r"\n{3,}", "\n\n", text)
         text = re.sub(r"[ \t]{2,}", " ", text)
         text = text.strip()
@@ -127,6 +184,8 @@ TOOLS = {
         "description": (
             "Search the web for current information and return titles, URLs, and snippets. "
             "Use for salary data, market research, company info, news, or any real-world fact. "
+            "Do NOT include placeholder values like 'unknown' in queries — strip them and search "
+            "for the general concept instead. "
             "Args: query (required), max_results (optional, default 5)."
         ),
         "input_schema": {

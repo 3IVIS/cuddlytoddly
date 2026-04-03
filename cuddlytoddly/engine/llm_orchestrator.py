@@ -322,8 +322,7 @@ class Orchestrator:
             ready = [
                 n for n in self.graph.nodes.values()
                 if n.status == "ready"
-                and n.node_type == "task"
-                and n.node_type != "clarification"
+                and n.node_type not in ("clarification", "execution_step")
                 and n.id not in self._running_futures
             ]
 

@@ -60,7 +60,7 @@ EVENT_LIST_SCHEMA = {
                             "node_id":      {"type": "string"},
                             "node_type":    {
                                 "type": "string",
-                                "enum": ["task", "goal", "reflection", "clarification"],
+                                "enum": ["task", "goal", "reflection", "clarification", "user_input"],
                             },
                             "dependencies": {
                                 "type": "array",

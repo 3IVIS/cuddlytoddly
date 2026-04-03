@@ -91,6 +91,11 @@ class QualityGate:
                 f"output name, not actual content. The node must return the actual data."
             )
 
+        # ── Collect unknown fields from upstream clarification nodes ──────────
+        # Passed to the verifier so it can flag results that assert specific
+        # invented values for fields the user never provided.
+        unknown_fields_context = self._collect_unknown_fields(node, snapshot)
+
         # ── LLM content check ─────────────────────────────────────────────────
         def _fmt(o):
             if isinstance(o, dict):
@@ -103,6 +108,7 @@ class QualityGate:
             description=node.metadata.get("description", node.id),
             outputs_text=outputs_text,
             result=stripped,
+            unknown_fields_context=unknown_fields_context,
         )
 
         try:
@@ -114,6 +120,50 @@ class QualityGate:
         except Exception as e:
             logger.warning("[QUALITY] verify_result error for %s: %s", node.id, e)
             return True, f"verification skipped — error: {e}"
+
+    def _collect_unknown_fields(self, node, snapshot) -> str:
+        """
+        Find clarification nodes upstream of this node and return a formatted
+        string listing any fields whose value was unknown.
+
+        Returns an empty string when no upstream clarification nodes exist or
+        all fields were known — the prompt helper omits the section in that case.
+        """
+        import json as _json
+        _PLACEHOLDERS = {"unknown", "n/a", "not specified", "not provided",
+                         "none", "unspecified", "tbd", ""}
+        unknown_labels = []
+
+        for dep_id in node.dependencies:
+            dep = snapshot.get(dep_id)
+            if not dep or dep.node_type != "clarification" or not dep.result:
+                continue
+            try:
+                fields = _json.loads(dep.result)
+            except Exception:
+                continue
+            for f in fields:
+                if not isinstance(f, dict):
+                    continue
+                val = str(f.get("value", "")).strip().lower()
+                if val in _PLACEHOLDERS:
+                    unknown_labels.append(f.get("label") or f.get("key", "?"))
+
+        if not unknown_labels:
+            return ""
+
+        lines = [
+            "The following context was unknown when this task ran "
+            "(the user did not provide these values):",
+        ]
+        for label in unknown_labels:
+            lines.append(f"  - {label}")
+        lines.append(
+            "If the result contains specific invented values for these fields "
+            "(e.g. a specific salary figure, a named company, a precise percentage) "
+            "that do not appear in the upstream task results, mark as not satisfied."
+        )
+        return "\n".join(lines)
 
     def check_dependencies(self, node, snapshot) -> dict | None:
         """

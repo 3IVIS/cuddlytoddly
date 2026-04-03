@@ -212,6 +212,16 @@ Guidelines:
 - Tasks must be actionable and executable.
 - If possible, identify tasks that can run in parallel.
 - Use the `parallel_group` metadata to indicate tasks that can execute concurrently.
+
+Node types:
+- `task`: a task the LLM can execute using tools or its own knowledge.
+- `user_input`: use this type ONLY when the task requires personal information
+  that only the user can supply (e.g. "list your own achievements", "describe
+  your specific situation") AND the relevant clarification fields are unknown.
+  A user_input node produces a structured template the user fills in — it does
+  NOT use web search or LLM reasoning to fabricate personal data. Do not use
+  user_input for tasks the LLM can answer from general knowledge.
+
 - For each task, specify:
     - `required_input`: list of typed objects {{name, type, description}} describing what this task consumes
     - `output`: list of typed objects {{name, type, description}} describing what this task produces
@@ -649,10 +659,22 @@ def build_verify_result_prompt(
     description: str,
     outputs_text: str,
     result: str,
+    unknown_fields_context: str = "",
 ) -> str:
     """
     Prompt asking the LLM to verify whether a task result satisfies its declared outputs.
+
+    unknown_fields_context: optional block listing clarification fields that were
+    unknown when the task ran. When present, the verifier checks that the result
+    does not assert invented specific values for those fields.
     """
+    unknown_section = ""
+    if unknown_fields_context:
+        unknown_section = f"""
+    MISSING CONTEXT (fields the user did not provide):
+    {unknown_fields_context}
+"""
+
     return f"""You are verifying whether a task result satisfies its declared outputs.
 
     TASK
@@ -661,7 +683,7 @@ def build_verify_result_prompt(
 
     DECLARED OUTPUTS (what this task was supposed to produce):
     {outputs_text}
-
+    {unknown_section}
     ACTUAL RESULT:
     {result}
 
@@ -669,8 +691,12 @@ def build_verify_result_prompt(
     A result that is just a filename, a single word, or a name matching the output label
     is NOT satisfied — the result must contain the actual data.
 
+    If MISSING CONTEXT is listed above: check whether the result invents specific values
+    for those fields (e.g. exact figures, names, or percentages not present in any upstream
+    result). Invented specifics for unknown fields should be marked as not satisfied.
+
     Respond only in JSON matching the schema.
-    """
+"""
 
 
 def build_check_dependencies_prompt(
