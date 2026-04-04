@@ -119,6 +119,11 @@ max_turns = 5
 # task before giving up and executing it anyway.
 max_gap_fill_attempts = 2
 
+# Maximum verification failures before a node is permanently failed instead
+# of being reset and retried.  Each retry waits an exponentially increasing
+# backoff (1s, 2s, 4s … capped at 60s) before re-launching.
+max_retries = 5
+
 # Seconds the orchestrator loop sleeps when idle (no planning or execution work).
 idle_sleep = 0.5
 
@@ -432,10 +437,11 @@ def get_orchestrator_cfg(cfg: dict) -> dict:
     """Return the [orchestrator] section with defaults filled in."""
     c = cfg.get("orchestrator", {})
     return {
-        "max_workers":          c.get("max_workers",          1),
-        "max_turns":            c.get("max_turns",            5),
+        "max_workers":           c.get("max_workers",           1),
+        "max_turns":             c.get("max_turns",             5),
         "max_gap_fill_attempts": c.get("max_gap_fill_attempts", 2),
-        "idle_sleep":           c.get("idle_sleep",           0.5),
+        "max_retries":           c.get("max_retries",           5),
+        "idle_sleep":            c.get("idle_sleep",            0.5),
     }
 
 
@@ -525,3 +531,5 @@ def _validate(cfg: dict) -> None:
             f"Choose one of: {', '.join(sorted(_VALID_BACKENDS))}.\n"
             f"Edit {CONFIG_PATH} to fix this."
         )
+
+

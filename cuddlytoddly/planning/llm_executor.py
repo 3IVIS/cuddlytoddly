@@ -433,9 +433,11 @@ class LLMExecutor:
                         "based on what you know; do not call any tool."
                     ),
                 })
-                # Early exit if every turn so far has been a tool-not-found
-                # error — the LLM is stuck in a loop and won't self-correct.
-                if all(
+                # Early exit if the LLM is stuck in a tool-not-found loop.
+                # Require at least 2 consecutive errors before aborting — a
+                # single error gives the LLM one chance to recover on the next
+                # turn by setting done=true without calling a tool.
+                if len(history) >= 2 and all(
                     h.get("result", "").startswith("ERROR: tool") and "not found" in h.get("result", "")
                     for h in history
                 ):
@@ -458,11 +460,22 @@ class LLMExecutor:
                 error = True
                 logger.error("[EXECUTOR] Tool '%s' raised: %s", tool_name, e)
 
+            # Some tools (e.g. web_search) swallow exceptions and return an
+            # error string instead of raising.  Detect these so the step node
+            # gets status="error" in the UI and the quality gate can see that
+            # all tool calls failed.
+            tool_result_str = str(tool_result)
+            if not error and tool_result_str.startswith("ERROR:"):
+                error = True
+                logger.warning(
+                    "[EXECUTOR] Tool '%s' returned an error string: %.120s",
+                    tool_name, tool_result_str,
+                )
+
             if reporter and step_id:
                 reporter.on_tool_done(step_id, tool_name, tool_args,
-                                      str(tool_result), error=error)
+                                      tool_result_str, error=error)
 
-            tool_result_str = str(tool_result)
             if len(tool_result_str) > self.max_tool_result_chars:
                 tool_result_str = (
                     tool_result_str[:self.max_tool_result_chars]

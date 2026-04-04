@@ -349,6 +349,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
         event_queue=queue,
         max_workers=max_workers,
         max_gap_fill_attempts=orch_cfg["max_gap_fill_attempts"],
+        max_retries=orch_cfg["max_retries"],
         idle_sleep=orch_cfg["idle_sleep"],
     )
 
@@ -482,3 +483,4 @@ def _build_llm_client(cfg: dict, run_dir: Path):
 
 if __name__ == "__main__":
     main()
+

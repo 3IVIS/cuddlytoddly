@@ -96,6 +96,18 @@ class QualityGate:
         # invented values for fields the user never provided.
         unknown_fields_context = self._collect_unknown_fields(node, snapshot)
 
+        # ── Deterministic pre-check: all tool calls returned errors ──────────
+        # If every web_search / fetch_url call on this node came back as an
+        # error or produced no results, the LLM had nothing real to work with
+        # and any specific figures in the result are fabricated.  Catch this
+        # here rather than relying on the LLM verifier to spot hallucination.
+        if self._all_tool_calls_failed(node, snapshot):
+            return False, (
+                "all tool calls returned errors or no results — "
+                "the result is likely fabricated from the model's prior "
+                "knowledge rather than from retrieved data"
+            )
+
         # ── LLM content check ─────────────────────────────────────────────────
         def _fmt(o):
             if isinstance(o, dict):
@@ -228,6 +240,40 @@ class QualityGate:
             return None
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _all_tool_calls_failed(self, node, snapshot) -> bool:
+        """
+        Returns True when the node made tool calls but every attempt came back
+        as an error string or produced no results.
+
+        This is a deterministic guard against the quality gate's LLM verifier
+        passing hallucinated output: if all searches failed, the executor had
+        no real data to synthesise from, so any specific figures in the result
+        are invented regardless of how plausible they look.
+        """
+        _ERROR_PREFIXES = ("ERROR:", "No results", "SEARCH SKIPPED")
+
+        step_nodes = [
+            n for nid, n in snapshot.items()
+            if nid.startswith(node.id + "__step_")
+            and n.metadata.get("step_type") == "tool_call"
+        ]
+        if not step_nodes:
+            return False  # no tool calls at all — not applicable
+
+        all_attempts = [
+            attempt.get("result", "")
+            for sn in step_nodes
+            for attempt in sn.metadata.get("attempts", [])
+        ]
+        if not all_attempts:
+            return False  # no recorded attempts — can't determine
+
+        useful = [
+            a for a in all_attempts
+            if a and not any(a.startswith(p) for p in _ERROR_PREFIXES)
+        ]
+        return len(useful) == 0
 
     def _looks_like_filename(self, result: str) -> bool:
         s = result.strip()

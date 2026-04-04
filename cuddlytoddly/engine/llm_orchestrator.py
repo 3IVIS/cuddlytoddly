@@ -65,6 +65,7 @@ class Orchestrator:
         quality_gate=None,
         max_gap_fill_attempts: int = 2,
         idle_sleep: float = 0.5,
+        max_retries: int = 5,
     ):
         self.graph                 = graph
         self.planner               = planner
@@ -75,6 +76,7 @@ class Orchestrator:
         self.quality_gate          = quality_gate
         self.max_gap_fill_attempts = max_gap_fill_attempts
         self.idle_sleep            = idle_sleep
+        self.max_retries           = max_retries
 
         # UI contract
         self.graph_lock        = threading.RLock()
@@ -341,6 +343,16 @@ class Orchestrator:
                 self._prev_results[node.id] = current.result
                 snapshot = self.graph.get_snapshot()
 
+            # ── Backoff window check ──────────────────────────────────────────
+            retry_after = node.metadata.get("retry_after", 0)
+            if retry_after and time.time() < retry_after:
+                remaining = retry_after - time.time()
+                logger.debug(
+                    "[EXEC] Node %s in backoff — %.1fs remaining",
+                    node.id, remaining,
+                )
+                continue
+
             # ── Dependency gap check ──────────────────────────────────────────
             attempts = node.metadata.get("gap_fill_attempts", 0)
             if self.quality_gate and attempts < self.max_gap_fill_attempts:
@@ -525,6 +537,8 @@ class Orchestrator:
                                        file_path, e)
 
         # ── LLM verification ──────────────────────────────────────────────────
+        # user_input nodes deliberately produce a template — the LLM verifier
+        # would always reject it as "not substantive", so skip for that type.
         if self.quality_gate:
             with self.graph_lock:
                 if node_id not in self.graph.nodes:
@@ -532,11 +546,18 @@ class Orchestrator:
                 node     = self.graph.nodes[node_id]
                 snapshot = self.graph.get_snapshot()
 
-            satisfied, reason = self._verify_result(node, result, snapshot)
+            if node.node_type == "user_input":
+                satisfied, reason = True, "verification skipped — user_input node"
+            else:
+                satisfied, reason = self._verify_result(node, result, snapshot)
         else:
             satisfied = True
             reason    = ""
 
+        # ── Consolidate state mutation in a single lock acquisition ──────────
+        # Holding the lock across both MARK_FAILED and RESET_NODE prevents
+        # concurrent _on_node_done callbacks from interleaving their resets
+        # and producing duplicate rapid-fire relaunches.
         with self.graph_lock:
             if node_id not in self.graph.nodes:
                 return
@@ -548,9 +569,30 @@ class Orchestrator:
                     "[EXEC] Node %s verification FAILED (attempt %d): %s",
                     node_id, retry + 1, reason,
                 )
+
+                # ── Max retries cap ───────────────────────────────────────────
+                if retry + 1 >= self.max_retries:  # retry is 0-indexed; this is the (retry+1)th failure
+                    logger.error(
+                        "[EXEC] Node %s exhausted %d retries — "
+                        "marking permanently failed",
+                        node_id, self.max_retries,
+                    )
+                    if reporter:
+                        reporter.expose_all()
+                    self._apply(Event(MARK_FAILED, {"node_id": node_id}))
+                    self._reporters.pop(node_id, None)
+                    return
+
+                # ── Exponential backoff before retry ─────────────────────────
+                backoff_secs = min(2 ** retry, 60)  # 1s, 2s, 4s ... capped at 60s
                 node.metadata["verification_failure"] = reason
                 node.metadata["retry_count"]          = retry + 1
+                node.metadata["retry_after"]          = time.time() + backoff_secs
                 node.metadata.pop("verified", None)
+                logger.info(
+                    "[EXEC] Node %s will retry in %.0fs (attempt %d/%d)",
+                    node_id, backoff_secs, retry + 1, self.max_retries,
+                )
                 if reporter:
                     reporter.expose_all()
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
@@ -569,7 +611,6 @@ class Orchestrator:
                 if reporter:
                     reporter.hide_all()
                 self._reporters.pop(node_id, None)
-
     # ── Verification ─────────────────────────────────────────────────────────
 
     def _verify_result(self, node, result: str, snapshot):
