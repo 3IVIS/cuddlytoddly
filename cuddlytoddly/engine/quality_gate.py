@@ -1,7 +1,7 @@
 # engine/quality_gate.py
 
 import json
-import re
+import os
 
 from cuddlytoddly.infra.logging import get_logger
 from cuddlytoddly.planning.llm_interface import LLMStoppedError
@@ -51,62 +51,33 @@ class QualityGate:
 
         stripped = result.strip()
 
-        # ── Pattern 1: bare filename ──────────────────────────────────────────
-        if self._looks_like_filename(stripped):
-            if not self._file_exists(stripped):
-                return False, (
-                    f"result is a filename ('{stripped}') "
-                    f"but the file does not exist on disk"
-                )
-
-        # ── Pattern 2: labelled file confirmation ─────────────────────────────
-        file_label_match = re.match(
-            r'^(?:file_written|written_to|saved_to|output_file)\s*:\s*(\S+)',
-            stripped, re.IGNORECASE,
-        )
-        if file_label_match:
-            filename = file_label_match.group(1).rstrip(".,;")
-            if not self._file_exists(filename):
-                return False, (
-                    f"result claims file was written ('{filename}') "
-                    f"but the file does not exist on disk"
-                )
-
-        # ── Pattern 3: result is just a label/name ────────────────────────────
+        # ── Direct disk check for declared file outputs ───────────────────────
+        # For any output declared as a file type (or whose name has a file
+        # extension), check disk existence directly.  This is ground truth —
+        # no pattern matching on the result string is needed.
         def _output_name(o):
             return o["name"] if isinstance(o, dict) else str(o)
 
-        is_just_label = (
-            "\n" not in stripped
-            and " " not in stripped
-            and len(stripped) < 60
-            and any(
-                stripped.lower().replace("_", "") == _output_name(o).lower().replace("_", "")
-                for o in declared_outputs
-            )
-        )
-        if is_just_label:
-            return False, (
-                f"result '{stripped}' appears to be just a label matching the declared "
-                f"output name, not actual content. The node must return the actual data."
-            )
+        def _is_file_output(o):
+            if isinstance(o, dict):
+                return (
+                    o.get("type") == "file"
+                    or any(_output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
+                )
+            return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
 
-        # ── Collect unknown fields from upstream clarification nodes ──────────
-        # Passed to the verifier so it can flag results that assert specific
-        # invented values for fields the user never provided.
+        for output in declared_outputs:
+            if _is_file_output(output):
+                path = _output_name(output)
+                if not self._file_exists(path):
+                    return False, (
+                        f"declared file output '{path}' does not exist on disk"
+                    )
+
+        # ── Collect upstream context for the LLM verifier ────────────────────
         unknown_fields_context = self._collect_unknown_fields(node, snapshot)
-
-        # ── Deterministic pre-check: all tool calls returned errors ──────────
-        # If every web_search / fetch_url call on this node came back as an
-        # error or produced no results, the LLM had nothing real to work with
-        # and any specific figures in the result are fabricated.  Catch this
-        # here rather than relying on the LLM verifier to spot hallucination.
-        if self._all_tool_calls_failed(node, snapshot):
-            return False, (
-                "all tool calls returned errors or no results — "
-                "the result is likely fabricated from the model's prior "
-                "knowledge rather than from retrieved data"
-            )
+        tool_results_context   = self._build_tool_results_context(node, snapshot)
+        broadening_context     = self._build_broadening_context(node)
 
         # ── LLM content check ─────────────────────────────────────────────────
         def _fmt(o):
@@ -121,6 +92,8 @@ class QualityGate:
             outputs_text=outputs_text,
             result=stripped,
             unknown_fields_context=unknown_fields_context,
+            tool_results_context=tool_results_context,
+            broadening_context=broadening_context,
         )
 
         try:
@@ -241,49 +214,77 @@ class QualityGate:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _all_tool_calls_failed(self, node, snapshot) -> bool:
+    def _build_tool_results_context(self, node, snapshot) -> str:
         """
-        Returns True when the node made tool calls but every attempt came back
-        as an error string or produced no results.
+        Build a factual summary of this node's tool call outcomes for inclusion
+        in the verifier prompt.  Returns empty string when no tool calls were made.
 
-        This is a deterministic guard against the quality gate's LLM verifier
-        passing hallucinated output: if all searches failed, the executor had
-        no real data to synthesise from, so any specific figures in the result
-        are invented regardless of how plausible they look.
+        The LLM verifier uses this context to decide whether specific figures in
+        the result could plausibly have come from a successful search, or whether
+        they are likely fabricated from prior knowledge.
         """
-        _ERROR_PREFIXES = ("ERROR:", "No results", "SEARCH SKIPPED")
-
         step_nodes = [
             n for nid, n in snapshot.items()
             if nid.startswith(node.id + "__step_")
             and n.metadata.get("step_type") == "tool_call"
         ]
         if not step_nodes:
-            return False  # no tool calls at all — not applicable
+            return ""
 
-        all_attempts = [
-            attempt.get("result", "")
-            for sn in step_nodes
-            for attempt in sn.metadata.get("attempts", [])
-        ]
-        if not all_attempts:
-            return False  # no recorded attempts — can't determine
+        total  = 0
+        failed = 0
+        for sn in step_nodes:
+            for attempt in sn.metadata.get("attempts", []):
+                total += 1
+                if attempt.get("status") == "error":
+                    failed += 1
 
-        useful = [
-            a for a in all_attempts
-            if a and not any(a.startswith(p) for p in _ERROR_PREFIXES)
-        ]
-        return len(useful) == 0
+        if total == 0:
+            return ""
 
-    def _looks_like_filename(self, result: str) -> bool:
-        s = result.strip()
-        if " " in s or "\n" in s or "\\n" in s:
-            return False
-        if any(s.startswith(c) for c in ("#", "{", "[", "-", "=", ">")):
-            return False
-        if len(s) > 200:
-            return False
-        return any(s.endswith(ext) for ext in self.FILE_EXTENSIONS)
+        if failed == total:
+            return (
+                f"All {total} tool call attempt(s) for this task returned errors "
+                "or no results. If the result contains specific figures, names, or "
+                "statistics that could only come from a successful search, it is "
+                "likely fabricated from the model's prior knowledge."
+            )
+        elif failed > 0:
+            return (
+                f"{failed} of {total} tool call attempt(s) returned errors or no "
+                f"results; {total - failed} returned data."
+            )
+        return f"All {total} tool call attempt(s) returned data successfully."
+
+    def _build_broadening_context(self, node) -> str:
+        """
+        If the node ran with a broadened description (because specific inputs
+        were unavailable), return a warning string for the verifier prompt.
+
+        Returns empty string when the node ran with its original description.
+        """
+        broadened_description = node.metadata.get("broadened_description", "")
+        broadened_for_missing = node.metadata.get("broadened_for_missing", [])
+        broadened_reason      = node.metadata.get("broadened_reason", "")
+
+        if not broadened_description:
+            return ""
+
+        missing_text = (
+            ", ".join(broadened_for_missing)
+            if broadened_for_missing else "unspecified fields"
+        )
+        reason_text = f" Reason: {broadened_reason}" if broadened_reason else ""
+        return (
+            f"This task ran with a broadened goal because the following inputs "
+            f"were unavailable: {missing_text}.{reason_text} "
+            f"The broadened goal was: \"{broadened_description}\". "
+            f"The result must therefore be general — templates, frameworks, ranges, "
+            f"or guided questions. Any specific invented values (exact percentages, "
+            f"named personal achievements, specific figures) that could only come "
+            f"from the user's private information or a targeted search should cause "
+            f"this result to be marked as not satisfied."
+        )
 
     def _file_exists(self, path: str) -> bool:
         if self.tools and hasattr(self.tools, "execute"):
@@ -292,5 +293,5 @@ class QualityGate:
                 return True
             except Exception:
                 return False
-        import os
         return os.path.exists(path)
+

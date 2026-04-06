@@ -29,7 +29,7 @@ class TaskGraph:
             self.children = set()
             self.node_type = node_type
 
-            self.status = "pending"  # pending / ready / running / done / failed
+            self.status = "pending"  # pending / ready / running / done / failed / awaiting_input
             self.result = None
 
             self.origin = origin or "user"
@@ -174,10 +174,12 @@ class TaskGraph:
 
     def recompute_readiness(self):
         for node in self.nodes.values():
-            if node.status in ("done", "running", "failed", "to_be_expanded"):  # ← add to_be_expanded
+            if node.status in ("done", "running", "failed", "to_be_expanded", "awaiting_input"):
                 continue
+            # awaiting_input deps are treated like failed — not satisfied
             if all(
-                dep in self.nodes and self.nodes[dep].status == "done"
+                dep in self.nodes
+                and self.nodes[dep].status == "done"
                 for dep in node.dependencies
             ):
                 node.status = "ready"
@@ -265,9 +267,11 @@ class TaskGraph:
     def update_status(self, node_id, status):
         if node_id not in self.nodes:
             return
-        valid = ("pending", "ready", "running", "done", "failed", "to_be_expanded")  # ← add it
+        valid = ("pending", "ready", "running", "done", "failed", "to_be_expanded", "awaiting_input")
         if status not in valid:
             logger.warning("Invalid status '%s' for node %s", status, node_id)
             return
         self.nodes[node_id].status = status
         self.execution_version += 1
+
+

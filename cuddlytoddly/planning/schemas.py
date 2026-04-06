@@ -60,7 +60,7 @@ EVENT_LIST_SCHEMA = {
                             "node_id":      {"type": "string"},
                             "node_type":    {
                                 "type": "string",
-                                "enum": ["task", "goal", "reflection", "clarification", "user_input"],
+                                "enum": ["task", "goal", "reflection", "clarification"],
                             },
                             "dependencies": {
                                 "type": "array",
@@ -344,6 +344,136 @@ CLARIFICATION_GENERATION_SCHEMA = {
 }
 
 # ---------------------------------------------------------------------------
+# Executor pre-flight: awaiting-input check schema
+# ---------------------------------------------------------------------------
+
+AWAITING_INPUT_CHECK_SCHEMA = {
+    "type": "object",
+    "required": ["blocked", "reason", "broadened_description", "broadened_for_missing",
+                 "broadened_output"],
+    "additionalProperties": False,
+    "properties": {
+        "blocked": {
+            "type": "boolean",
+            "description": (
+                "True if this task is missing required inputs. "
+                "Even when blocked=true the task will still execute — using the "
+                "broadened_description instead of the original goal. "
+                "False if all required inputs are available and the original "
+                "task description can be used directly."
+            ),
+        },
+        "reason": {
+            "type": "string",
+            "maxLength": 200,
+            "description": (
+                "One sentence explaining what inputs are missing, or confirming "
+                "the task can proceed as specified."
+            ),
+        },
+        "missing_fields": {
+            "type": "array",
+            "description": (
+                "Keys of existing clarification fields that are currently "
+                "unknown but — if filled in by the user — would allow the "
+                "original specific task to run. Only include fields that are "
+                "directly and specifically required."
+            ),
+            "items": {"type": "string"},
+        },
+        "new_fields": {
+            "type": "array",
+            "description": (
+                "New clarification fields to add to the form when no existing "
+                "field captures the required information. Leave empty when "
+                "an existing field already covers what is needed."
+            ),
+            "items": {
+                "type": "object",
+                "required": ["key", "label", "value", "rationale"],
+                "additionalProperties": False,
+                "properties": {
+                    "key":       {"type": "string",
+                                  "description": "snake_case identifier"},
+                    "label":     {"type": "string",
+                                  "description": "Human-readable field name shown in the UI"},
+                    "value":     {"type": "string",
+                                  "description": "Always 'unknown' for new fields"},
+                    "rationale": {"type": "string",
+                                  "description": "One sentence: why this field is needed"},
+                },
+            },
+        },
+        "broadened_description": {
+            "type": "string",
+            "maxLength": 500,
+            "description": (
+                "A rephrased version of the task goal that produces genuinely "
+                "useful output using ONLY what is currently known, without "
+                "depending on any missing fields. "
+                "Required whenever blocked=true. "
+                "Must be a complete, standalone task description — not a note "
+                "about what was generalised. "
+                "Must not mention any missing field by name or reference the "
+                "user's specific private information. "
+                "Should be as specific as possible given the known context "
+                "(e.g. if job title is known but company is not, incorporate "
+                "the job title into the broadened description). "
+                "Leave empty string when blocked=false."
+            ),
+        },
+        "broadened_for_missing": {
+            "type": "array",
+            "description": (
+                "The keys of the fields that were missing when this broadened "
+                "description was generated. Used to decide whether to reuse or "
+                "regenerate the broadened description on the next execution. "
+                "Should match the union of missing_fields keys and new_fields keys. "
+                "Leave empty when blocked=false."
+            ),
+            "items": {"type": "string"},
+        },
+        "broadened_output": {
+            "type": "array",
+            "description": (
+                "Revised output declarations that match the broadened_description. "
+                "When blocked=true, redefine the outputs so they describe what the "
+                "broadened goal actually produces (e.g. a template or framework) "
+                "rather than the specific personal or entity-specific data the "
+                "original goal would produce. "
+                "Use the same {name, type, description} shape as the planner output "
+                "declarations. Type must be one of the allowed values. "
+                "Leave empty when blocked=false."
+            ),
+            "items": _IO_ITEM,
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Broadened description fallback schema
+# ---------------------------------------------------------------------------
+
+BROADENED_DESCRIPTION_SCHEMA = {
+    "type": "object",
+    "required": ["broadened_description"],
+    "additionalProperties": False,
+    "properties": {
+        "broadened_description": {
+            "type": "string",
+            "description": (
+                "A complete, standalone rephrasing of the task goal that "
+                "produces useful output using only the currently known context, "
+                "without depending on any unavailable inputs. Must be a direct "
+                "task instruction, not a meta-description of what was generalised."
+            ),
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Plan constraint checker schema
 # ---------------------------------------------------------------------------
 
@@ -370,3 +500,4 @@ GHOST_NODE_RESOLUTION_SCHEMA = {
         },
     },
 }
+

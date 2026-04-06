@@ -1518,6 +1518,19 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
         if desc:
             lines += [f" Desc:   {desc}", " "]
 
+        broad_desc    = node.metadata.get("broadened_description", "")
+        broad_missing = node.metadata.get("broadened_for_missing", [])
+        broad_reason  = node.metadata.get("broadened_reason", "")
+        if broad_desc:
+            lines.append(" ⟳ Running as (broadened goal):")
+            for wrapped in textwrap.wrap(broad_desc, width=60):
+                lines.append(f"   {wrapped}")
+            if broad_missing:
+                lines.append(f"   Missing: {', '.join(broad_missing)}")
+            if broad_reason:
+                lines.append(f"   Reason:  {broad_reason}")
+            lines.append(" ")
+
         input = node.metadata.get("required_input")
         if input:
             lines += [f" Input:  {input}", " "]

@@ -3,7 +3,7 @@
 import json
 from cuddlytoddly.infra.logging import get_logger
 from cuddlytoddly.planning.llm_interface import LLMStoppedError
-from cuddlytoddly.planning.schemas import EXECUTION_TURN_SCHEMA
+from cuddlytoddly.planning.schemas import EXECUTION_TURN_SCHEMA, AWAITING_INPUT_CHECK_SCHEMA, BROADENED_DESCRIPTION_SCHEMA
 from cuddlytoddly.planning.prompts import (
     build_executor_prompt,
     build_executor_outputs_block,
@@ -11,9 +11,43 @@ from cuddlytoddly.planning.prompts import (
     build_executor_inline_output_instruction,
     build_executor_retry_notice,
     build_executor_file_reminder,
+    build_awaiting_input_check_prompt,
+    build_broadened_description_prompt,
 )
 
 logger = get_logger(__name__)
+
+from dataclasses import dataclass, field as _dc_field
+
+
+@dataclass
+class AwaitingInputSignal:
+    """
+    Produced by _preflight_awaiting_input when some required inputs are missing.
+
+    The signal no longer blocks execution — it carries the broadened_description
+    that execute() uses as the effective task goal for this run, along with
+    metadata the orchestrator writes back to the node after execution completes.
+
+    Fields
+    ------
+    reason               : Human-readable explanation of what is missing.
+    missing_fields       : Keys of existing clarification fields that are unknown.
+    new_fields           : New fields to add to the clarification form.
+    clarification_node_id: Upstream clarification node to patch.
+    broadened_description: Rephrased task goal that works without the missing inputs.
+    broadened_for_missing: The missing field keys active when the broadened
+                           description was generated — used to decide whether to
+                           reuse or regenerate on the next execution.
+    """
+    reason: str
+    missing_fields: list = _dc_field(default_factory=list)
+    new_fields: list = _dc_field(default_factory=list)
+    clarification_node_id: str = ""
+    broadened_description: str = ""
+    broadened_for_missing: list = _dc_field(default_factory=list)
+    broadened_output: list = _dc_field(default_factory=list)
+
 
 # Version tag bumped when prompt semantics change significantly.
 # Kept as a code constant (not config) because it tracks internal compatibility.
@@ -133,7 +167,8 @@ class LLMExecutor:
                     "description":     dep.metadata.get("description", dep_id),
                     "declared_output": [],
                     "result":          "\n".join(lines),
-                    "_unknown_fields": unknown,  # passed to quality gate
+                    "_unknown_fields": unknown,  # used by quality gate and preflight
+                    "_known_fields":   known,    # used by preflight check
                 })
                 continue
 
@@ -172,7 +207,9 @@ class LLMExecutor:
             lines.append(f"- {name}: {desc}. Args: {json.dumps(schema)}")
         return "\n".join(lines)
 
-    def _build_prompt(self, node, resolved_inputs, history, extra_reminder=""):
+    def _build_prompt(self, node, resolved_inputs, history,
+                      extra_reminder="", turns_remaining=0,
+                      description_override="", output_override=None):
 
         def _fmt_output(o):
             if isinstance(o, dict):
@@ -229,16 +266,18 @@ class LLMExecutor:
         tools_text = self._tool_schema_summary()
 
         # ── Declared outputs ──────────────────────────────────────────────────
-        declared_outputs = node.metadata.get("output", [])
+        # When running with a broadened description, output_override contains
+        # the broadened output declarations that are consistent with the broadened
+        # goal — use these instead of the original node metadata outputs so the
+        # LLM isn't working under two contradictory output contracts.
+        declared_outputs = (
+            output_override
+            if output_override is not None
+            else node.metadata.get("output", [])
+        )
         expected_files   = [_output_name(o) for o in declared_outputs if _is_file(o)]
 
-        description_lower = node.metadata.get("description", "").lower()
-        is_file_edit = any(
-            word in description_lower
-            for word in ("edit", "modify", "update", "append", "patch", "overwrite")
-        )
-
-        if expected_files or is_file_edit:
+        if expected_files:
             output_instruction = build_executor_file_output_instruction(expected_files)
         else:
             output_instruction = build_executor_inline_output_instruction(
@@ -262,7 +301,7 @@ class LLMExecutor:
 
         return build_executor_prompt(
             node_id=node.id,
-            description=node.metadata.get("description", node.id),
+            description=description_override or node.metadata.get("description", node.id),
             retry_notice=retry_notice,
             extra_reminder=extra_reminder,
             outputs_block=outputs_block,
@@ -271,7 +310,253 @@ class LLMExecutor:
             tools_text=tools_text,
             history_text=history_text,
             max_inline_result_chars=self.max_inline_result_chars,
+            turns_remaining=turns_remaining,
             prompt_version=PROMPT_VERSION,
+        )
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _fmt_known_fields(self, resolved_inputs: list) -> str:
+        """
+        Return a formatted string of known clarification fields from the
+        resolved inputs, for use in the broadened-description fallback prompt.
+        """
+        known_fields = []
+        for entry in resolved_inputs:
+            known_fields.extend(entry.get("_known_fields", []))
+        if not known_fields:
+            return ""
+        return "\n".join(
+            f"  - {f.get('key', '?')} ({f.get('label', '?')}): {f.get('value', '')}"
+            for f in known_fields
+        )
+
+    def _generate_broadened_description(
+        self, node, missing_keys: list, known_fields_text: str
+    ) -> str:
+        """
+        Focused fallback LLM call used when the primary preflight call returned
+        blocked=true but an empty broadened_description.
+
+        Returns the broadened description string, or empty string on failure.
+        """
+        if getattr(self.llm, "is_stopped", False):
+            return ""
+        prompt = build_broadened_description_prompt(
+            node_id=node.id,
+            original_description=node.metadata.get("description", node.id),
+            missing_keys=missing_keys,
+            known_fields_text=known_fields_text,
+        )
+        try:
+            raw    = self.llm.ask(prompt, schema=BROADENED_DESCRIPTION_SCHEMA)
+            parsed = json.loads(raw)
+            return parsed.get("broadened_description", "").strip()
+        except Exception as e:
+            logger.warning(
+                "[EXECUTOR] Broadened description fallback call failed for %s: %s",
+                node.id, e,
+            )
+            return ""
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _preflight_awaiting_input(
+        self, node, resolved_inputs
+    ) -> "AwaitingInputSignal | None":
+        """
+        Ask the LLM whether this task can be executed with the currently
+        available information and tools.
+
+        Returns an AwaitingInputSignal if the task is blocked on missing user
+        input, None if it can proceed.
+
+        Two-phase logic:
+
+        Phase 1 — Deterministic gap detection (no LLM call):
+          Compare the task's declared required_input list against all
+          existing clarification field keys.  Any required input whose name
+          does not appear in any clarification field is a structural gap:
+          the user cannot supply it because the form has no field for it.
+          These are collected as auto_new_fields.
+
+          If gaps exist but no unknown fields do (all clar fields are filled
+          and none of them covers this input), return a signal immediately so
+          the orchestrator adds the missing field to the clarification form
+          before attempting execution.
+
+        Phase 2 — LLM judgment (runs when unknown fields exist):
+          Ask the LLM whether the task can proceed despite the unknowns.
+          If the LLM decides to block, merge any auto_new_fields from Phase 1
+          into the signal's new_fields so the clarification form is always
+          patched with every field the task structurally requires.
+        """
+        # Collect clarification context from resolved inputs
+        unknown_fields = []   # list of {key, label}
+        known_fields   = []   # list of {key, label, value}
+        clar_node_id   = ""
+
+        for entry in resolved_inputs:
+            if "_unknown_fields" not in entry:
+                continue
+            clar_node_id = entry["node_id"]
+            unknown_fields.extend(entry["_unknown_fields"])
+            known_fields.extend(entry.get("_known_fields", []))
+
+        # ── Phase 1: deterministic required-input gap detection ───────────────
+        all_clar_keys   = {f.get("key") for f in known_fields + unknown_fields}
+        required_inputs = node.metadata.get("required_input", [])
+
+        def _make_new_field(r: dict) -> dict:
+            name  = r.get("name", "")
+            label = name.replace("_", " ").title()
+            return {
+                "key":      name,
+                "label":    label,
+                "value":    "unknown",
+                "rationale": (
+                    f"Required by task '{node.id}': {r.get('description', label)}"
+                ),
+            }
+
+        auto_new_fields = [
+            _make_new_field(r) for r in required_inputs
+            if r.get("name") and r.get("name") not in all_clar_keys
+        ]
+
+        if auto_new_fields:
+            logger.info(
+                "[EXECUTOR] Node %s has required inputs not covered by any "
+                "clarification field — will add: %s",
+                node.id, [f["key"] for f in auto_new_fields],
+            )
+
+        # Compute the full current missing-key set (unknown fields + structural gaps)
+        current_missing_keys = sorted(set(
+            [f.get("key") for f in unknown_fields]
+            + [f["key"] for f in auto_new_fields]
+        ))
+
+        # If nothing is missing at all, proceed with the original description
+        if not current_missing_keys:
+            return None
+
+        # ── Reuse check: same missing set as last broadened execution? ─────────
+        # Skip reuse if the previous execution failed verification — the stored
+        # broadened description produced an output the verifier rejected, so
+        # regenerating with the failure reason as context has a better chance of
+        # succeeding than rerunning the exact same description again.
+        previous_failure  = node.metadata.get("verification_failure", "")
+        stored_broadened  = node.metadata.get("broadened_description", "")
+        stored_for_missing = sorted(node.metadata.get("broadened_for_missing", []))
+        if (stored_broadened
+                and stored_for_missing == current_missing_keys
+                and not previous_failure):
+            logger.info(
+                "[EXECUTOR] Node %s: reusing stored broadened description "
+                "(missing set unchanged: %s)",
+                node.id, current_missing_keys,
+            )
+            return AwaitingInputSignal(
+                reason="Reusing stored broadened description — missing fields unchanged.",
+                missing_fields=[f.get("key") for f in unknown_fields],
+                new_fields=auto_new_fields,
+                clarification_node_id=clar_node_id,
+                broadened_description=stored_broadened,
+                broadened_for_missing=stored_for_missing,
+                broadened_output=node.metadata.get("broadened_output", []),
+            )
+
+        if previous_failure:
+            logger.info(
+                "[EXECUTOR] Node %s: previous broadened execution failed verification "
+                "('%s...') — regenerating broadened description with failure context",
+                node.id, previous_failure[:80],
+            )
+
+        # ── Phase 2: LLM judgment + broadened description generation ─────────
+        if getattr(self.llm, "is_stopped", False):
+            return None  # paused — let the main loop handle it
+
+        def _fmt_fields(fields):
+            # Format as "key (label): value" so the LLM can see the exact key
+            # string it must use in missing_fields — not just the human label.
+            return "\n".join(
+                f"  - {f.get('key', '?')} ({f.get('label', f.get('key', '?'))}): "
+                f"{f.get('value', 'unknown')}"
+                for f in fields
+            ) if fields else "  (none)"
+
+        known_fields_text   = _fmt_fields(known_fields)
+        unknown_fields_text = _fmt_fields(unknown_fields)
+        tools_text          = self._tool_schema_summary()
+
+        if required_inputs:
+            required_input_text = "\n".join(
+                f"  - {r.get('name', '?')} ({r.get('type', '?')}): "
+                f"{r.get('description', '')}"
+                for r in required_inputs
+            )
+        else:
+            required_input_text = "  (none declared)"
+
+        prompt = build_awaiting_input_check_prompt(
+            node_id=node.id,
+            description=node.metadata.get("description", node.id),
+            tools_text=tools_text,
+            known_fields_text=known_fields_text,
+            unknown_fields_text=unknown_fields_text,
+            required_input_text=required_input_text,
+            previous_failure=previous_failure,
+        )
+
+        try:
+            raw    = self.llm.ask(prompt, schema=AWAITING_INPUT_CHECK_SCHEMA)
+            parsed = json.loads(raw)
+        except Exception as e:
+            logger.warning(
+                "[EXECUTOR] Preflight LLM check failed for %s: %s — proceeding",
+                node.id, e,
+            )
+            return None  # fail open: attempt execution anyway
+
+        if not parsed.get("blocked", False):
+            return None  # all inputs available — use original description
+
+        # Merge auto_new_fields into whatever the LLM returned, deduplicating
+        llm_new_fields  = parsed.get("new_fields", [])
+        llm_new_keys    = {f.get("key") for f in llm_new_fields}
+        merged_new      = llm_new_fields + [
+            f for f in auto_new_fields if f["key"] not in llm_new_keys
+        ]
+
+        llm_missing    = parsed.get("missing_fields", [])
+        auto_missing   = [f["key"] for f in auto_new_fields
+                          if f["key"] not in llm_missing]
+        merged_missing = llm_missing + auto_missing
+
+        # broadened_for_missing is the full set of absent keys — used on the
+        # next execution to decide whether to reuse or regenerate.
+        broadened_for_missing = sorted(set(
+            merged_missing + [f.get("key") for f in merged_new]
+        ))
+
+        broadened_description = parsed.get("broadened_description", "")
+        if not broadened_description:
+            logger.warning(
+                "[EXECUTOR] Node %s: preflight returned blocked=true but no "
+                "broadened_description — will execute with original description",
+                node.id,
+            )
+
+        return AwaitingInputSignal(
+            reason=parsed.get("reason", "task requires user input"),
+            missing_fields=merged_missing,
+            new_fields=merged_new,
+            clarification_node_id=clar_node_id,
+            broadened_description=broadened_description,
+            broadened_for_missing=broadened_for_missing,
+            broadened_output=parsed.get("broadened_output", []),
         )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -279,37 +564,73 @@ class LLMExecutor:
     def execute(self, node, snapshot, reporter=None):
         resolved_inputs = self._resolve_inputs(node, snapshot)
 
-        # ── Fix 2: user_input nodes produce a template, not LLM execution ────
-        # These nodes exist because the planner determined the task needs
-        # personal information only the user can supply.  Rather than attempting
-        # to execute (and fabricating data), we emit a structured template the
-        # user can fill in via the clarification node or UI.
-        if node.node_type == "user_input":
-            declared_outputs = node.metadata.get("output", [])
-            output_fields = [
-                o.get("name", str(o)) if isinstance(o, dict) else str(o)
-                for o in declared_outputs
-            ]
-            lines = [
-                f"[Template — please provide the following information]",
-                f"Task: {node.metadata.get('description', node.id)}",
-                "",
-            ]
-            if output_fields:
-                for field in output_fields:
-                    lines.append(f"  {field}: <please fill in>")
+        # ── Pre-flight: check for missing inputs and get broadened description ─
+        # The preflight never blocks execution — instead it returns a signal
+        # carrying either the stored or freshly-generated broadened_description.
+        # If all inputs are available the signal is None and the original
+        # description is used.  If inputs are missing the broadened description
+        # is used as the effective task goal for this run.
+        #
+        # After execution completes the orchestrator reads the signal from the
+        # reporter and writes broadened_description + broadened_for_missing into
+        # node metadata, and patches the clarification node with any new_fields.
+        signal = self._preflight_awaiting_input(node, resolved_inputs)
+
+        if signal is not None:
+            if signal.broadened_description:
+                effective_description = signal.broadened_description
+                logger.info(
+                    "[EXECUTOR] Node %s: running with broadened description "
+                    "(missing: %s)",
+                    node.id, signal.broadened_for_missing,
+                )
             else:
-                lines.append("  Please provide the requested information above.")
+                # The primary preflight call returned blocked=true but an empty
+                # broadened_description (schema enforcement may have been bypassed
+                # by constrained-inference producing an empty string).
+                # Make a second, focused call solely to generate the broadened
+                # description.  If that also fails, skip execution entirely —
+                # we must never fall back to the original description for a task
+                # the preflight identified as needing unavailable inputs.
+                logger.warning(
+                    "[EXECUTOR] Node %s: preflight returned no broadened_description "
+                    "— making focused fallback call",
+                    node.id,
+                )
+                effective_description = self._generate_broadened_description(
+                    node=node,
+                    missing_keys=signal.broadened_for_missing or signal.missing_fields,
+                    known_fields_text=self._fmt_known_fields(resolved_inputs),
+                )
+                if not effective_description:
+                    logger.error(
+                        "[EXECUTOR] Node %s: fallback broadening call also returned "
+                        "empty — skipping execution to avoid hallucination",
+                        node.id,
+                    )
+                    return None
+                signal = AwaitingInputSignal(
+                    reason=signal.reason,
+                    missing_fields=signal.missing_fields,
+                    new_fields=signal.new_fields,
+                    clarification_node_id=signal.clarification_node_id,
+                    broadened_description=effective_description,
+                    broadened_for_missing=signal.broadened_for_missing,
+                    broadened_output=signal.broadened_output,
+                )
+            if reporter:
+                reporter.on_broadened_execution(signal)
+        else:
+            effective_description = node.metadata.get("description", node.id)
 
-            required = node.metadata.get("required_input", [])
-            if required:
-                lines.append("")
-                lines.append("Required inputs to complete this task:")
-                for r in required:
-                    label = r.get("name", str(r)) if isinstance(r, dict) else str(r)
-                    lines.append(f"  - {label}")
-
-            return "\n".join(lines)
+        # Use broadened_output when running broadened — it is consistent with
+        # the broadened description so the LLM isn't working under two
+        # contradictory output contracts simultaneously.
+        effective_outputs = (
+            signal.broadened_output
+            if signal is not None and signal.broadened_output
+            else node.metadata.get("output", [])
+        )
 
         history = []
 
@@ -324,11 +645,9 @@ class LLMExecutor:
                 )
             return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
 
-        declared_outputs = node.metadata.get("output", [])
-        expected_files   = [_output_name(o) for o in declared_outputs if _is_file(o)]
+        expected_files = [_output_name(o) for o in effective_outputs if _is_file(o)]
 
-        # Tool names that count as "searching" for loop detection
-        _SEARCH_TOOLS = {"web_search", "fetch_url", "search", "web_fetch"}
+        tool_not_found_count = 0  # replaces string-match loop guard
 
         for turn in range(self.max_turns):
             turns_remaining = self.max_turns - turn
@@ -336,27 +655,16 @@ class LLMExecutor:
 
             # ── File-write reminder ───────────────────────────────────────────
             if expected_files and "write_file" not in {h["name"] for h in history}:
-                extra_reminder = build_executor_file_reminder(expected_files, turns_remaining)
-
-            # ── Search-loop reminder ──────────────────────────────────────────
-            # If the LLM has made 2+ search calls without setting done=true and
-            # has at most 2 turns left, force it to synthesise what it has.
-            search_calls = sum(1 for h in history if h.get("name", "") in _SEARCH_TOOLS)
-            if search_calls >= 2 and turns_remaining <= 2 and not extra_reminder:
-                extra_reminder = (
-                    f"\nIMPORTANT: You have already made {search_calls} search call(s). "
-                    "Do NOT make any more search calls. "
-                    "Synthesise all results you have gathered so far into a complete, "
-                    "self-contained answer and set done=true now. "
-                    "Use your own knowledge to fill gaps where search results were "
-                    "sparse or missing."
-                )
+                extra_reminder += build_executor_file_reminder(expected_files, turns_remaining)
 
             if reporter:
                 reporter.on_llm_turn(turn)
 
             prompt = self._build_prompt(node, resolved_inputs, history,
-                                        extra_reminder=extra_reminder)
+                                        extra_reminder=extra_reminder,
+                                        turns_remaining=turns_remaining,
+                                        description_override=effective_description,
+                                        output_override=effective_outputs)
 
             try:
                 raw = self.llm.ask(prompt, schema=EXECUTION_TURN_SCHEMA)
@@ -433,23 +741,21 @@ class LLMExecutor:
                         "based on what you know; do not call any tool."
                     ),
                 })
-                # Early exit if the LLM is stuck in a tool-not-found loop.
-                # Require at least 2 consecutive errors before aborting — a
-                # single error gives the LLM one chance to recover on the next
-                # turn by setting done=true without calling a tool.
-                if len(history) >= 2 and all(
-                    h.get("result", "").startswith("ERROR: tool") and "not found" in h.get("result", "")
-                    for h in history
-                ):
+                # Exit if the LLM is stuck calling unavailable tools.
+                # A counter is used rather than string-matching the error
+                # message — more robust and not tied to error text format.
+                tool_not_found_count += 1
+                if tool_not_found_count >= 2:
                     logger.error(
-                        "[EXECUTOR] Node %s: all %d turn(s) hit tool-not-found — "
+                        "[EXECUTOR] Node %s: %d consecutive tool-not-found errors — "
                         "aborting early, no tools registered for this task",
-                        node.id, len(history),
+                        node.id, tool_not_found_count,
                     )
                     return None
                 continue
 
             logger.info("[EXECUTOR] Node %s calling tool '%s'", node.id, tool_name)
+            tool_not_found_count = 0  # reset on any real tool call
             step_id = reporter.on_tool_start(tool_name, tool_args) if reporter else None
 
             error = False
@@ -494,3 +800,4 @@ class LLMExecutor:
         logger.error("[EXECUTOR] Node %s did not complete within %d turns",
                      node.id, self.max_turns)
         return None
+

@@ -1224,6 +1224,30 @@ function updatePanel() {
     html += row('Description', `<span class="info-value prominent">${esc(desc)}</span>`);
   }
 
+  // ── Broadened description indicator ──────────────────────────────────────
+  const broadDesc   = node.metadata?.broadened_description || '';
+  const broadReason = node.metadata?.broadened_reason || '';
+  const broadMissing = node.metadata?.broadened_for_missing || [];
+  if (broadDesc) {
+    const missingText = broadMissing.length
+      ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">` +
+        `Missing inputs: ${esc(broadMissing.join(', '))}</div>`
+      : '';
+    const reasonText = broadReason
+      ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic;margin-top:2px">` +
+        `${esc(broadReason)}</div>`
+      : '';
+    html += row('Running as', `
+      <div style="background:var(--bg-raised);border:1px solid var(--s-running)30;border-left:3px solid var(--s-running);border-radius:4px;padding:8px 10px">
+        <div style="font-size:10px;color:var(--s-running);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">
+          ⟳ Broadened goal
+        </div>
+        <span class="info-value">${esc(broadDesc)}</span>
+        ${missingText}
+        ${reasonText}
+      </div>`);
+  }
+
   html += row('Status &amp; Type', `
     <span class="badge" style="color:${STATUS_COLOR_HEX[node.status]};border-color:${STATUS_COLOR_HEX[node.status]}30">
       <span style="width:6px;height:6px;border-radius:50%;background:${STATUS_COLOR_HEX[node.status]};display:inline-block"></span>

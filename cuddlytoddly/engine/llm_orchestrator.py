@@ -11,7 +11,7 @@ from cuddlytoddly.core.events import (
     Event,
     ADD_NODE, ADD_DEPENDENCY, REMOVE_DEPENDENCY, UPDATE_METADATA,
     MARK_RUNNING, MARK_DONE, MARK_FAILED, REMOVE_NODE, RESET_NODE,
-    SET_NODE_TYPE,
+    SET_NODE_TYPE, SET_RESULT, MARK_AWAITING_INPUT, RESUME_NODE,
 )
 from cuddlytoddly.core.reducer import apply_event
 from cuddlytoddly.infra.event_queue import EventQueue
@@ -159,6 +159,7 @@ class Orchestrator:
                 self._expansion_request_pass()
                 planned  = self._planning_pass()
                 self._complete_finished_goals()
+                self._resume_unblocked_pass()
                 launched = self._execution_pass()
 
                 if planned == 0 and launched == 0:
@@ -483,6 +484,38 @@ class Orchestrator:
                 logger.warning("[EXEC] Failed: %s", node_id)
             return
 
+        # ── Broadening metadata: write back if node ran with broadened description
+        # The executor no longer blocks on missing inputs — it executes with a
+        # broadened description and carries the signal via the reporter.  After
+        # successful completion we write the broadening info into node metadata
+        # (for UI visibility and reuse on the next execution) and patch the
+        # clarification node with any new_fields so the user can fill them in.
+        reporter_for_broadening = self._reporters.get(node_id)
+        if reporter_for_broadening and reporter_for_broadening.pending_broadening:
+            signal = reporter_for_broadening.pending_broadening
+            with self.graph_lock:
+                if node_id in self.graph.nodes:
+                    if signal.new_fields:
+                        self._patch_clarification_node(
+                            node_id,
+                            signal.new_fields,
+                            signal.clarification_node_id,
+                        )
+                    self._apply(Event(UPDATE_METADATA, {
+                        "node_id":  node_id,
+                        "metadata": {
+                            "broadened_description": signal.broadened_description,
+                            "broadened_for_missing": signal.broadened_for_missing,
+                            "broadened_reason":      signal.reason,
+                            "broadened_output":      signal.broadened_output,
+                        },
+                    }))
+                    logger.info(
+                        "[EXEC] Node %s executed with broadened description "
+                        "(missing: %s)",
+                        node_id, signal.broadened_for_missing,
+                    )
+
         # ── Pre-flight: check file outputs ────────────────────────────────────
         satisfied:       bool | None = None
         reason:          str         = ""
@@ -537,8 +570,6 @@ class Orchestrator:
                                        file_path, e)
 
         # ── LLM verification ──────────────────────────────────────────────────
-        # user_input nodes deliberately produce a template — the LLM verifier
-        # would always reject it as "not substantive", so skip for that type.
         if self.quality_gate:
             with self.graph_lock:
                 if node_id not in self.graph.nodes:
@@ -546,10 +577,7 @@ class Orchestrator:
                 node     = self.graph.nodes[node_id]
                 snapshot = self.graph.get_snapshot()
 
-            if node.node_type == "user_input":
-                satisfied, reason = True, "verification skipped — user_input node"
-            else:
-                satisfied, reason = self._verify_result(node, result, snapshot)
+            satisfied, reason = self._verify_result(node, result, snapshot)
         else:
             satisfied = True
             reason    = ""
@@ -618,7 +646,166 @@ class Orchestrator:
             return True, ""
         return self.quality_gate.verify_result(node, result, snapshot)
 
-    # ── Bridge node injection ────────────────────────────────────────────────
+    # ── awaiting_input resumption ─────────────────────────────────────────────
+
+    def _resume_unblocked_pass(self) -> int:
+        """
+        Scan all awaiting_input nodes and resume those that are now unblocked.
+
+        Two resume paths:
+
+        Path A — specific fields (normal case):
+          The node has missing_fields populated.  Resume when every listed key
+          is now non-unknown in the upstream clarification node.
+
+        Path B — no specific fields (fallback):
+          The node has missing_fields=[] (the preflight LLM couldn't identify a
+          specific field, or the block is on personal data with no matching field).
+          Resume when ANY previously-unknown clarification field becomes filled.
+          This ensures these nodes are not permanently stuck.
+
+        Returns the number of nodes resumed.
+        """
+        _PLACEHOLDERS = {"unknown", "n/a", "not specified", "not provided",
+                         "none", "unspecified", "tbd", ""}
+
+        with self.graph_lock:
+            snapshot = self.graph.get_snapshot()
+            awaiting = [
+                n for n in self.graph.nodes.values()
+                if n.status == "awaiting_input"
+            ]
+
+        resumed = 0
+        for node in awaiting:
+            missing_keys = node.metadata.get("missing_fields", [])
+
+            # Find the upstream clarification node
+            clar_node = None
+            for dep_id in node.dependencies:
+                dep = snapshot.get(dep_id)
+                if dep and dep.node_type == "clarification" and dep.result:
+                    clar_node = dep
+                    break
+
+            if not clar_node:
+                continue
+
+            try:
+                fields = json.loads(clar_node.result)
+            except Exception:
+                continue
+
+            should_resume = False
+
+            if missing_keys:
+                # Path A: all specific missing keys must now be filled
+                still_missing = []
+                for key in missing_keys:
+                    matched = False
+                    for f in fields:
+                        if f.get("key") == key:
+                            matched = True
+                            val = str(f.get("value", "")).strip().lower()
+                            if val in _PLACEHOLDERS:
+                                still_missing.append(key)
+                            break
+                    if not matched:
+                        still_missing.append(key)
+                should_resume = not still_missing
+            else:
+                # Path B: no specific fields — resume when any field is now filled
+                any_filled = any(
+                    str(f.get("value", "")).strip().lower() not in _PLACEHOLDERS
+                    for f in fields
+                )
+                if any_filled:
+                    should_resume = True
+                    logger.info(
+                        "[ORCHESTRATOR] Node %s (no specific missing_fields) — "
+                        "resuming because at least one clarification field is now filled",
+                        node.id,
+                    )
+
+            if should_resume:
+                with self.graph_lock:
+                    if node.id in self.graph.nodes:
+                        self._apply(Event(RESUME_NODE, {"node_id": node.id}))
+                        logger.info(
+                            "[ORCHESTRATOR] Node %s resumed — missing fields: %s",
+                            node.id, missing_keys or "(none specified)",
+                        )
+                        resumed += 1
+
+        return resumed
+
+    def _patch_clarification_node(
+        self,
+        task_node_id: str,
+        new_fields: list,
+        hint_clar_id: str = "",
+    ) -> None:
+        """
+        Add new_fields to the upstream clarification node for task_node_id,
+        skipping any field whose key is already present.
+
+        Must be called with self.graph_lock held.
+        """
+        # Prefer the hint supplied by the executor; fall back to dependency scan
+        clar_id = hint_clar_id
+        if not clar_id or clar_id not in self.graph.nodes:
+            node = self.graph.nodes.get(task_node_id)
+            if not node:
+                return
+            for dep_id in node.dependencies:
+                dep = self.graph.nodes.get(dep_id)
+                if dep and dep.node_type == "clarification":
+                    clar_id = dep_id
+                    break
+
+        if not clar_id or clar_id not in self.graph.nodes:
+            logger.warning(
+                "[ORCHESTRATOR] Cannot patch clarification node for %s "
+                "— no clarification node found upstream",
+                task_node_id,
+            )
+            return
+
+        clar = self.graph.nodes[clar_id]
+        existing_fields = clar.metadata.get("fields", [])
+        existing_keys   = {f.get("key") for f in existing_fields}
+
+        fields_to_add = [f for f in new_fields if f.get("key") not in existing_keys]
+        if not fields_to_add:
+            return
+
+        updated_fields = existing_fields + fields_to_add
+        self._apply(Event(UPDATE_METADATA, {
+            "node_id":  clar_id,
+            "metadata": {"fields": updated_fields},
+        }))
+
+        # Patch the result JSON so _resume_unblocked_pass can read the new keys
+        try:
+            result_fields = json.loads(clar.result) if clar.result else []
+            result_fields.extend(fields_to_add)
+            self._apply(Event(SET_RESULT, {
+                "node_id": clar_id,
+                "result":  json.dumps(result_fields, ensure_ascii=False),
+            }))
+        except Exception as e:
+            logger.warning(
+                "[ORCHESTRATOR] Failed to patch clarification result for %s: %s",
+                clar_id, e,
+            )
+
+        logger.info(
+            "[ORCHESTRATOR] Patched clarification node %s with new field(s): %s",
+            clar_id,
+            [f.get("key") for f in fields_to_add],
+        )
+
+    # ── Bridge node injection ─────────────────────────────────────────────────
 
     def _inject_bridge_node(self, bridge: dict, blocked_node_id: str):
         bridge_id = bridge.get("node_id")
@@ -662,11 +849,6 @@ class Orchestrator:
     # ── Startup verification ─────────────────────────────────────────────────
 
     def verify_restored_nodes(self):
-        FILE_EXTENSIONS = frozenset({
-            ".md", ".txt", ".py", ".json", ".csv", ".html",
-            ".yaml", ".yml", ".xml", ".pdf", ".log",
-        })
-
         with self.graph_lock:
             done_tasks = [
                 n for n in self.graph.nodes.values()
@@ -675,27 +857,50 @@ class Orchestrator:
                 and n.result is not None
             ]
 
-        # Pass 1: file-existence check
+        # Pass 1: file-existence check for nodes with declared file outputs.
+        # _looks_like_filename was removed — instead we check disk existence
+        # directly for any output declared as a file type, mirroring what
+        # QualityGate.verify_result does at runtime.
         for node in done_tasks:
-            if self.quality_gate and self.quality_gate._looks_like_filename(node.result):
-                path = node.result.strip()
-                if not self.quality_gate._file_exists(path):
-                    logger.warning(
-                        "[STARTUP] Node %s result is '%s' but file does not exist — resetting",
-                        node.id, path,
+            if not self.quality_gate:
+                continue
+            declared_outputs = node.metadata.get("output", [])
+            missing_files = []
+            for output in declared_outputs:
+                if isinstance(output, dict):
+                    is_file = (
+                        output.get("type") == "file"
+                        or any(
+                            output.get("name", "").endswith(ext)
+                            for ext in self.quality_gate.FILE_EXTENSIONS
+                        )
                     )
-                    with self.graph_lock:
-                        n = self.graph.nodes.get(node.id)
-                        if n:
-                            n.status  = "pending"
-                            n.result  = None
-                            n.metadata["verification_failure"] = (
-                                f"file '{path}' does not exist on disk"
-                            )
-                            n.metadata.pop("verified", None)
-                            n.metadata["retry_count"] = (
-                                n.metadata.get("retry_count", 0) + 1
-                            )
+                    path = output.get("name", "")
+                else:
+                    is_file = any(str(output).endswith(ext)
+                                  for ext in self.quality_gate.FILE_EXTENSIONS)
+                    path = str(output)
+                if is_file and path and not self.quality_gate._file_exists(path):
+                    missing_files.append(path)
+            if missing_files:
+                logger.warning(
+                    "[STARTUP] Node %s declared file output(s) %s do not exist "
+                    "on disk — resetting",
+                    node.id, missing_files,
+                )
+                with self.graph_lock:
+                    n = self.graph.nodes.get(node.id)
+                    if n:
+                        n.status  = "pending"
+                        n.result  = None
+                        n.metadata["verification_failure"] = (
+                            f"declared file output(s) {missing_files} "
+                            f"do not exist on disk"
+                        )
+                        n.metadata.pop("verified", None)
+                        n.metadata["retry_count"] = (
+                            n.metadata.get("retry_count", 0) + 1
+                        )
 
         # Pass 2: LLM verification for nodes never verified
         with self.graph_lock:
@@ -810,6 +1015,31 @@ class Orchestrator:
             node.status = "pending"
             node.result = None
             self.graph.recompute_readiness()
+
+    def resume_node(self, node_id: str) -> bool:
+        """
+        Explicitly resume an awaiting_input node from the UI.
+
+        Emits RESUME_NODE which transitions the node to pending and clears
+        all awaiting_input metadata.  Returns True if the node was in
+        awaiting_input status (and was resumed), False otherwise.
+        """
+        with self.graph_lock:
+            node = self.graph.nodes.get(node_id)
+            if not node:
+                return False
+            if node.status != "awaiting_input":
+                logger.warning(
+                    "[ORCHESTRATOR] resume_node called on %s "
+                    "which is not awaiting_input (status=%s)",
+                    node_id, node.status,
+                )
+                return False
+            self._apply(Event(RESUME_NODE, {"node_id": node_id}))
+            logger.info(
+                "[ORCHESTRATOR] Node %s manually resumed by user", node_id
+            )
+            return True
 
     def replan_goal(self, goal_id: str):
         with self.graph_lock:

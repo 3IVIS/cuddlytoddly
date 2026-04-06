@@ -45,3 +45,13 @@ UPDATE_STATUS = "UPDATE_STATUS"
 SET_RESULT = "SET_RESULT"
 SET_NODE_TYPE = "SET_NODE_TYPE"
 RESET_SUBTREE = "RESET_SUBTREE"
+
+# A task that cannot proceed until the user provides specific information.
+# Payload: { node_id, missing_fields: list[str], awaiting_input_reason: str }
+# missing_fields holds the clarification field *keys* the task is waiting on.
+MARK_AWAITING_INPUT = "MARK_AWAITING_INPUT"
+
+# Transitions a node from awaiting_input back to pending so the orchestrator
+# can recompute readiness and re-launch it.
+# Payload: { node_id }
+RESUME_NODE = "RESUME_NODE"

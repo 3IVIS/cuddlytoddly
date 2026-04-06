@@ -41,20 +41,22 @@ User goal (string)
 
 **Planning is a pipeline, not a single call.** Every goal expansion involves up to four LLM calls and three deterministic stages before any event reaches the graph: a clarification generation call (Call 1), a decomposition call (Call 2), an optional scrutiny call (Call 3), structural validation (`LLMOutputValidator`), and deterministic constraint enforcement (`PlanConstraintChecker`). Each stage has a clearly scoped responsibility so failures in one don't cascade into another.
 
+**Tasks always execute — with a broadened goal when inputs are missing.** The executor never blocks a node waiting for user input. Instead, before the tool loop starts, it checks whether all declared required inputs are available. If inputs are missing it asks the LLM to produce a broadened version of the task goal that is achievable with what is currently known. The task runs with the broadened goal, the missing fields are added to the clarification form so the user can optionally supply them, and when the user confirms the task re-executes with the original specific goal. The broadened description is stored in node metadata for UI visibility.
+
 ## Data Flow
 
 ### Planning phase
 
 1. `LLMPlanner.propose(context)` reads the current snapshot and identifies unexpanded goal nodes.
 2. **Call 1 — Clarification generation.** A dedicated LLM call via `build_clarification_prompt()` identifies 3–8 structured context fields that would most improve the plan (e.g. job title, salary, industry). Each field carries a best-guess value or `"unknown"`. A `clarification` node is emitted, immediately marked done, and wired as a dependency of all root tasks. On partial replans the existing clarification node is reused so user edits are preserved.
-3. **Call 2 — Planning.** `build_planner_prompt()` is called with the clarification context embedded. The LLM produces a list of tasks constrained to `PLAN_SCHEMA`. The planner can extend the clarification node with `additional_clarification_fields` in its output.
+3. **Call 2 — Planning.** `build_planner_prompt()` is called with the clarification context embedded. The LLM produces a list of tasks constrained to `PLAN_SCHEMA`. Tasks declare `required_input` in two categories: **Category A** — named outputs consumed from upstream tasks (each requires a corresponding dependency), and **Category B** — user-specific context from the clarification node (company name, personal history, etc.) that only the user can supply and that cannot be retrieved by search. Category B items have no corresponding task dependency. The planner can extend the clarification node with `additional_clarification_fields` in its output.
 4. **Call 3 — Optional scrutiny pass.** If `scrutinize_plan=True`, the draft is passed to `build_plan_scrutinizer_prompt()`. The scrutinizer evaluates goal coverage, task realism, output completeness, and missing steps, then returns a corrected draft. Skipped on partial replans.
 5. The JSON is validated by `LLMOutputValidator`: structural checks (self-deps, unknown deps, duplicate nodes, metadata allowlist).
 6. **Constraint checking** — `PlanConstraintChecker.check_and_repair()` runs five deterministic checks in order:
    - Duplicate `ADD_DEPENDENCY` edges are silently deduplicated.
    - Cycles in the proposed subgraph are detected via DFS and all cycle-member nodes are dropped.
-   - `required_input` items on nodes with no dependencies are stripped (they are orphaned — no upstream producer can satisfy them).
-   - Nodes with dependencies but no `required_input` are logged as warnings.
+   - `required_input` items that have no corresponding dependency AND are not covered by any clarification field (orphaned Category A items) are stripped.
+   - Dependencies with no corresponding `required_input` are logged as warnings.
    - Ghost nodes (new nodes with no dependents) are resolved by a focused LLM call that selects the best dependent from a cycle-safe candidate list.
 7. The surviving events are emitted as `ADD_NODE` / `ADD_DEPENDENCY` / `SET_RESULT` events.
 8. `apply_event()` applies each event to the graph, then calls `recompute_readiness()`.
@@ -63,12 +65,17 @@ User goal (string)
 
 1. `Orchestrator` picks up nodes whose status is `ready` and dispatches them to the `ThreadPoolExecutor`.
 2. Before launching, `QualityGate.check_dependencies()` checks whether upstream results cover the node's declared `required_input`. If a gap is found, a bridge node is injected (up to `max_gap_fill_attempts` times).
-3. `LLMExecutor.execute(node)` drives a multi-turn LLM loop using `prompts.build_executor_prompt()` and `EXECUTION_TURN_SCHEMA`. The LLM calls tools via JSON responses; each tool call is tracked as a child `execution_step` node by `ExecutionStepReporter`.
-4. On success, `QualityGate.verify_result()` checks the result against the node's declared outputs using `RESULT_VERIFICATION_SCHEMA`. On failure the node is retried or failed.
+3. **Pre-flight check.** Before the tool loop starts, `LLMExecutor._preflight_awaiting_input()` determines whether all required inputs are currently available. It runs in two phases:
+   - **Phase 1 (deterministic):** Compares the node's `required_input` list against the keys present in the upstream clarification node. Any required input not present in any clarification field is a structural gap — the user cannot supply it because the form has no field for it.
+   - **Phase 2 (LLM):** Asks the LLM via `build_awaiting_input_check_prompt()` and `AWAITING_INPUT_CHECK_SCHEMA` whether the task can proceed despite missing inputs. If blocked, the LLM also produces a `broadened_description` — a self-contained rephrasing of the task goal that can be executed immediately with what is currently known.
+   - **Reuse:** If the set of missing inputs is identical to the previous execution, the stored `broadened_description` from node metadata is reused without a new LLM call.
+4. `LLMExecutor.execute(node)` drives a multi-turn LLM loop using `prompts.build_executor_prompt()` and `EXECUTION_TURN_SCHEMA`. If a broadened description was produced in the pre-flight check it is used as the effective task goal; otherwise the original `description` is used. The LLM calls tools via JSON responses; each tool call is tracked as a child `execution_step` node by `ExecutionStepReporter`. When a node ran with a broadened description, `ExecutionStepReporter.pending_broadening` carries the signal to the orchestrator.
+5. After execution, if the node ran with a broadened description, the orchestrator writes four metadata keys to the node (`broadened_description`, `broadened_for_missing`, `broadened_reason`, `broadened_output`) and patches the clarification node with any missing fields so the user is prompted to fill them in.
+6. `QualityGate.verify_result()` checks the result against the node's declared outputs using `RESULT_VERIFICATION_SCHEMA`. The verifier receives three context blocks that inform its judgment: a list of unknown clarification fields (to catch invented specifics), a tool execution summary (to catch results fabricated from failed searches), and — when the node ran with a broadened goal — a notice that the result must be general in nature and must not contain invented personal data or specific figures that could only come from a targeted search. On failure the node is retried up to `max_retries` times before being permanently failed.
 
 ### Web UI — clarification and goal switching
 
-The web server exposes `/api/node/{id}/clarification/confirm` for committing user edits to a clarification node. On confirm: the node's result is updated, its direct children are reset (triggering re-execution with the updated context), and the parent goal is marked unexpanded so the planner can add tasks on the next cycle if needed. Scrutiny is skipped on this partial replan.
+The web server exposes `/api/node/{id}/clarification/confirm` for committing user edits to a clarification node. On confirm: the node's result is updated, its direct children are reset (triggering re-execution with the updated context), and the parent goal is marked unexpanded so the planner can add tasks on the next cycle if needed. Scrutiny is skipped on this partial replan. Nodes that previously ran with a broadened description will re-run their pre-flight check; if the newly filled fields satisfy what was missing, the node executes with the original specific goal.
 
 The web server also exposes `/api/switch` for mid-session goal switching (available when started without an inline goal argument). On receiving a switch request the server stops the running orchestrator cleanly, resets all state, and initialises a new orchestrator in a background thread. The client polls `/api/status` and reloads when `initialized` becomes `true` — the same flow used for initial startup.
 
@@ -124,6 +131,39 @@ clarification events + safe_events list
        │
        ▼
 apply_event() × N  →  TaskGraph
+```
+
+## Execution Pre-Flight Detail
+
+Before the tool loop, every node goes through this check:
+
+```
+LLMExecutor.execute(node)
+       │
+       ▼
+_preflight_awaiting_input()
+       │
+       ├── Phase 1: compare required_input against clarification field keys
+       │     any required input absent from the form → auto_new_fields
+       │
+       ├── Reuse check: same missing-key set as stored broadened_for_missing?
+       │     YES → return stored broadened_description (no LLM call)
+       │
+       └── Phase 2: LLM call (AWAITING_INPUT_CHECK_SCHEMA)
+             blocked=false → use original description
+             blocked=true  → broadened_description + missing/new fields
+                                │
+                                ▼
+                         execute with broadened_description
+                         reporter.on_broadened_execution(signal)
+                                │
+                                ▼
+                         orchestrator writes metadata:
+                           broadened_description
+                           broadened_for_missing
+                           broadened_reason
+                           broadened_output
+                         patches clarification node with new_fields
 ```
 
 ## Concurrency Model

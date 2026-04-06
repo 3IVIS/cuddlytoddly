@@ -95,9 +95,14 @@ max_workers = 1
 # Maximum LLM turns per task node before marking it failed.
 max_turns = 5
 
-# Maximum times a bridge node is injected for a single blocked task before
-# giving up and executing the task anyway.
+# Maximum times the orchestrator injects a bridge node for a single blocked
+# task before giving up and executing it anyway.
 max_gap_fill_attempts = 2
+
+# Maximum verification failures before a node is permanently failed instead
+# of being reset and retried. Each retry waits an exponentially increasing
+# backoff (1 s, 2 s, 4 s … capped at 60 s) before re-launching.
+max_retries = 5
 
 # Seconds the orchestrator loop sleeps when there is no planning or execution
 # work to do. Lower values are more responsive; higher values reduce CPU load.
@@ -179,7 +184,7 @@ port = 8765
 | `[llm]` | Which backend is active |
 | `[llamacpp]` | Local model file, GPU offload, context size, temperature, caching |
 | `[claude]` / `[openai]` | Remote model name, temperature, token limit, caching |
-| `[orchestrator]` | Parallelism, turn limits, gap-fill retries, idle polling rate |
+| `[orchestrator]` | Parallelism, turn limits, retry cap, gap-fill retries, idle polling rate |
 | `[planner]` | Task count range per goal decomposition; optional scrutiny pass |
 | `[executor]` | Character budgets for inputs, tool results, and inline results |
 | `[file_llm]` | Polling, timeout, and caching for the file-based development backend |
@@ -348,6 +353,15 @@ Lower `[orchestrator] max_gap_fill_attempts` to reduce how many bridging nodes a
 ```toml
 [orchestrator]
 max_gap_fill_attempts = 1
+```
+
+### Tasks keep failing verification and consuming retries
+
+Raise `[orchestrator] max_retries` to give more attempts before a node is permanently failed, or lower it to fail fast and surface problems sooner. Each retry waits an exponential backoff (1 s, 2 s, 4 s … capped at 60 s) before re-launching.
+
+```toml
+[orchestrator]
+max_retries = 3
 ```
 
 ---

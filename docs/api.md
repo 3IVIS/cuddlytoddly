@@ -19,6 +19,8 @@ All JSON schemas used for structured LLM output are defined here and imported by
 | `DEPENDENCY_CHECK_SCHEMA` | QualityGate `check_dependencies` |
 | `GHOST_NODE_RESOLUTION_SCHEMA` | `PlanConstraintChecker` ghost node resolution |
 | `CLARIFICATION_GENERATION_SCHEMA` | `LLMPlanner` clarification field generation (Call 1) |
+| `AWAITING_INPUT_CHECK_SCHEMA` | Executor pre-flight check (determines whether to use broadened description) |
+| `BROADENED_DESCRIPTION_SCHEMA` | Executor fallback call (generates broadened description when primary call returns empty) |
 
 All schemas from this module are also re-exported by `cuddlytoddly.planning.llm_interface` for backward compatibility.
 
@@ -34,11 +36,12 @@ All LLM prompt templates are defined here as standalone functions. Edit this fil
 build_executor_prompt(
     *, node_id, description, retry_notice, extra_reminder,
     outputs_block, output_instruction, inputs_text,
-    tools_text, history_text, max_inline_result_chars, prompt_version="v3"
+    tools_text, history_text, max_inline_result_chars,
+    turns_remaining=0, prompt_version="v3"
 ) -> str
 ```
 
-Assembles the full prompt for one executor turn. Called by `LLMExecutor._build_prompt()`.
+Assembles the full prompt for one executor turn. Called by `LLMExecutor._build_prompt()`. When the node is running with a broadened description, `description` is the broadened text rather than the original `node.metadata["description"]`. `turns_remaining` is injected as a synthesis reminder so the LLM knows when to stop searching and consolidate results.
 
 ```python
 build_planner_prompt(
@@ -79,12 +82,48 @@ build_ghost_node_resolution_prompt(
 Assembles the prompt used to resolve a ghost node — a new plan node whose output is consumed by nothing. The LLM is shown the full plan context and a pre-filtered candidate list (ancestors excluded to prevent cycles) and asked to choose the best dependent. Called by `PlanConstraintChecker._resolve_ghost_nodes()`.
 
 ```python
-build_verify_result_prompt(
-    *, node_id, description, outputs_text, result
+build_awaiting_input_check_prompt(
+    *, node_id, description, tools_text,
+    known_fields_text, unknown_fields_text,
+    required_input_text="  (none declared)", previous_failure=""
 ) -> str
 ```
 
-Prompt for `QualityGate.verify_result()`.
+Prompt for the executor pre-flight check. The LLM decides whether the task can proceed with currently available information and tools. When inputs are missing it also produces a `broadened_description` — a self-contained rephrasing of the task goal that can run immediately using only what is known. When `previous_failure` is set (non-empty), the prompt includes the verifier's rejection reason from the last execution so the LLM can generate a broadened description that avoids repeating the same failure. The result is parsed against `AWAITING_INPUT_CHECK_SCHEMA`.
+
+Key schema fields returned:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `blocked` | `bool` | Whether specific inputs are missing |
+| `reason` | `str` | One sentence explaining what is missing or confirming the task can proceed |
+| `missing_fields` | `list[str]` | Keys of existing unknown clarification fields that would unblock the specific goal |
+| `new_fields` | `list[dict]` | New clarification fields to add to the form |
+| `broadened_description` | `str` | Self-contained task description that works without the missing inputs (required when `blocked=true`) |
+| `broadened_for_missing` | `list[str]` | The missing field keys active when this broadening was generated — used to decide reuse vs regenerate |
+| `broadened_output` | `list[dict]` | Revised output declarations matching the broadened description — same `{name, type, description}` shape as planner outputs (required when `blocked=true`) |
+
+```python
+build_broadened_description_prompt(
+    *, node_id, original_description, missing_keys, known_fields_text
+) -> str
+```
+
+Focused fallback prompt used when `build_awaiting_input_check_prompt` returns `blocked=true` but an empty `broadened_description`. Makes a second, minimal LLM call against `BROADENED_DESCRIPTION_SCHEMA` to generate only the broadened description. If this call also returns empty, execution is skipped entirely — the executor never falls back to the original description for a task flagged as missing inputs.
+
+```python
+build_verify_result_prompt(
+    *, node_id, description, outputs_text, result,
+    unknown_fields_context="", tool_results_context="",
+    broadening_context=""
+) -> str
+```
+
+Prompt for `QualityGate.verify_result()`. Three optional context blocks inform the verifier's judgment:
+
+- `unknown_fields_context` — lists clarification fields that were unknown when the task ran; the verifier flags invented specifics for those fields.
+- `tool_results_context` — factual summary of tool call outcomes (all succeeded / partial / all failed); the verifier flags results containing specifics that could only have come from a successful search when searches failed.
+- `broadening_context` — present when the node ran with a broadened description instead of its original goal; the verifier flags results containing invented personal data or specific figures, since the broadened goal should produce only general content.
 
 ```python
 build_check_dependencies_prompt(
@@ -171,7 +210,7 @@ All backend classes expose a `clear_cache()` convenience method that delegates h
 
 ## `cuddlytoddly.planning.llm_planner`
 
-### `LLMPlanner(llm_client, graph, skills_summary="", min_tasks_per_goal=3, max_tasks_per_goal=8, scrutinize_plan=False)`
+### `LLMPlanner(llm_client, graph, refiner=None, skills_summary="", min_tasks_per_goal=3, max_tasks_per_goal=8, scrutinize_plan=False)`
 
 Decomposes unexpanded goal nodes into child tasks.
 
@@ -179,6 +218,7 @@ Decomposes unexpanded goal nodes into child tasks.
 planner = LLMPlanner(
     llm_client=llm,
     graph=graph,
+    refiner=None,               # optional refiner component
     skills_summary=skills.prompt_summary,
     min_tasks_per_goal=3,     # from config [planner]
     max_tasks_per_goal=8,     # from config [planner]
@@ -193,7 +233,7 @@ events: list[dict] = planner.propose(context)
 
 **Call 1 — Clarification generation.** Before decomposing the goal, the planner fires a dedicated call using `build_clarification_prompt()` to identify the structured context fields that would most improve the plan (e.g. job title, current salary, years in role). Each field has a best-guess value or `"unknown"`. The result is emitted as a `clarification` node that is immediately marked done and wired as a dependency of all root tasks. On partial replans (when the goal already has children), the existing clarification node is reused so user edits are not overwritten.
 
-**Call 2 — Planning.** `build_planner_prompt()` is called with the clarification context embedded. The planner can add fields to the clarification node via `additional_clarification_fields` in its output.
+**Call 2 — Planning.** `build_planner_prompt()` is called with the clarification context embedded. Tasks declare `required_input` in two categories: **Category A** items name outputs produced by upstream tasks (each requires a corresponding dependency edge); **Category B** items name user-specific context only the user can supply (company name, personal history, etc.) and do not require a corresponding dependency — they are satisfied by the clarification node. The executor's pre-flight check handles Category B items at runtime by adding missing fields to the clarification form automatically. The planner can add fields to the clarification node via `additional_clarification_fields` in its output.
 
 **Call 3 — Scrutiny (optional).** When `scrutinize_plan=True`, the draft is reviewed by `build_plan_scrutinizer_prompt()` for goal coverage, task realism, output completeness, and missing steps. Skipped on partial replans.
 
@@ -218,7 +258,7 @@ Checks are applied in this order, as earlier repairs affect what later checks se
 |---|---|---|
 | 7 | Duplicate `ADD_DEPENDENCY` edges | Silent deduplication |
 | 4 | Cycles in the proposed subgraph | Drop all cycle-member nodes and incident edges; log each dropped node |
-| 6b | `required_input` items on a node with no dependencies | Strip orphaned items in-place; warn |
+| 6b | `required_input` items with no dependency AND no matching clarification field | Strip orphaned items in-place; warn. Note: Category B items (user context) intentionally have no dependency and are NOT stripped if covered by a clarification field key |
 | 6a | Dependencies with no corresponding `required_input` | Warn only — may be a valid ordering constraint |
 | Ghost | New node with no dependents (nothing depends on it) | LLM call to select the best dependent; emit `ADD_DEPENDENCY` if valid candidate returned |
 
@@ -249,6 +289,20 @@ All numeric parameters default to reasonable values when constructing programmat
 
 `reporter` is an `ExecutionStepReporter` instance; pass `None` to skip step tracking.
 
+#### Two-tier execution model
+
+Before the tool loop starts, `execute()` calls `_preflight_awaiting_input()` to check whether all required inputs are available. The result determines which description is used:
+
+| Situation | Effective description used |
+|---|---|
+| All required inputs available | Original `node.metadata["description"]` |
+| Inputs missing, broadened description cached from previous run with same missing set | Stored `node.metadata["broadened_description"]` (no extra LLM call) |
+| Inputs missing, missing set changed or first run | Freshly generated `broadened_description` from LLM pre-flight call |
+| Pre-flight LLM returns empty `broadened_description` | Second focused LLM call via `build_broadened_description_prompt()` |
+| Both LLM calls return empty | `execute()` returns `None` — node is skipped, not run with original description |
+
+When the node ran with a broadened description, `ExecutionStepReporter.pending_broadening` carries the `AwaitingInputSignal` to `_on_node_done`, which writes three metadata keys to the node and patches the clarification form.
+
 #### Character budget parameters
 
 | Parameter | Effect |
@@ -258,11 +312,23 @@ All numeric parameters default to reasonable values when constructing programmat
 | `max_tool_result_chars` | Tool call results are truncated to this length before being added to history |
 | `max_history_entries` | Only the N most-recent tool calls are kept in the prompt |
 
+#### Broadening metadata written to nodes
+
+When a node runs with a broadened description, these keys are written to `node.metadata` after execution:
+
+| Key | Type | Description |
+|---|---|---|
+| `broadened_description` | `str` | The broadened task goal that was used |
+| `broadened_for_missing` | `list[str]` | The missing field keys that were absent when this broadening was generated |
+| `broadened_reason` | `str` | One-sentence reason from the pre-flight LLM |
+
+These keys are visible in both the web UI and curses UI as a "Running as (broadened goal)" indicator on the node detail panel.
+
 ---
 
 ## `cuddlytoddly.engine.llm_orchestrator`
 
-### `Orchestrator(graph, planner, executor, event_log, event_queue, max_workers, quality_gate, max_gap_fill_attempts, idle_sleep)`
+### `Orchestrator(graph, planner, executor, event_log, event_queue, max_workers, quality_gate, max_gap_fill_attempts, idle_sleep, max_retries)`
 
 The top-level plan→execute loop.
 
@@ -277,12 +343,13 @@ orchestrator = Orchestrator(
     quality_gate=quality_gate,
     max_gap_fill_attempts=2,   # from config [orchestrator]
     idle_sleep=0.5,            # from config [orchestrator]
+    max_retries=5,             # from config [orchestrator]
 )
 orchestrator.start()   # runs in a background thread
 orchestrator.stop()    # signals shutdown
 ```
 
-All arguments after `executor` are keyword arguments. Defaults: `event_log=None`, `event_queue=None`, `max_workers=4`, `quality_gate=None`, `max_gap_fill_attempts=2`, `idle_sleep=0.5`.
+All arguments after `executor` are keyword arguments. Defaults: `event_log=None`, `event_queue=None`, `max_workers=4`, `quality_gate=None`, `max_gap_fill_attempts=2`, `idle_sleep=0.5`, `max_retries=5`.
 
 **UI-facing attributes** (read by `curses_ui`):
 
@@ -318,6 +385,8 @@ Content-Type: application/json
 
 On success: updates the clarification node's result, resets its direct children (root tasks) so they re-execute with the updated context, and marks the parent goal `expanded=False` so the orchestrator's next planning cycle can add tasks if the updated context warrants it. The cascade through the rest of the DAG follows naturally from the child resets.
 
+Nodes that previously ran with a broadened description will re-run their pre-flight check on the next execution cycle. If the newly filled clarification fields satisfy what was missing, those nodes will execute with their original specific goal rather than the broadened fallback.
+
 Returns `{"ok": true}`.
 
 ---
@@ -335,6 +404,14 @@ satisfied, reason = gate.verify_result(node, result_str, snapshot)
 bridge = gate.check_dependencies(node, snapshot)
 # bridge is None or {node_id: str, description: str, output: str}
 ```
+
+`verify_result` passes three context blocks to the verifier prompt, assembled from node metadata and the snapshot:
+
+- **Unknown fields context** — clarification fields that were unknown when the task ran. The verifier flags any specific invented values (exact figures, names) for those fields.
+- **Tool results context** — whether the node's tool calls succeeded, partially failed, or all failed. The verifier flags results asserting specific data that could only have come from a successful search when all searches returned errors.
+- **Broadening context** — present when `node.metadata["broadened_description"]` is non-empty, i.e. the node ran with a generalised goal instead of its original description. The verifier flags results containing invented specifics (percentages, named achievements, exact figures) since broadened execution should produce general content only.
+
+For nodes with declared file-type outputs, `verify_result` checks disk existence before calling the LLM verifier — if a declared file output does not exist on disk, the result fails immediately without an LLM call.
 
 ---
 
@@ -387,6 +464,17 @@ graph.recompute_readiness()
 | `metadata` | `dict` | Arbitrary planner/executor annotations |
 
 > **Node type notes:** `goal` and `task` are planner-created; `clarification` is emitted once per goal before the first task is created (ID: `clarification_{goal_id}`) and holds structured context fields the user can edit; `reflection` is emitted by the refiner pass; `execution_step` is an internal type created by `ExecutionStepReporter` to track individual tool calls within a task and is pruned on restart.
+
+**Standard metadata keys written by the executor:**
+
+| Key | Written when | Description |
+|---|---|---|
+| `broadened_description` | Node ran with a broadened goal | The broadened task description used for execution |
+| `broadened_for_missing` | Node ran with a broadened goal | Missing field keys active when the broadening was generated |
+| `broadened_reason` | Node ran with a broadened goal | One-sentence reason from the pre-flight LLM |
+| `broadened_output` | Node ran with a broadened goal | Revised output declarations matching the broadened description |
+| `verification_failure` | Last verification failed | The verifier's rejection reason |
+| `retry_count` | Node has been retried | Number of verification-failed retries so far |
 
 ---
 

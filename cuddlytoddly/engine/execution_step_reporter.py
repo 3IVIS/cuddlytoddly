@@ -40,6 +40,18 @@ class ExecutionStepReporter:
         # ordered list of all step node ids (for hide/expose)
         self._all_step_ids: list[str] = []
         self._turn = 0
+        # Set by execute() when the node ran with a broadened description.
+        # Read by the orchestrator in _on_node_done to write metadata back.
+        self.pending_broadening = None  # AwaitingInputSignal | None
+
+    def on_broadened_execution(self, signal) -> None:
+        """
+        Called by execute() when the node is running with a broadened description
+        due to missing inputs.  Stores the signal so the orchestrator can read it
+        after execution completes and write broadened_description +
+        broadened_for_missing into node metadata.
+        """
+        self.pending_broadening = signal
 
     # ── Turn lifecycle ────────────────────────────────────────────────────────
 
@@ -241,3 +253,4 @@ class ExecutionStepReporter:
     def _get_live_node(self, node_id: str):
         """Must be called with graph_lock held."""
         return self._graph.nodes.get(node_id)
+

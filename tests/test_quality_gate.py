@@ -59,8 +59,10 @@ class TestVerifyResult:
     def test_satisfied_response_from_llm(self):
         llm = FakeLLM(satisfied_response("all good"))
         gate = QualityGate(llm_client=llm)
+        # Use "document" type — a "file" type triggers the disk existence check
+        # which would fail in a test environment where no file is written to disk.
         node, snap = make_node_with_outputs([
-            {"name": "report.md", "type": "file", "description": "the report"}
+            {"name": "salary_report", "type": "document", "description": "the report"}
         ])
         ok, reason = gate.verify_result(node, "Here is the full report content...", snap)
         assert ok is True
@@ -88,10 +90,14 @@ class TestVerifyResult:
     def test_bare_filename_matching_output_name_fails_label_check(self, tmp_path):
         """A bare result that exactly matches the declared output name is treated as
         a label stub, not actual content — even if the file exists on disk.
-        The label check fires after the file-existence check passes."""
+        The is_just_label heuristic was removed; the LLM verifier now catches this
+        via the prompt instruction about label stubs."""
         real_file = tmp_path / "output.txt"
         real_file.write_text("content")
-        llm = FakeLLM(satisfied_response())
+        # LLM verifier rejects the bare label — this is what a real LLM would do
+        # given the prompt instruction "A result that is just a filename, a single
+        # word, or a name matching the output label is NOT satisfied."
+        llm = FakeLLM(unsatisfied_response("result is just a label matching the output name"))
         gate = QualityGate(llm_client=llm)
         node, snap = make_node_with_outputs([
             {"name": "output.txt", "type": "file", "description": "the file"}
@@ -102,9 +108,8 @@ class TestVerifyResult:
             ok, reason = gate.verify_result(node, "output.txt", snap)
         finally:
             os.chdir(old_dir)
-        # "output.txt" exactly matches the output name → rejected as label
+        # File exists (disk check passes), but LLM rejects the bare label result
         assert ok is False
-        assert "label" in reason.lower()
 
     def test_file_written_prefix_result_with_existing_file_passes(self, tmp_path):
         """A 'file_written: filename' result where the file exists should pass."""
@@ -154,8 +159,10 @@ class TestVerifyResult:
         llm.is_stopped = False
         llm.ask = bad_ask
         gate = QualityGate(llm_client=llm)
+        # Use "document" type — a "file" type triggers the disk existence check
+        # before the LLM call, which would return False rather than True on exception.
         node, snap = make_node_with_outputs([
-            {"name": "r.md", "type": "file", "description": "r"}
+            {"name": "result", "type": "document", "description": "r"}
         ])
         ok, reason = gate.verify_result(node, "some substantive content here " * 10, snap)
         assert ok is True
@@ -247,38 +254,3 @@ class TestCheckDependencies:
         snap = g.get_snapshot()
         gate.check_dependencies(g.nodes["task_1"], snap)
         assert any("upstream output data" in p for p in prompts)
-
-
-# ── _looks_like_filename ──────────────────────────────────────────────────────
-
-class TestLooksLikeFilename:
-    @pytest.fixture
-    def gate(self):
-        return QualityGate(llm_client=MagicMock())
-
-    def test_detects_md(self, gate):
-        assert gate._looks_like_filename("report.md")
-
-    def test_detects_py(self, gate):
-        assert gate._looks_like_filename("script.py")
-
-    def test_detects_json(self, gate):
-        assert gate._looks_like_filename("data.json")
-
-    def test_rejects_no_extension(self, gate):
-        assert not gate._looks_like_filename("just_a_word")
-
-    def test_rejects_multi_word(self, gate):
-        assert not gate._looks_like_filename("this is a sentence.md")
-
-    def test_rejects_markdown_header(self, gate):
-        assert not gate._looks_like_filename("# Report Title")
-
-    def test_rejects_json_object(self, gate):
-        assert not gate._looks_like_filename('{"key": "value"}')
-
-    def test_rejects_very_long_string(self, gate):
-        assert not gate._looks_like_filename("a" * 201 + ".md")
-
-    def test_rejects_newline_in_result(self, gate):
-        assert not gate._looks_like_filename("report.md\nsome content")

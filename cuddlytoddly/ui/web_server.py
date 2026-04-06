@@ -330,8 +330,11 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
 
         Accepts updated_fields — the full list of field dicts with user-edited
         values.  Updates the node result and resets its direct children so the
-        plan re-executes with the new context.  Also marks the parent goal
-        unexpanded so the planner can add tasks on the next cycle if needed.
+        plan re-executes with the new context.
+
+        awaiting_input children are intentionally skipped here — the
+        orchestrator's _resume_unblocked_pass detects filled fields and emits
+        RESUME_NODE automatically on the next loop tick.
         """
         snap = orchestrator.get_snapshot()
         node = snap.get(node_id)
@@ -354,11 +357,14 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
         }))
         q.put(Event(SET_RESULT, {"node_id": node_id, "result": new_result}))
 
-        # 2. Reset direct children only — cascade follows naturally
+        # 2. Reset direct children — but not awaiting_input ones.
+        #    Those are handled by the orchestrator's _resume_unblocked_pass
+        #    which checks whether their missing_fields are now filled.
         for child_id in node.children:
             child = snap.get(child_id)
             if child and child.node_type != "clarification":
-                q.put(Event(RESET_NODE, {"node_id": child_id}))
+                if child.status != "awaiting_input":
+                    q.put(Event(RESET_NODE, {"node_id": child_id}))
 
         # 3. Mark parent goal unexpanded so the planner runs again and can
         #    add tasks if the updated context warrants it.
@@ -370,6 +376,29 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                 "metadata": {"expanded": False},
             }))
 
+        return {"ok": True}
+
+    @app.post("/api/node/{node_id:path}/resume")
+    async def resume_node(node_id: str):
+        """
+        Explicitly resume an awaiting_input node.
+
+        Normally resumption happens automatically via _resume_unblocked_pass
+        when the user fills in the required clarification fields.  This
+        endpoint allows the UI to trigger an immediate manual resume — for
+        example if the user edits the clarification node directly and wants
+        to unblock the task without waiting for the next loop tick.
+        """
+        resumed = orchestrator.resume_node(node_id)
+        if not resumed:
+            snap = orchestrator.get_snapshot()
+            node = snap.get(node_id)
+            if not node:
+                raise HTTPException(404, f"node '{node_id}' not found")
+            raise HTTPException(
+                400,
+                f"node '{node_id}' is not awaiting_input (status={node.status})",
+            )
         return {"ok": True}
 
     # ── Goal mutations ────────────────────────────────────────────────────────
@@ -912,3 +941,4 @@ def _create_unified_app(
             raise HTTPException(500, str(e))
 
     return app
+

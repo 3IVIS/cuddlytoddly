@@ -49,6 +49,7 @@ def build_executor_prompt(
     tools_text: str,
     history_text: str,
     max_inline_result_chars: int,
+    turns_remaining: int = 0,
     prompt_version: str = "v3",
 ) -> str:
     """
@@ -56,7 +57,17 @@ def build_executor_prompt(
 
     Parameters are pre-computed by LLMExecutor._build_prompt() and injected
     here so this file stays focused on text, not data wrangling.
+
+    turns_remaining: how many turns (including this one) are left in the
+    execution budget. Shown to the LLM so it knows when to stop searching
+    and synthesise rather than making another tool call.
     """
+    turns_line = (
+        f"- Turns remaining (including this one): {turns_remaining}. "
+        "If you have already made multiple searches, synthesise what you have "
+        "now rather than searching again.\n"
+        if turns_remaining > 0 else ""
+    )
     return f"""\
 [prompt_version={prompt_version}]
 You are executing one task inside a larger automated plan.
@@ -96,7 +107,7 @@ INSTRUCTIONS
     risk_assessment: <full content>
 - If you need to call a tool first, set done=false and provide tool_call.
 - Only set done=true when you have a complete, usable result.
-- Use \\n for line breaks and 4 spaces for indentation in Python code.
+{turns_line}- Use \\n for line breaks and 4 spaces for indentation in Python code.
   Do NOT compress multi-line code onto one line with semicolons.
 """
 
@@ -214,28 +225,53 @@ Guidelines:
 - Use the `parallel_group` metadata to indicate tasks that can execute concurrently.
 
 Node types:
-- `task`: a task the LLM can execute using tools or its own knowledge.
-- `user_input`: use this type ONLY when the task requires personal information
-  that only the user can supply (e.g. "list your own achievements", "describe
-  your specific situation") AND the relevant clarification fields are unknown.
-  A user_input node produces a structured template the user fills in — it does
-  NOT use web search or LLM reasoning to fabricate personal data. Do not use
-  user_input for tasks the LLM can answer from general knowledge.
+- `task`: the only type you should emit for executable work. Every task must
+  be actionable and produce at least one concrete output. If a task requires
+  personal or company-specific information that may not be available, still
+  emit it as a `task` — the executor will detect at runtime whether the
+  required context is present and will surface a clarification request to the
+  user automatically if not. Do not attempt to pre-classify tasks as needing
+  user input; that is the executor's responsibility.
 
 - For each task, specify:
-    - `required_input`: list of typed objects {{name, type, description}} describing what this task consumes
+    - `required_input`: list of typed objects {{name, type, description}} describing what this task consumes.
+      required_input has TWO categories — declare BOTH where applicable:
+
+      Category A — outputs from upstream tasks:
+        List every named output this task needs from another task in the plan.
+        Every Category A item MUST have a corresponding dependency on the task
+        that produces it, and every such dependency MUST justify at least one
+        Category A item.
+
+      Category B — user context from the clarification node:
+        List any specific information this task needs that only the user can
+        provide and that cannot be retrieved by web search or general reasoning.
+        Examples:
+          - A task that researches a specific company MUST declare
+            {{name: "company_name", type: "text", description: "..."}}
+          - A task that tailors advice to the user's personal style MUST declare
+            {{name: "personal_negotiation_style", type: "text", description: "..."}}
+          - A task that analyses the user's company culture MUST declare
+            {{name: "company_culture", type: "text", description: "..."}}
+        Category B items do NOT need a corresponding task dependency — they are
+        satisfied by the clarification node.  If a Category B item is not already
+        present in the clarification fields, the executor will add it to the form
+        automatically at runtime.
+        Do NOT add Category B items for information that web search can provide
+        (e.g. industry salary benchmarks, general negotiation frameworks, public
+        company profiles when the company name is known).
+
     - `output`: list of typed objects {{name, type, description}} describing what this task produces
       - type must be one of: file, document, data, list, url, text, json, code
       - description must be one full sentence explaining the content (not just restating the name)
     - `skill`: which skill to use (if any of the above skills apply)
     - `tools`: which specific tools from that skill are needed
-- required_input and dependencies must be fully consistent:
-    - Every item in a task's required_input MUST correspond to a dependency on the task
-      whose output produces it.
-    - Every entry in a task's dependencies must justify at least one item in that
-      task's required_input.
-    - Never list something in required_input without a producing task in dependencies.
-    - Never add a dependency that is not justified by a required_input entry.
+- Category A required_input and dependencies must be fully consistent:
+    - Every Category A item in a task's required_input MUST correspond to a dependency
+      on the task whose output produces it.
+    - Every task dependency MUST justify at least one Category A required_input entry.
+    - Never list a Category A item without a producing task in dependencies.
+    - Never add a dependency that is not justified by a Category A required_input entry.
     - Tasks with no shared data dependency must run in parallel — do NOT impose
       sequential ordering unless the downstream task actually consumes an upstream output.
 
@@ -660,19 +696,39 @@ def build_verify_result_prompt(
     outputs_text: str,
     result: str,
     unknown_fields_context: str = "",
+    tool_results_context: str = "",
+    broadening_context: str = "",
 ) -> str:
     """
     Prompt asking the LLM to verify whether a task result satisfies its declared outputs.
 
-    unknown_fields_context: optional block listing clarification fields that were
-    unknown when the task ran. When present, the verifier checks that the result
-    does not assert invented specific values for those fields.
+    unknown_fields_context : optional block listing clarification fields that were
+                             unknown when the task ran.
+    tool_results_context   : optional factual summary of how the task's tool calls
+                             fared (all failed / partial / all succeeded).
+    broadening_context     : optional block indicating the task ran with a broadened
+                             description because specific inputs were unavailable.
+                             Tells the verifier to flag any invented specifics.
     """
     unknown_section = ""
     if unknown_fields_context:
         unknown_section = f"""
     MISSING CONTEXT (fields the user did not provide):
     {unknown_fields_context}
+"""
+
+    tool_section = ""
+    if tool_results_context:
+        tool_section = f"""
+    TOOL EXECUTION SUMMARY:
+    {tool_results_context}
+"""
+
+    broadening_section = ""
+    if broadening_context:
+        broadening_section = f"""
+    BROADENED EXECUTION NOTICE:
+    {broadening_context}
 """
 
     return f"""You are verifying whether a task result satisfies its declared outputs.
@@ -683,7 +739,7 @@ def build_verify_result_prompt(
 
     DECLARED OUTPUTS (what this task was supposed to produce):
     {outputs_text}
-    {unknown_section}
+    {unknown_section}{tool_section}{broadening_section}
     ACTUAL RESULT:
     {result}
 
@@ -694,6 +750,18 @@ def build_verify_result_prompt(
     If MISSING CONTEXT is listed above: check whether the result invents specific values
     for those fields (e.g. exact figures, names, or percentages not present in any upstream
     result). Invented specifics for unknown fields should be marked as not satisfied.
+
+    If TOOL EXECUTION SUMMARY indicates that all searches failed or returned no results:
+    check whether the result asserts specific data (figures, names, statistics) that could
+    only have come from a successful search. If so, mark as not satisfied — the result
+    is likely fabricated from prior knowledge rather than retrieved data.
+
+    If BROADENED EXECUTION NOTICE is present: this task ran without its specific required
+    inputs, using a generalised goal instead. The result must therefore be general in
+    nature — templates, frameworks, guides, or ranges. If the result contains specific
+    invented values (exact percentages, named achievements, specific figures) that could
+    only come from the user's private information or a successful targeted search, mark
+    as not satisfied. Generic guidance without invented specifics is acceptable.
 
     Respond only in JSON matching the schema.
 """
@@ -731,6 +799,303 @@ Rules:
 
 Respond only in JSON matching the schema.
 """
+
+# ---------------------------------------------------------------------------
+# Executor pre-flight: awaiting-input check prompt
+# ---------------------------------------------------------------------------
+
+def build_awaiting_input_check_prompt(
+    *,
+    node_id: str,
+    description: str,
+    tools_text: str,
+    known_fields_text: str,
+    unknown_fields_text: str,
+    required_input_text: str = "  (none declared)",
+    previous_failure: str = "",
+) -> str:
+    """
+    Prompt asking the LLM whether a task can be executed with the currently
+    available information and tools.
+
+    The executor calls this before starting the main tool loop.  The model
+    must decide whether the task can produce a useful result using:
+      a) the available tools (web search, file ops, etc.), and/or
+      b) general LLM reasoning and public knowledge.
+
+    A task should be marked blocked ONLY when it genuinely requires specific
+    private information that:
+      - cannot be retrieved by any available tool, AND
+      - has not been provided in the known clarification fields.
+
+    Parameters
+    ----------
+    node_id             : Task node identifier.
+    description         : What this task is supposed to do and produce.
+    tools_text          : Summary of available tools (empty string if none).
+    known_fields_text   : Clarification fields with user-provided values,
+                          formatted as  key (label): value
+    unknown_fields_text : Clarification fields still marked unknown,
+                          formatted as  key (label): unknown
+    required_input_text : The task's declared required_input items — inputs
+                          it explicitly needs from upstream or the user.
+    previous_failure    : Verification failure reason from the last execution,
+                          if this task was retried after a failed result.
+                          When present, the broadened_description must be
+                          redesigned to avoid the same failure.
+    """
+    known_section = (
+        f"Known context (provided by user):\n{known_fields_text}"
+        if known_fields_text else "  (no clarification context was provided)"
+    )
+    unknown_section = (
+        f"Unknown context (user has not yet filled in):\n{unknown_fields_text}"
+        if unknown_fields_text else "  (all clarification fields are filled)"
+    )
+    tools_section = (
+        f"Available tools:\n{tools_text}"
+        if tools_text else "  NO TOOLS — task must be completed from general knowledge only."
+    )
+    failure_section = (
+        f"\nPREVIOUS ATTEMPT FAILED:\n"
+        f"The last time this task ran with a broadened description, the quality "
+        f"gate rejected the result with this reason:\n"
+        f"  \"{previous_failure}\"\n"
+        f"Your new broadened_description MUST be designed to avoid this failure. "
+        f"Think carefully about what type of output the quality gate would accept "
+        f"given the above reason, and write the broadened description accordingly.\n"
+        if previous_failure else ""
+    )
+
+    return f"""You are deciding whether a task can be executed right now.
+
+TASK
+  ID:          {node_id}
+  Description: {description}
+
+REQUIRED INPUTS (what this task explicitly needs to produce a useful result):
+{required_input_text}
+
+{tools_section}
+
+CLARIFICATION CONTEXT
+{known_section}
+
+{unknown_section}
+{failure_section}
+DECISION RULES
+
+1. Mark blocked=false (can proceed) when the task can produce a useful result using:
+   - The available tools (e.g. web search can find salary benchmarks, company news,
+     market data, best practices, or any public information), OR
+   - General LLM reasoning (e.g. writing frameworks, strategy advice, templates,
+     explanations of concepts).
+   A task that uses a personal value (like job title) as a search parameter for
+   public data is NOT blocked — it can search with a general or approximate term.
+
+2. Mark blocked=true ONLY when the task's PRIMARY OUTPUT is private personal data
+   that cannot exist anywhere except in the user's own knowledge or records.
+   This rule applies to tasks whose core job is to surface information FROM the
+   user themselves — not tasks that happen to accept personal input to refine a
+   public-knowledge result.
+
+   Blocked by this rule (the output IS private personal data that only the user has):
+     - "Identify/list the user's key achievements or contributions"
+     - "Summarise the user's performance review history"
+     - "Describe the user's employment or career history"
+     - "List the user's personal goals, values, or preferences"
+     - "Record the user's salary history or financial situation"
+
+   NOT blocked by this rule (output is public knowledge; personal input just refines it):
+     - "Research market salary ranges for the position" — salary benchmarks are
+       public; job title is a search parameter, not the output itself.
+     - "Determine negotiation strategy based on company culture and personal style"
+       — negotiation frameworks are public knowledge; produce a general strategy.
+     - "Gather company budget and culture information" — researchable publicly, or
+       note that the company name is needed if it is unknown.
+     - "Draft a negotiation script" — can be drafted from general templates.
+
+   The ONLY exception is if the user is a named public figure AND the specific
+   information is in verifiable public records. For typical employees, assume all
+   personal records are private.
+   When applying this rule, give the reason as: "This task's output is private
+   personal information that only the user can provide — no tool can retrieve it."
+
+3. ENTITY IDENTIFIER CHECK — ask yourself before anything else:
+   "Does this task need to research or gather information about a SPECIFIC named
+   entity — a particular company, organisation, person, or product — rather than
+   producing a general answer from public knowledge?"
+
+   If YES, check whether that entity is identified anywhere in the context:
+     a) In the Known context → the entity is known; the task can proceed.
+     b) In the Unknown context → ONLY if the field is an IDENTITY field (i.e. its
+        key or label refers to the name or identifier of the entity itself, such as
+        company_name, employer_name, person_name, organization_name). If such a
+        field exists but is unfilled, block and list it in missing_fields.
+        DO NOT treat attribute fields (e.g. company_budget_constraints,
+        company_culture, company_budget) as satisfying the entity identity
+        requirement — knowing the company's budget does not tell you which
+        company to search for. If only attribute fields are present and no
+        identity field exists, treat as case (c).
+     c) Not present anywhere in the context (or only attribute fields exist) →
+        the entity identity is completely missing from the clarification form;
+        block and add an appropriate identity field to new_fields
+        (e.g. company_name, employer_name) so the user is prompted.
+
+   This rule applies regardless of whether the entity name is in REQUIRED INPUTS.
+   Examples that trigger this check:
+     - "Gather information about the company's budget and culture" → needs
+       company_name; if not in context, add it to new_fields.
+     - "Research [company]'s financial situation" → same.
+     - "Find out what [employer] pays for this role" → same.
+
+   Examples that do NOT trigger this check (general public knowledge):
+     - "Research average salary ranges for software engineers" — no specific
+       company needed; public benchmarks are sufficient.
+     - "Determine negotiation strategy based on company culture" — produces
+       general advice; no specific entity required.
+
+4. Mark blocked=true when a REQUIRED INPUT listed above corresponds to an unknown
+   clarification field AND genuinely cannot be substituted by web search or general
+   knowledge — meaning the task output would be meaningless or misleading without it.
+   Do NOT apply this rule to tasks where a general or approximate answer is still
+   useful even without the specific value.
+
+5. Do NOT block tasks that deal with general topics where a useful answer is
+   possible without user-specific details:
+   - "Determine negotiation strategy based on company culture and personal style"
+     → not blocked; produce general negotiation advice from public knowledge.
+   - "Research average salary ranges for a role" → not blocked; search for
+     general benchmarks (but DO apply rule 3 if a specific company is needed).
+   - "Draft a negotiation script" → not blocked; draft from general templates.
+
+6. MANDATORY: When blocked=true you MUST populate EITHER missing_fields OR
+   new_fields (or both) — never leave both empty.
+   - missing_fields: EXACT KEYS from the Unknown context above that would unblock
+     this task if the user filled them in. The key appears before the parentheses
+     (e.g. for "job_title (Job title): unknown" the key is "job_title"). Never use
+     the label — always use the key exactly as written.
+   - new_fields: new clarification fields to add when no existing field covers the
+     required information. Use snake_case keys.
+   If you cannot identify any specific field that would unblock the task, set
+   blocked=false instead — a block with no actionable fields is never useful.
+
+7. Your reason string must be plain English with no surrounding quotes, no trailing
+   apostrophe-comma sequences, and no string-delimiter characters. End with a period.
+
+8. BROADENED DESCRIPTION — required whenever blocked=true:
+   Produce a broadened_description: a complete, standalone rephrasing of the task
+   goal that can be executed immediately using only what IS currently known, without
+   depending on any missing field.
+
+   Rules for the broadened description:
+   - It must be a full task description the executor can use verbatim, not a note
+     about what was generalised (e.g. NOT "generalised version of: ..." but rather
+     a direct instruction like "Research general salary benchmarks for mid-level
+     technology roles and produce a summary of typical ranges by experience level.")
+   - It must not mention any missing field by name or reference the user's private
+     information.
+   - It should be as specific as possible given the known context — if some fields
+     ARE known, incorporate them. Only broaden away from what is missing.
+   - It should still produce genuinely useful output that helps the user's goal,
+     not a trivial placeholder.
+
+   Also produce broadened_output: a revised list of output declarations that match
+   the broadened_description. The output names, types, and descriptions must be
+   consistent with what the broadened goal actually produces — not what the original
+   goal would have produced. Use the same {{name, type, description}} shape as the
+   planner, and only use these allowed types:
+     file, document, data, list, url, text, json, code
+
+   The broadened_output must be coherent with broadened_description:
+   - If broadened_description produces a template or guide → use type "document"
+   - If broadened_description produces a structured list of questions → use type "list"
+   - If broadened_description produces research findings → use type "document"
+   - If broadened_description produces general advice text → use type "text"
+
+   Examples of matching broadened_description + broadened_output:
+   - Original desc:   "Identify the user's key achievements."
+     Original output: [{{name: "personal_achievements_list", type: "list", ...}}]
+     Missing: personal history
+     Broadened desc:  "Produce a structured template and guided questions that help
+                       a user identify and articulate their professional achievements."
+     Broadened output: [{{name: "achievements_template", type: "document",
+                         description: "Template with guided questions and placeholder
+                         sections for a user to fill in their own achievements."}}]
+
+   - Original desc:   "Gather information about Acme Corp's budget and culture."
+     Original output: [{{name: "company_report", type: "document", ...}}]
+     Missing: company_name
+     Broadened desc:  "Research general factors that affect company budget constraints
+                       and workplace culture in salary negotiation contexts."
+     Broadened output: [{{name: "company_factors_guide", type: "document",
+                         description: "Guide covering typical company budget cycles,
+                         raise feasibility signals, and culture indicators relevant
+                         to salary negotiation."}}]
+
+   When blocked=false, set broadened_description, broadened_for_missing, and
+   broadened_output to empty strings/arrays.
+
+Respond only in JSON matching the schema.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Broadened description fallback prompt
+# ---------------------------------------------------------------------------
+
+def build_broadened_description_prompt(
+    *,
+    node_id: str,
+    original_description: str,
+    missing_keys: list,
+    known_fields_text: str,
+) -> str:
+    """
+    Focused prompt used as a fallback when the preflight LLM call returned
+    blocked=true but an empty broadened_description.
+
+    Asks the model for a single self-contained rephrasing of the task goal
+    that works with only the currently known context.
+
+    Parameters
+    ----------
+    node_id              : Task node identifier.
+    original_description : The task's original description.
+    missing_keys         : List of field keys that are unavailable.
+    known_fields_text    : Clarification fields with user-provided values,
+                           formatted as  key (label): value
+    """
+    missing_text = ", ".join(missing_keys) if missing_keys else "(none listed)"
+    known_section = (
+        f"Currently known context:\n{known_fields_text}"
+        if known_fields_text else "  (no context is currently available)"
+    )
+    return f"""A task needs to be rephrased so it can execute without certain unavailable inputs.
+
+ORIGINAL TASK
+  ID:          {node_id}
+  Description: {original_description}
+
+UNAVAILABLE INPUTS: {missing_text}
+
+{known_section}
+
+Write a broadened_description: a complete, standalone rephrasing of this task
+that produces genuinely useful output using ONLY the known context above.
+
+Rules:
+- Write a direct task instruction, not a description of what you are doing.
+- Do not mention the unavailable inputs by name.
+- Incorporate any known context to make the goal as specific as possible.
+- If the task requires personal information the user must supply (achievements,
+  history, preferences), produce a template or structured guide instead —
+  something that helps the user articulate that information themselves.
+- The result must be useful to downstream tasks even without the missing data.
+
+Respond only in JSON matching the schema.
+"""
+
 
 # ---------------------------------------------------------------------------
 # Clarification generation prompt
@@ -773,3 +1138,4 @@ Always include a final field with:
 Return between 3 and 8 fields total (including the additional_context field).
 Respond only in JSON matching the schema.
 """
+

@@ -1,6 +1,6 @@
 [project]
 name = "cuddlytoddly"
-version = "0.1.5"
+version = "0.1.6"
 description = "LLM-driven autonomous DAG planning and execution system"
 readme = "README.md"
 license = { text = "MIT" }
