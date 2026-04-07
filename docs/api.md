@@ -61,10 +61,19 @@ build_plan_scrutinizer_prompt(
 Assembles the scrutinizer prompt used to self-review a draft plan. The full original planning prompt is embedded verbatim so every constraint (DAG snapshot, existing node IDs, task-count limits, dependency semantics, format rules) remains in context during the second call. Called by `LLMPlanner._scrutinize()` when `scrutinize_plan=True`.
 
 ```python
-build_clarification_prompt(goal_text: str) -> str
+build_clarification_prompt(goal_text: str, skills_summary: str = "") -> str
 ```
 
-Generates the prompt for Call 1 — the dedicated LLM call that produces the clarification node fields before planning begins. Returns 3–8 structured fields (key, label, best-guess value or `"unknown"`, rationale) describing the context that would most improve the plan. The prompt string is stored in the clarification node's metadata so the planner can reference it when adding fields.
+Generates the prompt for Call 1 — the dedicated LLM call that produces the clarification node fields before planning begins.
+
+The prompt instructs the LLM to follow a two-step process:
+
+- **Step 1 — Extract:** read the goal text and pull out every concrete fact already stated by the user (budget figures, size requirements, hard constraints, locations, roles, timelines, etc.) and pre-fill those as fields with known values. Facts explicitly present in the goal are never marked `"unknown"`.
+- **Step 2 — Gap-fill:** identify genuinely missing context that would most change what tasks are needed or how they should be done, and add those as `"unknown"` fields for the user to optionally supply.
+
+When `skills_summary` is provided (passed from `SkillLoader.prompt_summary`), the LLM is also told which tools will be available at execution time and instructed not to raise clarification fields for information those tools can retrieve autonomously (e.g. current market prices, public statistics, regulatory text).
+
+Returns 3–8 structured fields (key, label, value, rationale). The prompt string is stored in the clarification node's metadata so the planner can reference it when adding fields later.
 
 ```python
 build_clarification_context_block(fields: list, clarification_prompt: str) -> str
@@ -178,6 +187,32 @@ def generate(self, prompt: str) -> str:
 
 > **Note:** The `schema` keyword argument for structured output is supported by `ApiLLM` and `LlamaCppLLM`, but is not part of the `BaseLLM` abstract interface.
 
+### `TokenCounter`
+
+Module-level singleton (`token_counter`) that tracks tokens consumed across all LLM calls in the current process. Imported from `cuddlytoddly.planning.llm_interface`.
+
+```python
+from cuddlytoddly.planning.llm_interface import token_counter
+
+token_counter.prompt_tokens     # int — cumulative prompt tokens
+token_counter.completion_tokens # int — cumulative completion tokens
+token_counter.total_tokens      # int — prompt + completion
+token_counter.calls             # int — total LLM calls made
+
+token_counter.add(prompt: int, completion: int)
+# Increments counters; called automatically by all backends after each inference.
+
+token_counter.seed(prompt: int, completion: int, calls: int = 0)
+# Sets the counter to a specific baseline. Used at startup when loading an
+# existing run to restore the historical totals from the prior session.
+# Should be called before any new LLM call is made.
+
+token_counter.reset()
+# Zeroes all counters.
+```
+
+When the system starts with an existing run directory (`mode="existing"`), the startup code reads `llamacpp_cache.json` from the run directory and calls `token_counter.seed()` with the totals derived from the cached prompt/response pairs. This ensures the token count displayed in the web UI toolbar reflects the full history of the run, not just the current process session. Runs using API backends (Claude, OpenAI) whose cache file is absent are skipped silently — the counter starts at zero for those sessions.
+
 ### `FileBasedLLM(response_file, prompt_log_file, poll_interval, timeout, progress_log_interval, cache_path=None)`
 
 Development/testing backend that reads prompts and responses from plain text files. All timing values default to the `[file_llm]` section of `config.toml`.
@@ -231,7 +266,7 @@ events: list[dict] = planner.propose(context)
 
 **Planning involves up to four LLM calls per goal:**
 
-**Call 1 — Clarification generation.** Before decomposing the goal, the planner fires a dedicated call using `build_clarification_prompt()` to identify the structured context fields that would most improve the plan (e.g. job title, current salary, years in role). Each field has a best-guess value or `"unknown"`. The result is emitted as a `clarification` node that is immediately marked done and wired as a dependency of all root tasks. On partial replans (when the goal already has children), the existing clarification node is reused so user edits are not overwritten.
+**Call 1 — Clarification generation.** Before decomposing the goal, the planner fires a dedicated call using `build_clarification_prompt(goal_text, skills_summary=self.skills_summary)`. The prompt instructs the LLM to follow a two-step process: first extract every concrete fact already stated in the goal text (budget, size, hard constraints, locations, roles, etc.) and pre-fill those as known field values; then identify genuinely missing context that would most affect the plan and mark those fields `"unknown"`. The `skills_summary` is included so the LLM knows which tools are available at execution time and avoids asking the user for information those tools can retrieve autonomously (market data, public statistics, regulatory text, etc.). The result is emitted as a `clarification` node that is immediately marked done and wired as a dependency of all root tasks. On partial replans (when the goal already has children), the existing clarification node is reused so user edits are not overwritten.
 
 **Call 2 — Planning.** `build_planner_prompt()` is called with the clarification context embedded. Tasks declare `required_input` in two categories: **Category A** items name outputs produced by upstream tasks (each requires a corresponding dependency edge); **Category B** items name user-specific context only the user can supply (company name, personal history, etc.) and do not require a corresponding dependency — they are satisfied by the clarification node. The executor's pre-flight check handles Category B items at runtime by adding missing fields to the clarification form automatically. The planner can add fields to the clarification node via `additional_clarification_fields` in its output.
 
@@ -388,6 +423,23 @@ On success: updates the clarification node's result, resets its direct children 
 Nodes that previously ran with a broadened description will re-run their pre-flight check on the next execution cycle. If the newly filled clarification fields satisfy what was missing, those nodes will execute with their original specific goal rather than the broadened fallback.
 
 Returns `{"ok": true}`.
+
+---
+
+## Web API — static HTML export
+
+### `POST /api/export/html`
+
+Generates a standalone, self-contained HTML snapshot of the current DAG and writes it to `<run_dir>/outputs/dag_snapshot_<timestamp>.html`.
+
+The snapshot embeds:
+- The full node graph (`SNAPSHOT_DATA_PLACEHOLDER`)
+- Export metadata including goal title, timestamp, and **cumulative token counts** (`EXPORT_META_PLACEHOLDER`) — `{goal, timestamp, tokens: {prompt, completion, total, calls}}`
+- The complete event log for replay (`REPLAY_EVENTS_PLACEHOLDER`)
+
+The token counts embedded at export time reflect all LLM calls made across the lifetime of the run (including calls from prior sessions, thanks to startup seeding from the cache). The static HTML toolbar displays these counts in a token pill identical to the live UI.
+
+Returns `{"ok": true, "path": "<absolute path to written file>"}`.
 
 ---
 

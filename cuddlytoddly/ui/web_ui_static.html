@@ -416,10 +416,6 @@ body {
       <div class="dot" style="background:var(--border2)"></div>
       <span id="cnt-total">0</span> total
     </div>
-    <div class="count-pill" id="pill-tokens" style="display:none">
-      <div class="dot" style="background:var(--accent)"></div>
-      <span id="cnt-tokens">0</span> tokens
-    </div>
   </div>
 
   <span id="toolbar-ts"></span>
@@ -503,18 +499,6 @@ const NODE_W = 210, NODE_H = 54;
   // Timestamp
   document.getElementById('toolbar-ts').textContent =
     `Exported ${meta.timestamp}`;
-  // Token counts (present in exports generated after this fix; absent in
-  // older snapshots where meta.tokens is undefined — pill stays hidden).
-  const tc = meta.tokens;
-  if (tc && tc.total > 0) {
-    const t = tc.total;
-    document.getElementById('cnt-tokens').textContent =
-      t >= 1_000_000 ? `${(t / 1_000_000).toFixed(1)}M`
-      : t >= 1_000   ? `${(t / 1_000).toFixed(1)}K`
-      : String(t);
-    document.getElementById('pill-tokens').style.display = '';
-  }
-
   document.title = goalDesc
     ? `cuddlytoddly — ${goalDesc}`
     : 'cuddlytoddly — DAG snapshot';
@@ -703,6 +687,26 @@ function updatePanel() {
   );
 
   let html = '';
+
+  // ── Clarification node — render fields as a structured list ──────────────
+  if (node.node_type === 'clarification') {
+    let fields = [];
+    try { fields = JSON.parse(result || '[]'); } catch (_) {}
+    let fhtml = '';
+    if (desc) fhtml += row('', `<span style="color:var(--text-muted);font-size:12px">${esc(desc)}</span>`);
+    fields.forEach(f => {
+      const isUnknown = !f.value || f.value === 'unknown';
+      const valColor  = isUnknown ? 'var(--s-failed)' : 'var(--text)';
+      fhtml += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">${esc(f.label || f.key)}</div>
+        <div style="font-size:13px;color:${valColor};margin-bottom:3px">${esc(isUnknown ? 'unknown' : f.value)}</div>
+        ${f.rationale ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic">${esc(f.rationale)}</div>` : ''}
+      </div>`;
+    });
+    if (!fields.length) fhtml += '<div style="color:var(--text-muted);font-size:12px">No fields generated.</div>';
+    body.innerHTML = fhtml;
+    return;
+  }
 
   if (desc) html += row('Description', `<span class="info-value prominent">${esc(desc)}</span>`);
 

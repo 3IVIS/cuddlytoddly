@@ -41,6 +41,8 @@ User goal (string)
 
 **Planning is a pipeline, not a single call.** Every goal expansion involves up to four LLM calls and three deterministic stages before any event reaches the graph: a clarification generation call (Call 1), a decomposition call (Call 2), an optional scrutiny call (Call 3), structural validation (`LLMOutputValidator`), and deterministic constraint enforcement (`PlanConstraintChecker`). Each stage has a clearly scoped responsibility so failures in one don't cascade into another.
 
+**Clarification is grounded in the goal text.** Call 1 instructs the LLM to first extract every concrete fact already stated in the goal (budget, size, constraints, locations, roles, etc.) and pre-fill those as known fields, before identifying genuinely missing context. The available tools are described so the LLM avoids surfacing questions for information that can be fetched at runtime. This means stated user intent flows into all downstream tasks as known inputs rather than being lost.
+
 **Tasks always execute — with a broadened goal when inputs are missing.** The executor never blocks a node waiting for user input. Instead, before the tool loop starts, it checks whether all declared required inputs are available. If inputs are missing it asks the LLM to produce a broadened version of the task goal that is achievable with what is currently known. The task runs with the broadened goal, the missing fields are added to the clarification form so the user can optionally supply them, and when the user confirms the task re-executes with the original specific goal. The broadened description is stored in node metadata for UI visibility.
 
 ## Data Flow
@@ -48,7 +50,11 @@ User goal (string)
 ### Planning phase
 
 1. `LLMPlanner.propose(context)` reads the current snapshot and identifies unexpanded goal nodes.
-2. **Call 1 — Clarification generation.** A dedicated LLM call via `build_clarification_prompt()` identifies 3–8 structured context fields that would most improve the plan (e.g. job title, salary, industry). Each field carries a best-guess value or `"unknown"`. A `clarification` node is emitted, immediately marked done, and wired as a dependency of all root tasks. On partial replans the existing clarification node is reused so user edits are preserved.
+2. **Call 1 — Clarification generation.** A dedicated LLM call via `build_clarification_prompt(goal_text, skills_summary)` generates the clarification node fields using a two-step process:
+   - **Step 1 — Extract:** the LLM reads the goal text and pulls out every concrete fact already stated by the user (budget figures, size requirements, hard constraints, locations, roles, timelines, named technologies, etc.) and pre-fills those as fields with known values. Facts present in the goal are never marked `"unknown"`.
+   - **Step 2 — Gap-fill:** after the extraction pass, the LLM identifies genuinely missing context that would most change what tasks are needed or how they should be done, and marks those fields `"unknown"` for optional user input. Fields for information the available tools can retrieve autonomously (market prices, public statistics, regulatory text) are not raised.
+
+   A `clarification` node is emitted with 3–8 fields, immediately marked done, and wired as a dependency of all root tasks. On partial replans the existing clarification node is reused so user edits are preserved.
 3. **Call 2 — Planning.** `build_planner_prompt()` is called with the clarification context embedded. The LLM produces a list of tasks constrained to `PLAN_SCHEMA`. Tasks declare `required_input` in two categories: **Category A** — named outputs consumed from upstream tasks (each requires a corresponding dependency), and **Category B** — user-specific context from the clarification node (company name, personal history, etc.) that only the user can supply and that cannot be retrieved by search. Category B items have no corresponding task dependency. The planner can extend the clarification node with `additional_clarification_fields` in its output.
 4. **Call 3 — Optional scrutiny pass.** If `scrutinize_plan=True`, the draft is passed to `build_plan_scrutinizer_prompt()`. The scrutinizer evaluates goal coverage, task realism, output completeness, and missing steps, then returns a corrected draft. Skipped on partial replans.
 5. The JSON is validated by `LLMOutputValidator`: structural checks (self-deps, unknown deps, duplicate nodes, metadata allowlist).
@@ -77,11 +83,15 @@ User goal (string)
 
 The web server exposes `/api/node/{id}/clarification/confirm` for committing user edits to a clarification node. On confirm: the node's result is updated, its direct children are reset (triggering re-execution with the updated context), and the parent goal is marked unexpanded so the planner can add tasks on the next cycle if needed. Scrutiny is skipped on this partial replan. Nodes that previously ran with a broadened description will re-run their pre-flight check; if the newly filled fields satisfy what was missing, the node executes with the original specific goal.
 
-The web server also exposes `/api/switch` for mid-session goal switching (available when started without an inline goal argument). On receiving a switch request the server stops the running orchestrator cleanly, resets all state, and initialises a new orchestrator in a background thread. The client polls `/api/status` and reloads when `initialized` becomes `true` — the same flow used for initial startup.
+The web server also exposes `/api/switch` for mid-session goal switching (available when started without an inline goal argument). On receiving a switch request the server stops the running orchestrator cleanly, resets all state, and initialises a new orchestrator in a background thread. The client polls `/api/status` and reloads when `initialized` becomes `true` — the same flow used for initial startup. After the new orchestrator is ready, the token counter is seeded from the run's cache file so the toolbar immediately reflects the correct historical total (see Persistence section below).
+
+The web server also exposes `POST /api/export/html`, which generates a standalone HTML snapshot of the current DAG. The snapshot embeds the full node graph, the complete event log for replay, and the current token counts (`prompt`, `completion`, `total`, `calls`) — so the token pill in the static snapshot toolbar accurately reflects the run's lifetime usage at export time.
 
 ### Persistence and replay
 
 All events are appended to an `events.jsonl` file via `EventLog`. On restart, `rebuild_graph_from_log()` replays the log to reconstruct the exact graph state, then ephemeral `execution_step` nodes are pruned and in-flight nodes are reset to `pending`.
+
+**Token count restoration.** The module-level `token_counter` singleton starts at zero on every process start. When loading an existing run (`mode="existing"` at startup or via the switch modal), the startup code reads `llamacpp_cache.json` from the run directory and calls `token_counter.seed()` with the cumulative totals derived from the stored prompt/response pairs — using the same `len // 4` approximation that the live backends use. This ensures the token count displayed in the web UI toolbar reflects the full lifetime of the run, not just the current session. Runs that used API backends (Claude, OpenAI), which produce `api_cache.json` rather than `llamacpp_cache.json`, are skipped silently — their counter starts at zero for the current session.
 
 ## Module Map
 
@@ -92,7 +102,7 @@ All events are appended to an `events.jsonl` file via `EventLog`. On restart, `r
 | `cuddlytoddly.planning` | `prompts.py` ★, `schemas.py` ★, `llm_interface.py`, `llm_planner.py`, `llm_executor.py`, `llm_output_validator.py`, `plan_constraint_checker.py` | LLM client abstraction, prompt templates, JSON schemas, planning pipeline and execution logic |
 | `cuddlytoddly.infra` | `logging.py`, `event_queue.py`, `event_log.py`, `replay.py` | Logging, `EventQueue`, `EventLog`, replay |
 | `cuddlytoddly.skills` | `skill_loader.py`, `*/SKILL.md`, `*/tools.py` | `SkillLoader`, `ToolRegistry`, built-in skill packs |
-| `cuddlytoddly.ui` | `curses_ui.py`, `web_server.py`, `git_projection.py` | Curses terminal UI, web UI (including goal switching), Git DAG projection |
+| `cuddlytoddly.ui` | `curses_ui.py`, `web_server.py`, `git_projection.py` | Curses terminal UI, web UI (including goal switching and static HTML export), Git DAG projection |
 
 ★ These two files are the primary edit points for prompt engineering and schema tuning.
 
@@ -104,7 +114,9 @@ The full journey from raw LLM output to committed graph events:
 Goal text
        │
        ▼
-LLMPlanner._generate_clarification_node()   ← Call 1: what context would improve this plan?
+LLMPlanner._generate_clarification_node()   ← Call 1: extract stated facts + identify missing context
+       │                                       tool-aware: skills_summary prevents asking for
+       │                                       runtime-fetchable info
        │                                       emits clarification node (immediately done)
        ▼
 LLMPlanner._build_prompt()                  ← clarification fields embedded in planning prompt
