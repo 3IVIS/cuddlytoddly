@@ -92,22 +92,27 @@ def _build_payload(orchestrator) -> dict:
 
 # ── Static HTML export ────────────────────────────────────────────────────────
 
-def _build_static_html(snapshot: dict, run_dir: Path) -> tuple[str, Path]:
+def _build_static_html(
+    snapshot: dict,
+    run_dir: Path,
+    token_counts: dict | None = None,       # ← new (optional, backward-compat)
+) -> tuple[str, Path]:
     """
     Generate a standalone, self-contained HTML file from the current snapshot.
-
+ 
     The template (web_ui_static.html) contains three placeholder tokens:
       "SNAPSHOT_DATA_PLACEHOLDER"  — serialised nodes dict
-      "EXPORT_META_PLACEHOLDER"    — {goal, timestamp}
+      "EXPORT_META_PLACEHOLDER"    — {goal, timestamp, tokens}
+                                     tokens: {prompt, completion, total, calls}
       "REPLAY_EVENTS_PLACEHOLDER"  — ordered list of events from events.jsonl
                                      (empty list when the log is not found)
-
+ 
     The file is written to <run_dir>/outputs/ and (html_string, path) is returned.
     """
     template = (_HERE / "web_ui_static.html").read_text(encoding="utf-8")
-
+ 
     nodes_json = json.dumps(snapshot, default=str, ensure_ascii=False)
-
+ 
     goal_node = next(
         (n for n in snapshot.values() if n.get("node_type") == "goal"), None
     )
@@ -116,8 +121,12 @@ def _build_static_html(snapshot: dict, run_dir: Path) -> tuple[str, Path]:
         if goal_node else ""
     )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    meta_json = json.dumps({"goal": goal_title, "timestamp": ts})
-
+    meta_json = json.dumps({
+        "goal":      goal_title,
+        "timestamp": ts,
+        "tokens":    token_counts or {"prompt": 0, "completion": 0, "total": 0, "calls": 0},
+    })
+ 
     # ── Read and embed the event log ──────────────────────────────────────────
     # Events are read in order from events.jsonl and embedded verbatim so the
     # standalone file can replay the full history without any server connection.
@@ -133,19 +142,19 @@ def _build_static_html(snapshot: dict, run_dir: Path) -> tuple[str, Path]:
             except json.JSONDecodeError:
                 logger.warning("[EXPORT] Skipping corrupt event line: %.80s", raw_line)
     events_json = json.dumps(events, default=str, ensure_ascii=False)
-
+ 
     html = (
         template
         .replace('"SNAPSHOT_DATA_PLACEHOLDER"', nodes_json)
         .replace('"EXPORT_META_PLACEHOLDER"',   meta_json)
         .replace('"REPLAY_EVENTS_PLACEHOLDER"',  events_json)
     )
-
+ 
     safe_ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path  = run_dir / "outputs" / f"dag_snapshot_{safe_ts}.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
-
+ 
     logger.info("[EXPORT] Static HTML written to %s (%d events embedded)",
                 out_path, len(events))
     return html, out_path
@@ -430,7 +439,10 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
     async def export_html():
         snap = _serialize_snapshot(orchestrator.get_snapshot())
         try:
-            _, path = await asyncio.to_thread(_build_static_html, snap, run_dir)
+            _, path = await asyncio.to_thread(
+                _build_static_html, snap, run_dir,
+                orchestrator.token_counts,          # ← new
+            )
             return {"ok": True, "path": str(path)}
         except Exception as e:
             raise HTTPException(500, str(e))
@@ -935,7 +947,10 @@ def _create_unified_app(
     async def export_html():
         snap = _serialize_snapshot(_orch().get_snapshot())
         try:
-            _, path = await asyncio.to_thread(_build_static_html, snap, _run_dir())
+            _, path = await asyncio.to_thread(
+                _build_static_html, snap, _run_dir(),
+                _orch().token_counts,               # ← new
+            )
             return {"ok": True, "path": str(path)}
         except Exception as e:
             raise HTTPException(500, str(e))

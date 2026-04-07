@@ -1101,7 +1101,7 @@ Respond only in JSON matching the schema.
 # Clarification generation prompt
 # ---------------------------------------------------------------------------
 
-def build_clarification_prompt(goal_text: str) -> str:
+def build_clarification_prompt(goal_text: str, skills_summary: str = "") -> str:
     """
     Build the prompt for the first LLM call that generates the clarification
     node fields — structured context that would most improve the plan.
@@ -1111,22 +1111,57 @@ def build_clarification_prompt(goal_text: str) -> str:
 
     Parameters
     ----------
-    goal_text : The raw goal string provided by the user.
+    goal_text      : The raw goal string provided by the user.
+    skills_summary : The same skills/tools summary injected into the planner
+                     prompt (from ``SkillLoader.prompt_summary``).  When
+                     provided, the LLM is instructed not to ask the user for
+                     information that those tools can retrieve autonomously.
     """
+    tool_awareness_block = ""
+    if skills_summary.strip():
+        tool_awareness_block = f"""
+The plan will have access to the following tools at execution time:
+
+{skills_summary}
+
+Do NOT raise a clarification field for information these tools can retrieve
+autonomously (e.g. current market prices, publicly available statistics,
+exchange rates, regulatory text).  Only ask for information that is private
+to the user or structurally ambiguous — facts no tool can infer without the
+user's direct input (e.g. personal residency status, budget constraints,
+language preferences, private document contents).
+"""
+
     return f"""\
 You are preparing to plan how to achieve the following goal:
 
   {goal_text}
+{tool_awareness_block}
+Before planning begins, identify the structured context fields that would most
+improve the quality and specificity of the plan.
 
-Before planning begins, identify the information that — if known — would most
-significantly improve the quality and specificity of the plan. Focus on facts
-that change what tasks are needed, how they should be done, or what the outputs
-should contain. Do not ask for information that any competent plan could work
-around or that is irrelevant to the goal.
+Follow these two steps in order:
 
-For each important piece of information:
-  - Provide a best-guess value if a reasonable assumption can be made.
-  - Set value to "unknown" if no reasonable guess is possible.
+STEP 1 — Extract facts already stated in the goal text.
+  Read the goal carefully and pull out every concrete fact the user has already
+  provided: numbers, constraints, locations, roles, preferences, deadlines, etc.
+  Each extracted fact becomes a field with its value set to what the user stated.
+  Examples of what to extract: budget figures, size requirements, hard constraints
+  (e.g. "no mortgage"), stated locations, stated roles or residency, named
+  technologies, explicit timelines.
+  Do NOT mark a fact as "unknown" if it is explicitly stated in the goal text.
+
+STEP 2 — Identify genuinely missing information.
+  After capturing the stated facts, determine what additional information —
+  if known — would most significantly change what tasks are needed, how they
+  should be done, or what the outputs should contain.  Only add fields here
+  for information that is truly absent from the goal text and cannot be
+  retrieved by the available tools.  Do not ask for information that any
+  competent plan could work around or that is irrelevant to the goal.
+
+For every field (from both steps):
+  - Set value to the extracted or assumed value when known.
+  - Set value to "unknown" only when the information is genuinely absent.
   - Never leave value blank.
 
 Always include a final field with:
@@ -1138,4 +1173,3 @@ Always include a final field with:
 Return between 3 and 8 fields total (including the additional_context field).
 Respond only in JSON matching the schema.
 """
-

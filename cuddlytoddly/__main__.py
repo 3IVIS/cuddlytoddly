@@ -30,6 +30,7 @@ from cuddlytoddly.config import (
     get_executor_cfg, get_planner_cfg, get_orchestrator_cfg, get_file_llm_cfg,
 )
 import cuddlytoddly.planning.llm_interface as llm_iface
+from cuddlytoddly.planning.llm_interface import create_llm_client, token_counter
 
 REPO_ROOT = Path(__file__).resolve().parent   # package code location
 
@@ -283,12 +284,12 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
         graph       = rebuild_graph_from_log(event_log)
         fresh_start = False
         _logger.info("[STARTUP] Restored %d nodes", len(graph.nodes))
-
+ 
         for step_id in [n.id for n in graph.nodes.values()
                         if n.node_type == "execution_step"]:
             if step_id in graph.nodes:
                 graph.detach_node(step_id)
-
+ 
         for node_id in {n.id for n in graph.nodes.values()
                         if n.status in ("running", "failed")
                         and n.node_type != "execution_step"}:
@@ -299,8 +300,35 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict,
                 n.metadata.pop("retry_count",          None)
                 n.metadata.pop("verification_failure", None)
                 n.metadata.pop("verified",             None)
-
+ 
         graph.recompute_readiness()
+ 
+        # ── Restore historical token counts ───────────────────────────────────
+        # Read llamacpp_cache.json (present for llama.cpp runs; absent for
+        # Anthropic/OpenAI runs — skipped silently in that case).
+        # Each entry has {"prompt": str, "response": str}; token counts are
+        # approximated with len//4, matching the live accounting in LlamaCppLLM.
+        cache_path = run_dir / "llamacpp_cache.json"
+        if cache_path.exists():
+            try:
+                import json as _json
+                entries = _json.loads(cache_path.read_text(encoding="utf-8"))
+                prompt_total     = 0
+                completion_total = 0
+                for entry in entries.values():
+                    prompt_total     += len(entry.get("prompt",   "")) // 4
+                    completion_total += len(entry.get("response", "")) // 4
+                token_counter.seed(prompt_total, completion_total, calls=len(entries))
+                _logger.info(
+                    "[STARTUP] Seeded token counter from cache: "
+                    "%d prompt + %d completion = %d total (%d calls)",
+                    prompt_total, completion_total,
+                    prompt_total + completion_total, len(entries),
+                )
+            except Exception as exc:
+                _logger.warning("[STARTUP] Could not seed token counter from cache: %s", exc)
+        # ─────────────────────────────────────────────────────────────────────
+ 
     else:
         graph       = TaskGraph()
         fresh_start = True

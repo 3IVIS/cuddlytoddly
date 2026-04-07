@@ -31,6 +31,7 @@
   --s-done:     #2f9e6f;
   --s-failed:   #d35a5a;
   --s-expanded: #8b5cf6;
+  --s-awaiting: #e879f9;
 
   --t-goal:     #7b61d9;
   --t-task:     #4db7e5;
@@ -804,6 +805,10 @@ body {
       <div class="dot" style="background:var(--s-running)"></div>
       <span id="cnt-running">0</span> running
     </div>
+    <div class="count-pill" id="pill-awaiting" style="display:none">
+      <div class="dot" style="background:var(--s-awaiting)"></div>
+      <span id="cnt-awaiting">0</span> awaiting
+    </div>
     <div class="count-pill" id="pill-done">
       <div class="dot" style="background:var(--s-done)"></div>
       <span id="cnt-done">0</span> done
@@ -884,10 +889,12 @@ const STATUS_COLOR = {
   done:           'var(--s-done)',
   failed:         'var(--s-failed)',
   to_be_expanded: 'var(--s-expanded)',
+  awaiting_input: 'var(--s-awaiting)',
 };
 const STATUS_COLOR_HEX = {
   pending: '#475569', ready: '#3b82f6', running: '#f59e0b',
   done: '#10b981', failed: '#ef4444', to_be_expanded: '#8b5cf6',
+  awaiting_input: '#e879f9',
 };
 const TYPE_ICON  = { goal: '◎', task: '▣', reflection: '◈', execution_step: '·', clarification: '?' };
 const TYPE_COLOR = { goal: '#a78bfa', task: '#7dd3fc', reflection: '#86efac', execution_step: '#475569', clarification: '#f9a825' };
@@ -936,9 +943,13 @@ function handleMessage(data) {
 
   // Toolbar counts
   const counts = (data.status && data.status.by_status) || {};
-  for (const st of ['pending','ready','running','done','failed']) {
-    document.getElementById(`cnt-${st}`).textContent = counts[st] || 0;
+  for (const st of ['pending','ready','running','awaiting_input','done','failed']) {
+    const el = document.getElementById(`cnt-${st === 'awaiting_input' ? 'awaiting' : st}`);
+    if (el) el.textContent = counts[st] || 0;
   }
+  // Show/hide the awaiting pill — only relevant when nodes are waiting for input
+  const awaitingPill = document.getElementById('pill-awaiting');
+  if (awaitingPill) awaitingPill.style.display = (counts.awaiting_input || 0) > 0 ? '' : 'none';
 
   // Goal description in toolbar (now a button)
   const goal = Object.values(nodes).find(n => n.node_type === 'goal');
@@ -1245,6 +1256,27 @@ function updatePanel() {
         <span class="info-value">${esc(broadDesc)}</span>
         ${missingText}
         ${reasonText}
+      </div>`);
+  }
+
+  // ── Awaiting input indicator ──────────────────────────────────────────────
+  if (node.status === 'awaiting_input') {
+    const awaitReason  = node.metadata?.awaiting_input_reason || '';
+    const awaitMissing = node.metadata?.missing_fields || [];
+    const missingList  = awaitMissing.length
+      ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">` +
+        `Waiting for: ${esc(awaitMissing.join(', '))}</div>`
+      : '';
+    const reasonLine = awaitReason
+      ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic;margin-top:2px">${esc(awaitReason)}</div>`
+      : '';
+    html += row('Awaiting input', `
+      <div style="border:1px solid var(--s-awaiting)40;border-left:3px solid var(--s-awaiting);border-radius:4px;padding:8px 10px">
+        <div style="font-size:10px;color:var(--s-awaiting);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">
+          ⏳ Waiting for user input
+        </div>
+        ${missingList}
+        ${reasonLine}
       </div>`);
   }
 

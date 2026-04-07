@@ -34,6 +34,7 @@ const REPLAY_EVENTS  = "REPLAY_EVENTS_PLACEHOLDER";
   --s-done:     #2f9e6f;
   --s-failed:   #d35a5a;
   --s-expanded: #8b5cf6;
+  --s-awaiting: #e879f9;
   --toolbar-h:  52px;
   --panel-w:    340px;
   --radius:     8px;
@@ -403,6 +404,10 @@ body {
       <div class="dot" style="background:var(--s-failed)"></div>
       <span id="cnt-failed">0</span> failed
     </div>
+    <div class="count-pill" id="pill-awaiting" style="display:none">
+      <div class="dot" style="background:var(--s-awaiting)"></div>
+      <span id="cnt-awaiting">0</span> awaiting
+    </div>
     <div class="count-pill" id="pill-pending">
       <div class="dot" style="background:var(--s-pending)"></div>
       <span id="cnt-pending">0</span> pending
@@ -410,6 +415,10 @@ body {
     <div class="count-pill">
       <div class="dot" style="background:var(--border2)"></div>
       <span id="cnt-total">0</span> total
+    </div>
+    <div class="count-pill" id="pill-tokens" style="display:none">
+      <div class="dot" style="background:var(--accent)"></div>
+      <span id="cnt-tokens">0</span> tokens
     </div>
   </div>
 
@@ -456,9 +465,10 @@ const meta  = EXPORT_META;
 const STATUS_COLOR_HEX = {
   pending: '#475569', ready: '#3b82f6', running: '#f59e0b',
   done: '#10b981', failed: '#ef4444', to_be_expanded: '#8b5cf6',
+  awaiting_input: '#e879f9',
 };
-const TYPE_ICON  = { goal: '◎', task: '▣', reflection: '◈', execution_step: '·' };
-const TYPE_COLOR = { goal: '#a78bfa', task: '#7dd3fc', reflection: '#86efac', execution_step: '#475569' };
+const TYPE_ICON  = { goal: '◎', task: '▣', reflection: '◈', execution_step: '·', clarification: '?' };
+const TYPE_COLOR = { goal: '#a78bfa', task: '#7dd3fc', reflection: '#86efac', execution_step: '#475569', clarification: '#f9a825' };
 const NODE_W = 210, NODE_H = 54;
 
 // ── Header ────────────────────────────────────────────────────────────────────
@@ -484,11 +494,27 @@ const NODE_W = 210, NODE_H = 54;
   document.getElementById('cnt-failed').textContent  = counts.failed  || 0;
   document.getElementById('cnt-pending').textContent =
     (counts.pending || 0) + (counts.ready || 0) + (counts.running || 0);
+  const awaitingCount = counts.awaiting_input || 0;
+  document.getElementById('cnt-awaiting').textContent = awaitingCount;
+  const awaitingPill = document.getElementById('pill-awaiting');
+  if (awaitingPill) awaitingPill.style.display = awaitingCount > 0 ? '' : 'none';
   document.getElementById('cnt-total').textContent   = visible.length;
 
   // Timestamp
   document.getElementById('toolbar-ts').textContent =
     `Exported ${meta.timestamp}`;
+  // Token counts (present in exports generated after this fix; absent in
+  // older snapshots where meta.tokens is undefined — pill stays hidden).
+  const tc = meta.tokens;
+  if (tc && tc.total > 0) {
+    const t = tc.total;
+    document.getElementById('cnt-tokens').textContent =
+      t >= 1_000_000 ? `${(t / 1_000_000).toFixed(1)}M`
+      : t >= 1_000   ? `${(t / 1_000).toFixed(1)}K`
+      : String(t);
+    document.getElementById('pill-tokens').style.display = '';
+  }
+
   document.title = goalDesc
     ? `cuddlytoddly — ${goalDesc}`
     : 'cuddlytoddly — DAG snapshot';
@@ -647,13 +673,15 @@ function renderDAG() {
 // ── Selection ────────────────────────────────────────────────────────────────
 
 function selectNode(id) {
+  if (autoOpenTimer) { clearTimeout(autoOpenTimer); autoOpenTimer = null; autoOpenActive = false; }
   selectedId = id;
   renderDAG();
   updatePanel();
 }
 
 function updatePanel() {
-  const node = nodes[selectedId];
+  const _panelNodes = (replayMode ? replayState : nodes);
+  const node = _panelNodes[selectedId];
   if (!node) return;
 
   document.getElementById('info-panel').classList.remove('hidden');
@@ -667,7 +695,7 @@ function updatePanel() {
   const output = node.metadata?.output || [];
   const notes  = node.metadata?.reflection_notes || [];
 
-  const _panelSrc = (replayMode ? replayState : nodes);
+  const _panelSrc = _panelNodes;
   const stepChildren = Object.values(_panelSrc).filter(n =>
     n.node_type === 'execution_step' &&
     n.dependencies.includes(selectedId) &&
@@ -699,6 +727,27 @@ function updatePanel() {
         <span class="info-value">${esc(broadDesc)}</span>
         ${missingText}
         ${reasonText}
+      </div>`);
+  }
+
+  // ── Awaiting input indicator ──────────────────────────────────────────────
+  if (node.status === 'awaiting_input') {
+    const awaitReason  = node.metadata?.awaiting_input_reason || '';
+    const awaitMissing = node.metadata?.missing_fields || [];
+    const missingList  = awaitMissing.length
+      ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">` +
+        `Waiting for: ${esc(awaitMissing.join(', '))}</div>`
+      : '';
+    const reasonLine = awaitReason
+      ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic;margin-top:2px">${esc(awaitReason)}</div>`
+      : '';
+    html += row('Awaiting input', `
+      <div style="border:1px solid var(--s-awaiting)40;border-left:3px solid var(--s-awaiting);border-radius:4px;padding:8px 10px">
+        <div style="font-size:10px;color:var(--s-awaiting);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">
+          ⏳ Waiting for user input
+        </div>
+        ${missingList}
+        ${reasonLine}
       </div>`);
   }
 
@@ -776,6 +825,7 @@ function row(label, content) {
 }
 
 function closePanel() {
+  if (autoOpenTimer) { clearTimeout(autoOpenTimer); autoOpenTimer = null; autoOpenActive = false; }
   selectedId = null;
   document.getElementById('info-panel').classList.add('hidden');
   renderDAG();
@@ -870,6 +920,34 @@ let replayPlaying = false;
 let replayTimer   = null;
 let replayFirstFit = true;
 
+// ── Replay auto-open panel ────────────────────────────────────────────────────
+// While playing, every node that gets a result auto-opens the info panel for
+// AUTO_OPEN_MS milliseconds, then closes automatically before the next one.
+
+let autoOpenTimer  = null;   // setTimeout handle for auto-close
+let autoOpenActive = false;  // true while the panel is open due to auto-replay
+const AUTO_OPEN_MS = 2500;   // how long each result panel stays visible
+
+function autoOpenNode(id) {
+  // Skip execution_step nodes — they fire frequently and are low-signal
+  const nodeType = (replayState[id] || {}).node_type;
+  if (nodeType === 'execution_step') return;
+
+  // Cancel any existing auto-close timer before opening the next node
+  if (autoOpenTimer) { clearTimeout(autoOpenTimer); autoOpenTimer = null; }
+
+  autoOpenActive = true;
+  selectedId     = id;
+  renderDAG();
+  updatePanel();
+
+  autoOpenTimer = setTimeout(() => {
+    autoOpenTimer  = null;
+    autoOpenActive = false;
+    closePanel();
+  }, AUTO_OPEN_MS);
+}
+
 const CHECKPOINT_EVERY = 20;
 let   replayCheckpoints = [];
 
@@ -959,12 +1037,28 @@ function applyEventInPlace(state, event) {
       state[nid].status = 'pending'; state[nid].result = null;
       queue.push(...(state[nid].children||[]));
     }
+  } else if (t === 'MARK_AWAITING_INPUT') {
+    if (state[id]) {
+      state[id].status = 'awaiting_input';
+      state[id].metadata.missing_fields        = p.missing_fields        || [];
+      state[id].metadata.awaiting_input_reason = p.awaiting_input_reason || '';
+    }
+  } else if (t === 'RESUME_NODE') {
+    if (state[id]) {
+      state[id].status = 'pending';
+      state[id].result = null;
+      delete state[id].metadata.missing_fields;
+      delete state[id].metadata.awaiting_input_reason;
+      delete state[id].metadata.retry_count;
+      delete state[id].metadata.retry_after;
+      delete state[id].metadata.verification_failure;
+    }
   }
 }
 
 function recomputeReadiness(state) {
   for (const node of Object.values(state)) {
-    if (['done','running','failed','to_be_expanded'].includes(node.status)) continue;
+    if (['done','running','failed','to_be_expanded','awaiting_input'].includes(node.status)) continue;
     node.status = node.dependencies.every(d => state[d]?.status === 'done') ? 'ready' : 'pending';
   }
 }
@@ -1012,6 +1106,8 @@ function pauseReplay() {
   replayPlaying = false;
   document.getElementById('btn-play-pause').textContent = '▶';
   clearTimeout(replayTimer);
+  // Cancel auto-close so the panel stays open for the user to read while paused
+  if (autoOpenTimer) { clearTimeout(autoOpenTimer); autoOpenTimer = null; }
 }
 
 function scheduleNextTick() {
@@ -1022,7 +1118,8 @@ function scheduleNextTick() {
 function playTick() {
   if (!replayPlaying) return;
   if (replayFrame >= REPLAY_EVENTS.length) { pauseReplay(); return; }
-  applyEventInPlace(replayState, REPLAY_EVENTS[replayFrame]);
+  const evt = REPLAY_EVENTS[replayFrame];
+  applyEventInPlace(replayState, evt);
   recomputeReadiness(replayState);
   replayFrame++;
   refreshReplayUI();
@@ -1030,6 +1127,14 @@ function playTick() {
   if (replayFirstFit && Object.keys(replayState).length > 0) {
     fitGraph(); replayFirstFit = false;
   }
+
+  // Auto-open the info panel whenever a node receives a result
+  const t = evt.type, p = evt.payload || {};
+  const hasResult = p.result != null && p.result !== '';
+  if (hasResult && (t === 'MARK_DONE' || t === 'SET_RESULT')) {
+    autoOpenNode(p.node_id);
+  }
+
   scheduleNextTick();
 }
 
@@ -1058,6 +1163,7 @@ function enterReplayMode() {
 
 function exitReplayMode() {
   pauseReplay(); replayMode = false;
+  if (autoOpenTimer) { clearTimeout(autoOpenTimer); autoOpenTimer = null; autoOpenActive = false; }
   document.getElementById('btn-replay').classList.remove('active');
   document.getElementById('btn-replay').textContent = '▶ Replay';
   document.getElementById('replay-bar').classList.add('hidden');
@@ -1074,6 +1180,25 @@ function refreshReplayUI() {
   const evt = REPLAY_EVENTS[Math.max(0, replayFrame - 1)];
   document.getElementById('replay-event-label').textContent =
     evt ? describeEvent(evt) : '—';
+
+  // Update status count pills to reflect current replay state
+  if (replayMode) {
+    const counts = {};
+    for (const n of Object.values(replayState)) {
+      if (n.node_type === 'execution_step') continue;
+      counts[n.status] = (counts[n.status] || 0) + 1;
+    }
+    const visible = Object.values(replayState).filter(n => n.node_type !== 'execution_step');
+    document.getElementById('cnt-done').textContent    = counts.done    || 0;
+    document.getElementById('cnt-failed').textContent  = counts.failed  || 0;
+    document.getElementById('cnt-pending').textContent =
+      (counts.pending || 0) + (counts.ready || 0) + (counts.running || 0);
+    document.getElementById('cnt-total').textContent   = visible.length;
+    const awaitingCount = counts.awaiting_input || 0;
+    document.getElementById('cnt-awaiting').textContent = awaitingCount;
+    const awaitingPill = document.getElementById('pill-awaiting');
+    if (awaitingPill) awaitingPill.style.display = awaitingCount > 0 ? '' : 'none';
+  }
 }
 
 function describeEvent(evt) {
@@ -1087,6 +1212,8 @@ function describeEvent(evt) {
     case 'MARK_RUNNING':      return '▶ ' + id;
     case 'MARK_DONE':         return '✓ ' + id;
     case 'MARK_FAILED':       return '✗ ' + id;
+    case 'MARK_AWAITING_INPUT': return '⏳ awaiting · ' + id;
+    case 'RESUME_NODE':       return '↻ resume · ' + id;
     case 'RESET_NODE':        return '↺ ' + id;
     case 'UPDATE_METADATA':   return '· ' + id;
     case 'SET_RESULT':        return '≡ result → ' + id;

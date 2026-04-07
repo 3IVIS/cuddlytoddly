@@ -60,29 +60,43 @@ class TokenCounter:
         self._prompt_tokens      = 0
         self._completion_tokens  = 0
         self._calls              = 0
-
+ 
     def add(self, prompt: int, completion: int) -> None:
         with self._lock:
             self._prompt_tokens     += prompt
             self._completion_tokens += completion
             self._calls             += 1
-
+ 
+    def seed(self, prompt: int, completion: int, calls: int = 0) -> None:
+        """
+        Set a baseline derived from a previously-persisted run so that the
+        toolbar shows the correct historical total immediately after loading.
+ 
+        This replaces whatever is currently in the counter; it must be called
+        before any new LLM call is made (i.e. during startup, right after the
+        graph is rebuilt from the event log).
+        """
+        with self._lock:
+            self._prompt_tokens     = prompt
+            self._completion_tokens = completion
+            self._calls             = calls
+ 
     @property
     def prompt_tokens(self) -> int:
         return self._prompt_tokens
-
+ 
     @property
     def completion_tokens(self) -> int:
         return self._completion_tokens
-
+ 
     @property
     def total_tokens(self) -> int:
         return self._prompt_tokens + self._completion_tokens
-
+ 
     @property
     def calls(self) -> int:
         return self._calls
-
+ 
     def reset(self) -> None:
         with self._lock:
             self._prompt_tokens = self._completion_tokens = self._calls = 0
