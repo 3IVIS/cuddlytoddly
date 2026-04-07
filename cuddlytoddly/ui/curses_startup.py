@@ -14,9 +14,11 @@ import textwrap
 from pathlib import Path
 
 from cuddlytoddly.ui.startup import (
-    StartupChoice, RunInfo, scan_runs, parse_manual_plan,
+    RunInfo,
+    StartupChoice,
+    parse_manual_plan,
+    scan_runs,
 )
-
 
 # ── Colour pairs (set up once inside curses.wrapper) ─────────────────────────
 _C_TITLE   = 1
@@ -145,7 +147,8 @@ def _draw_new_goal_tab(win, text: str, cursor: int, error: str):
     y = 0
     _safe_addstr(win, y, 2, "New goal  (type goal, Enter to start)", curses.color_pair(_C_DIM))
     y += 1
-    _hline(win, y); y += 1
+    _hline(win, y)
+    y += 1
 
     _safe_addstr(win, y, 2, "Goal:", curses.color_pair(_C_ACCENT))
     y += 1
@@ -200,7 +203,9 @@ def _draw_manual_tab(win, goal_text: str, goal_cursor: int,
     h, w = win.getmaxyx()
     y = 0
     _safe_addstr(win, y, 2, "Manual plan  (Tab: switch fields, Enter: confirm)", curses.color_pair(_C_DIM))
-    y += 1; _hline(win, y); y += 1
+    y += 1
+    _hline(win, y)
+    y += 1
 
     # Goal field
     goal_attr = curses.A_REVERSE if active_field == 0 else curses.color_pair(_C_ACCENT)
@@ -481,3 +486,4 @@ def run_startup_selection(
             root.addHandler(ch)
 
     return result[0]
+

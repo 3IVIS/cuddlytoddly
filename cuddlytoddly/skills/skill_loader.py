@@ -26,6 +26,7 @@
 #   }
 
 from pathlib import Path
+
 from cuddlytoddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
@@ -181,7 +182,7 @@ class SkillLoader:
             desc = s.get("description", "")
             if desc:
                 # First non-empty line only, to keep the prompt compact
-                first_line = next((l for l in desc.splitlines() if l.strip()), "")
+                first_line = next((ln for ln in desc.splitlines() if ln.strip()), "")
                 lines.append(f"  {first_line}")
 
             when = s.get("when_to_use", "")
@@ -191,16 +192,16 @@ class SkillLoader:
             tools_section = s.get("tools", "")
             if tools_section:
                 tool_names = [
-                    l.strip().lstrip("- ").split(":")[0].strip("`")
-                    for l in tools_section.splitlines()
-                    if l.strip().startswith("-")
+                    ln.strip().lstrip("- ").split(":")[0].strip("`")
+                    for ln in tools_section.splitlines()
+                    if ln.strip().startswith("-")
                 ]
                 if tool_names:
                     lines.append(f"  Tools: {', '.join(tool_names)}")
 
             output_fmt = s.get("expected_output_format", "")
             if output_fmt:
-                first_line = next((l for l in output_fmt.splitlines() if l.strip()), "")
+                first_line = next((ln for ln in output_fmt.splitlines() if ln.strip()), "")
                 lines.append(f"  Output format: {first_line}")
 
         return "\n".join(lines)
@@ -208,3 +209,5 @@ class SkillLoader:
     def merge_mcp(self, mcp_registry: "ToolRegistry"):
         """Merge an MCP-sourced registry into the local one."""
         self.registry.merge(mcp_registry)
+
+

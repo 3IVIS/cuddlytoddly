@@ -1,7 +1,7 @@
 # infra/replay.py
 
-from cuddlytoddly.core.task_graph import TaskGraph
 from cuddlytoddly.core.reducer import apply_event
+from cuddlytoddly.core.task_graph import TaskGraph
 
 
 def rebuild_graph_from_log(event_log):
@@ -17,3 +17,5 @@ def rebuild_graph_from_log(event_log):
                 continue   # already wired — skip silently
         apply_event(graph, event)
     return graph
+
+

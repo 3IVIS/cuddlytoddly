@@ -12,18 +12,17 @@ Tests for the bug fixes and the broadened-execution feature:
 """
 import json
 import time
-import pytest
 from concurrent.futures import Future
-from unittest.mock import MagicMock, patch
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.core.events import Event, ADD_NODE, MARK_DONE
+from unittest.mock import MagicMock
+
+from conftest import FakeLLM, add_node
+
 from cuddlytoddly.core.reducer import apply_event
+from cuddlytoddly.core.task_graph import TaskGraph
 from cuddlytoddly.engine.llm_orchestrator import Orchestrator
 from cuddlytoddly.engine.quality_gate import QualityGate
-from cuddlytoddly.planning.llm_executor import LLMExecutor
 from cuddlytoddly.infra.event_queue import EventQueue
-from conftest import FakeLLM, add_node, mark_done
-
+from cuddlytoddly.planning.llm_executor import LLMExecutor
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -52,7 +51,7 @@ def make_orchestrator(graph=None, executor_result="mock result",
 
 
 def make_tool_registry(tools_dict):
-    from cuddlytoddly.skills.skill_loader import ToolRegistry, Tool
+    from cuddlytoddly.skills.skill_loader import Tool, ToolRegistry
     registry = ToolRegistry()
     for name, fn in tools_dict.items():
         registry.register(Tool(
@@ -65,8 +64,9 @@ def make_tool_registry(tools_dict):
 
 
 def make_reporter(parent_id, graph):
-    from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
     import threading
+
+    from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
     lock = threading.RLock()
     apply_events = []
 
@@ -254,7 +254,7 @@ class TestAwaitingInput:
         """A required_input whose name is not in any clarification field is
         detected and merged into new_fields via Phase 1 gap detection.
         The LLM is still called to generate the broadened description."""
-        from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
+        from cuddlytoddly.planning.llm_executor import LLMExecutor
         llm = FakeLLM(json.dumps({
             "blocked": True,
             "reason": "needs company culture info",
@@ -358,9 +358,10 @@ class TestAwaitingInput:
     def test_execute_uses_broadened_description_when_inputs_missing(self):
         """execute() must never return AwaitingInputSignal — when inputs are
         missing it runs with the broadened description and returns a string."""
-        from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
-        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
         import threading
+
+        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
+        from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
 
         g = TaskGraph()
         add_node(g, "personal_task", metadata={
@@ -417,9 +418,10 @@ class TestAwaitingInput:
     def test_orchestrator_writes_broadening_metadata_after_execution(self):
         """After a node executes with a broadened description, the orchestrator
         writes broadened_description and broadened_for_missing into node metadata."""
-        from cuddlytoddly.planning.llm_executor import AwaitingInputSignal
-        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
         import threading
+
+        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
+        from cuddlytoddly.planning.llm_executor import AwaitingInputSignal
 
         orch, g, _, mock_gate = make_orchestrator(gate_satisfied=True)
         add_node(g, "t", node_type="task", metadata={
@@ -459,9 +461,10 @@ class TestAwaitingInput:
 
     def test_orchestrator_patches_clarification_node_from_reporter_signal(self):
         """new_fields in the reporter signal are added to the clarification node."""
-        from cuddlytoddly.planning.llm_executor import AwaitingInputSignal
-        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
         import threading
+
+        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
+        from cuddlytoddly.planning.llm_executor import AwaitingInputSignal
 
         g = TaskGraph()
         add_node(g, "clar", node_type="clarification", metadata={
@@ -851,9 +854,10 @@ class TestBroadenedExecutionFixes:
     def test_execute_calls_fallback_when_broadened_description_empty(self):
         """When the preflight returns blocked=true with empty broadened_description,
         a second focused LLM call is made to generate it."""
-        from cuddlytoddly.planning.llm_executor import LLMExecutor
-        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
         import threading
+
+        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
+        from cuddlytoddly.planning.llm_executor import LLMExecutor
 
         call_count = [0]
         def multi_response(prompt, schema=None):
@@ -924,12 +928,6 @@ class TestBroadenedExecutionFixes:
             "List personal achievements", unknown_keys=["salary"]
         )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
-        resolved = [{
-            "node_id": "clar", "description": "ctx",
-            "declared_output": [], "result": "ctx",
-            "_unknown_fields": [{"key": "salary", "label": "salary"}],
-            "_known_fields": [],
-        }]
         result = executor.execute(node, g.get_snapshot())
         assert result is None, (
             "When both broadening calls fail, execute() must return None "
@@ -1269,3 +1267,4 @@ class TestToolErrorStringDetection:
         assert len(llm.calls) == 1, "LLM verifier must be called"
         # Tool context appears in the prompt
         assert "TOOL EXECUTION SUMMARY" in llm.calls[0]
+

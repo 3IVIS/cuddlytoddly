@@ -1,12 +1,11 @@
-
-import git
+import hashlib
 import os
-from pathlib import Path
 import re
 import shutil
-import hashlib
+from collections import defaultdict, deque
+from pathlib import Path
 
-from collections import deque, defaultdict
+import git
 
 from cuddlytoddly.infra.logging import get_logger
 
@@ -170,7 +169,7 @@ def sanitize_branch_name(node_id):
     return re.sub(r'[^a-zA-Z0-9._-]', '_', node_id)
 
 def update_tip_branches(snapshot):
-    dag = graph_to_dag(snapshot)
+    graph_to_dag(snapshot)
 
     # Remove stale tip branches — skip any that fail (race condition)
     for branch in list(repo.heads):
@@ -319,3 +318,4 @@ def delete_node(node_id, graph):
         node = graph.nodes[node_id]
         node.metadata["deleted"] = True
         commit_node_incremental(node_id, node, graph.get_snapshot())
+

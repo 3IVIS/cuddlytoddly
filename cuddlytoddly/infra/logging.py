@@ -16,9 +16,9 @@ inherit handlers automatically.
 
 import logging
 import logging.handlers
+import re
 from datetime import datetime
 from pathlib import Path
-import re
 
 LOG_DIR = Path("logs")
 
@@ -216,3 +216,4 @@ def get_logger(name: str) -> logging.Logger:
     # instead of "dag.cuddlytoddly.engine.foo"
     stripped = re.sub(r"^cuddlytoddly\.", "", name)
     return logging.getLogger(f"dag.{stripped}")
+

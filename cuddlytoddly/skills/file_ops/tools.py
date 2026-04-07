@@ -3,7 +3,6 @@
 # Local tool implementations for the file_ops skill.
 # The SkillLoader imports this and registers everything in TOOLS.
 
-import subprocess
 from pathlib import Path
 
 TOOLS = {
@@ -36,3 +35,5 @@ TOOLS = {
         ),
     },
 }
+
+

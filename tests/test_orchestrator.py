@@ -1,16 +1,12 @@
 """Tests for cuddlytoddly.engine.llm_orchestrator.Orchestrator."""
-import json
-import time
-import threading
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+
+from conftest import FakeLLM, mark_done
+
+from cuddlytoddly.core.events import ADD_NODE, RESET_SUBTREE, Event
 from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.core.events import Event, ADD_NODE, MARK_DONE, RESET_SUBTREE
-from cuddlytoddly.core.reducer import apply_event
 from cuddlytoddly.engine.llm_orchestrator import Orchestrator
 from cuddlytoddly.infra.event_queue import EventQueue
-from conftest import FakeLLM, add_node, mark_done
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -321,3 +317,5 @@ class TestExecutionPass:
         orch._running_futures["running_task"] = MagicMock()
         launched = orch._execution_pass()
         assert launched == 0
+
+

@@ -1,8 +1,7 @@
 """Tests for cuddlytoddly.core.id_generator."""
 import json
-import pytest
-from cuddlytoddly.core.id_generator import StableIDGenerator, base62_encode
 
+from cuddlytoddly.core.id_generator import StableIDGenerator, base62_encode
 
 # ── base62_encode ──────────────────────────────────────────────────────────────
 
@@ -95,3 +94,5 @@ class TestStableIDGenerator:
         result = gen.get_id("test")
         assert isinstance(result, str)
         assert len(result) > 0
+
+

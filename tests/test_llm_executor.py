@@ -1,12 +1,11 @@
 """Tests for cuddlytoddly.planning.llm_executor.LLMExecutor."""
 import json
-import pytest
-from unittest.mock import MagicMock, patch
-from cuddlytoddly.planning.llm_executor import LLMExecutor
-from cuddlytoddly.planning.llm_interface import LLMStoppedError
-from cuddlytoddly.core.task_graph import TaskGraph
+from unittest.mock import MagicMock
+
 from conftest import FakeLLM, add_node
 
+from cuddlytoddly.core.task_graph import TaskGraph
+from cuddlytoddly.planning.llm_executor import LLMExecutor
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -36,7 +35,7 @@ def tool_response(name, args):
 
 def make_tool_registry(tools_dict):
     """Build a minimal ToolRegistry from a dict of name → callable."""
-    from cuddlytoddly.skills.skill_loader import ToolRegistry, Tool
+    from cuddlytoddly.skills.skill_loader import Tool, ToolRegistry
     registry = ToolRegistry()
     for name, fn in tools_dict.items():
         registry.register(Tool(
@@ -301,3 +300,5 @@ class TestExecutorReporter:
         node, snapshot = make_node()
         executor.execute(node, snapshot, reporter=reporter)
         reporter.on_llm_error.assert_called()
+
+

@@ -1,8 +1,7 @@
 """Tests for cuddlytoddly.core.task_graph."""
-import pytest
-from cuddlytoddly.core.task_graph import TaskGraph
 from conftest import add_node, mark_done
 
+from cuddlytoddly.core.task_graph import TaskGraph
 
 # ── add_node ──────────────────────────────────────────────────────────────────
 
@@ -244,7 +243,7 @@ class TestUpdateStatus:
 
 class TestVersions:
     def test_structure_version_increments_on_add(self):
-        from cuddlytoddly.core.events import Event, ADD_NODE
+        from cuddlytoddly.core.events import ADD_NODE, Event
         from cuddlytoddly.core.reducer import apply_event
         g = TaskGraph()
         v = g.structure_version
@@ -309,3 +308,5 @@ class TestCycleDetection:
         add_node(graph, "b")
         graph.add_dependency("b", "a")
         assert "a" in graph.nodes["b"].dependencies
+
+

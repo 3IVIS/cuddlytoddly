@@ -39,6 +39,8 @@ dev = [
     "pytest-timeout",
     "ruff",
     "mypy",
+    "pytest-cov", 
+    "ruff"
 ]
 
 [project.scripts]

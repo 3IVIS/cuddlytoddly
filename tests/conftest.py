@@ -1,15 +1,13 @@
 """Shared pytest fixtures for the cuddlytoddly test suite."""
 import json
 import threading
+
 import pytest
-from unittest.mock import MagicMock
 
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.core.events import Event, ADD_NODE, ADD_DEPENDENCY, MARK_DONE
+from cuddlytoddly.core.events import ADD_NODE, MARK_DONE, Event
 from cuddlytoddly.core.reducer import apply_event
+from cuddlytoddly.core.task_graph import TaskGraph
 from cuddlytoddly.infra.event_queue import EventQueue
-from cuddlytoddly.infra.logging import setup_logging
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -91,3 +89,5 @@ class FakeLLM:
 @pytest.fixture
 def fake_llm():
     return FakeLLM(json.dumps({"satisfied": True, "reason": "looks good"}))
+
+

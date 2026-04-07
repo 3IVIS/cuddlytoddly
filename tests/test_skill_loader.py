@@ -1,9 +1,10 @@
 """Tests for cuddlytoddly.skills.skill_loader."""
 import shutil
-import pytest
 from pathlib import Path
-from cuddlytoddly.skills.skill_loader import SkillLoader, ToolRegistry, Tool
 
+import pytest
+
+from cuddlytoddly.skills.skill_loader import SkillLoader, Tool, ToolRegistry
 
 # ── ToolRegistry ──────────────────────────────────────────────────────────────
 
@@ -193,3 +194,5 @@ class TestSkillLoaderSynthetic:
         loader.merge_mcp(external)
         assert "mcp_tool" in loader.registry.tools
         assert "do_thing" in loader.registry.tools
+
+

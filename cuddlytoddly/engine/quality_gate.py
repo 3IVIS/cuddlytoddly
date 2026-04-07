@@ -5,13 +5,13 @@ import os
 
 from cuddlytoddly.infra.logging import get_logger
 from cuddlytoddly.planning.llm_interface import LLMStoppedError
-from cuddlytoddly.planning.schemas import (
-    RESULT_VERIFICATION_SCHEMA,
-    DEPENDENCY_CHECK_SCHEMA,
-)
 from cuddlytoddly.planning.prompts import (
-    build_verify_result_prompt,
     build_check_dependencies_prompt,
+    build_verify_result_prompt,
+)
+from cuddlytoddly.planning.schemas import (
+    DEPENDENCY_CHECK_SCHEMA,
+    RESULT_VERIFICATION_SCHEMA,
 )
 
 logger = get_logger(__name__)
@@ -294,4 +294,6 @@ class QualityGate:
             except Exception:
                 return False
         return os.path.exists(path)
+
+
 

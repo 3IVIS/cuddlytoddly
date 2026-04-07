@@ -24,9 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from fastapi import FastAPI, WebSocket, HTTPException, Request
-    from fastapi.responses import HTMLResponse
     import uvicorn
+    from fastapi import FastAPI, HTTPException, WebSocket
+    from fastapi.responses import HTMLResponse
 except ImportError:
     raise ImportError(
         "Web UI requires FastAPI and uvicorn:\n"
@@ -34,11 +34,15 @@ except ImportError:
     )
 
 from cuddlytoddly.core.events import (
+    ADD_DEPENDENCY,
+    ADD_NODE,
+    REMOVE_DEPENDENCY,
+    REMOVE_NODE,
+    RESET_NODE,
+    SET_RESULT,
+    UPDATE_METADATA,
+    UPDATE_STATUS,
     Event,
-    ADD_NODE, REMOVE_NODE,
-    ADD_DEPENDENCY, REMOVE_DEPENDENCY,
-    UPDATE_METADATA, UPDATE_STATUS,
-    SET_RESULT, RESET_NODE, RESET_SUBTREE,
 )
 from cuddlytoddly.infra.logging import get_logger
 
@@ -580,8 +584,8 @@ def _create_unified_app(
         if init_fn is None:
             return {"ok": False, "error": "No init_fn configured"}
 
-        from cuddlytoddly.ui.startup import StartupChoice, parse_manual_plan
         from cuddlytoddly.__main__ import make_run_dir
+        from cuddlytoddly.ui.startup import StartupChoice, parse_manual_plan
 
         mode      = body.get("mode", "new_goal")
         goal_text = body.get("goal_text", "").strip()
@@ -662,8 +666,8 @@ def _create_unified_app(
         if init_fn is None:
             return {"ok": False, "error": "No init_fn configured"}
 
-        from cuddlytoddly.ui.startup import StartupChoice, parse_manual_plan
         from cuddlytoddly.__main__ import make_run_dir
+        from cuddlytoddly.ui.startup import StartupChoice, parse_manual_plan
 
         mode      = body.get("mode", "new_goal")
         goal_text = body.get("goal_text", "").strip()
@@ -956,4 +960,6 @@ def _create_unified_app(
             raise HTTPException(500, str(e))
 
     return app
+
+
 

@@ -1,15 +1,10 @@
 """Tests for cuddlytoddly.infra: EventLog, EventQueue, replay."""
-import json
 import threading
-import pytest
-from cuddlytoddly.core.events import Event, ADD_NODE, MARK_DONE
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.core.reducer import apply_event
+
+from cuddlytoddly.core.events import ADD_NODE, MARK_DONE, Event
 from cuddlytoddly.infra.event_log import EventLog
 from cuddlytoddly.infra.event_queue import EventQueue
 from cuddlytoddly.infra.replay import rebuild_graph_from_log
-from conftest import add_node, mark_done
-
 
 # ── EventLog ──────────────────────────────────────────────────────────────────
 
@@ -142,8 +137,10 @@ class TestEventQueue:
 
         t1 = threading.Thread(target=producer)
         t2 = threading.Thread(target=consumer)
-        t1.start(); t2.start()
-        t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
         assert len(received) == 50
 
 
@@ -219,3 +216,5 @@ class TestRebuildGraphFromLog:
         log = self._make_log(tmp_path, events)
         graph = rebuild_graph_from_log(log)
         assert "a" not in graph.nodes
+
+

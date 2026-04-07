@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+
 from cuddlytoddly.core.events import Event
 
 
@@ -53,3 +54,5 @@ class EventLog:
 
     def clear(self):
         self.path.write_text("", encoding="utf-8")
+
+

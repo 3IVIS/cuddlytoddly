@@ -1,9 +1,9 @@
 """Tests for cuddlytoddly.planning.llm_output_validator."""
-import pytest
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.core.events import ADD_NODE, ADD_DEPENDENCY
-from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
 from conftest import add_node
+
+from cuddlytoddly.core.events import ADD_DEPENDENCY, ADD_NODE
+from cuddlytoddly.core.task_graph import TaskGraph
+from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
 
 
 def make_validator(graph=None):
@@ -227,3 +227,5 @@ class TestTransitiveDeps:
         ]
         result = v.validate_and_normalize(events, "planning")
         assert result == []
+
+

@@ -1,13 +1,12 @@
 """Tests for cuddlytoddly.engine.quality_gate.QualityGate."""
 import json
 import os
-import pytest
 from unittest.mock import MagicMock
-from cuddlytoddly.engine.quality_gate import QualityGate
-from cuddlytoddly.planning.llm_interface import LLMStoppedError
-from cuddlytoddly.core.task_graph import TaskGraph
-from conftest import FakeLLM, add_node, mark_done
 
+from conftest import FakeLLM, add_node
+
+from cuddlytoddly.core.task_graph import TaskGraph
+from cuddlytoddly.engine.quality_gate import QualityGate
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -254,3 +253,5 @@ class TestCheckDependencies:
         snap = g.get_snapshot()
         gate.check_dependencies(g.nodes["task_1"], snap)
         assert any("upstream output data" in p for p in prompts)
+
+

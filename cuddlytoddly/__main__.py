@@ -1,36 +1,39 @@
 # __main__.py
 
-import sys
-import os
 import argparse
+import os
+import sys
 import threading
-
 from pathlib import Path
 
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.core.events import Event, ADD_NODE
+import cuddlytoddly.planning.llm_interface as llm_iface
+from cuddlytoddly.config import (
+    DATA_DIR,
+    get_executor_cfg,
+    get_file_llm_cfg,
+    get_orchestrator_cfg,
+    get_planner_cfg,
+    load_config,
+    preflight_check,
+    resolve_model_path,
+)
+from cuddlytoddly.core.events import ADD_NODE, Event
+from cuddlytoddly.core.id_generator import StableIDGenerator
 from cuddlytoddly.core.reducer import apply_event
-from cuddlytoddly.infra.event_queue import EventQueue
-from cuddlytoddly.infra.event_log import EventLog
-from cuddlytoddly.infra.replay import rebuild_graph_from_log
-from cuddlytoddly.infra.logging import setup_logging, get_logger
-from cuddlytoddly.planning.llm_interface import create_llm_client
-from cuddlytoddly.planning.llm_planner import LLMPlanner
-from cuddlytoddly.planning.llm_executor import LLMExecutor
-from cuddlytoddly.engine.quality_gate import QualityGate
+from cuddlytoddly.core.task_graph import TaskGraph
 from cuddlytoddly.engine.llm_orchestrator import Orchestrator
+from cuddlytoddly.engine.quality_gate import QualityGate
+from cuddlytoddly.infra.event_log import EventLog
+from cuddlytoddly.infra.event_queue import EventQueue
+from cuddlytoddly.infra.logging import get_logger, setup_logging
+from cuddlytoddly.infra.replay import rebuild_graph_from_log
+from cuddlytoddly.planning.llm_executor import LLMExecutor
+from cuddlytoddly.planning.llm_interface import create_llm_client, token_counter
+from cuddlytoddly.planning.llm_planner import LLMPlanner
 from cuddlytoddly.skills.skill_loader import SkillLoader
 from cuddlytoddly.ui.curses_ui import run_ui
-from cuddlytoddly.ui.startup import StartupChoice
-from cuddlytoddly.ui.startup import run_startup_curses
+from cuddlytoddly.ui.startup import StartupChoice, run_startup_curses
 from cuddlytoddly.ui.web_server import run_web_ui
-from cuddlytoddly.core.id_generator import StableIDGenerator
-from cuddlytoddly.config import (
-    load_config, DATA_DIR, resolve_model_path, preflight_check,
-    get_executor_cfg, get_planner_cfg, get_orchestrator_cfg, get_file_llm_cfg,
-)
-import cuddlytoddly.planning.llm_interface as llm_iface
-from cuddlytoddly.planning.llm_interface import create_llm_client, token_counter
 
 REPO_ROOT = Path(__file__).resolve().parent   # package code location
 
@@ -511,4 +514,6 @@ def _build_llm_client(cfg: dict, run_dir: Path):
 
 if __name__ == "__main__":
     main()
+
+
 

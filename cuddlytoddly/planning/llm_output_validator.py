@@ -1,4 +1,4 @@
-from cuddlytoddly.core.events import ADD_NODE, ADD_DEPENDENCY
+from cuddlytoddly.core.events import ADD_DEPENDENCY, ADD_NODE
 from cuddlytoddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
@@ -238,3 +238,4 @@ class LLMOutputValidator:
         )
 
         return safe_events
+

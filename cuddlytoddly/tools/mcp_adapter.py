@@ -41,9 +41,12 @@
 import asyncio
 import json
 from typing import Any
-from cuddlytoddly.infra.logging import get_logger
-from mcp.client.stdio import stdio_client
+
 from mcp import ClientSession
+from mcp.client.stdio import stdio_client
+
+from cuddlytoddly.infra.logging import get_logger
+
 logger = get_logger(__name__)
 
 
@@ -126,9 +129,7 @@ class MCPAdapter:
         into the server via a fresh async session (one call per invocation).
         """
         try:
-            from mcp import StdioServerParameters
-            from mcp.client.stdio import stdio_client
-            import mcp.types as mcp_types
+            import mcp  # noqa: F401
         except ImportError as e:
             raise ImportError("mcp is not installed. Run: pip install mcp") from e
 
@@ -198,3 +199,4 @@ class MCPAdapter:
             for tool in sub.tools.values():
                 merged.register(tool)
         return merged
+

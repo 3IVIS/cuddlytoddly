@@ -1,6 +1,7 @@
 # skills/web_research/tools.py
 
 import re
+
 from cuddlytoddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
@@ -206,3 +207,4 @@ TOOLS = {
         "fn": _fetch_url,
     },
 }
+

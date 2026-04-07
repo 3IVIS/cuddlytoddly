@@ -1,6 +1,24 @@
 from copy import deepcopy
-from cuddlytoddly.core.events import *
-# MARK_AWAITING_INPUT and RESUME_NODE are imported via the wildcard above
+
+from cuddlytoddly.core.events import (
+    ADD_DEPENDENCY,
+    ADD_NODE,
+    DETACH_NODE,
+    MARK_AWAITING_INPUT,
+    MARK_DONE,
+    MARK_FAILED,
+    MARK_RUNNING,
+    REMOVE_DEPENDENCY,
+    REMOVE_NODE,
+    RESET_NODE,
+    RESET_SUBTREE,
+    RESUME_NODE,
+    SET_NODE_TYPE,
+    SET_RESULT,
+    UPDATE_METADATA,
+    UPDATE_STATUS,
+    Event,
+)
 from cuddlytoddly.core.task_graph import TaskGraph
 
 STRUCTURAL_EVENTS = {
@@ -144,5 +162,7 @@ def apply_event(graph: TaskGraph, event: Event, event_log=None):
 
     if event_log:
         event_log.append(event)
+
+
 
 

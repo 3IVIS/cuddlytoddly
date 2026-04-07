@@ -2,10 +2,10 @@
 
 import json
 
-from cuddlytoddly.core.events import ADD_NODE, ADD_DEPENDENCY
-from cuddlytoddly.planning.schemas import GHOST_NODE_RESOLUTION_SCHEMA
-from cuddlytoddly.planning.prompts import build_ghost_node_resolution_prompt
+from cuddlytoddly.core.events import ADD_DEPENDENCY, ADD_NODE
 from cuddlytoddly.infra.logging import get_logger
+from cuddlytoddly.planning.prompts import build_ghost_node_resolution_prompt
+from cuddlytoddly.planning.schemas import GHOST_NODE_RESOLUTION_SCHEMA
 
 logger = get_logger(__name__)
 
@@ -400,3 +400,4 @@ class PlanConstraintChecker:
                         ancestors.add(dep)
                         queue.append(dep)
         return ancestors
+

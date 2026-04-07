@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 import threading
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -31,20 +31,19 @@ from typing import Any
 from cuddlytoddly.core.id_generator import StableIDGenerator
 from cuddlytoddly.infra.logging import get_logger
 
-# Re-export schemas so existing callers that imported them from here continue to work.
-from cuddlytoddly.planning.schemas import (   # noqa: F401  (public re-exports)
-    EVENT_LIST_SCHEMA,
-    PLAN_SCHEMA,
-    GOAL_SUMMARY_SCHEMA,
-    REFINER_OUTPUT_SCHEMA,
-    EXECUTION_TURN_SCHEMA,
-    RESULT_VERIFICATION_SCHEMA,
-    DEPENDENCY_CHECK_SCHEMA,
-)
-
 # System prompt text is owned by prompts.py.
-from cuddlytoddly.planning.prompts import LLM_SYSTEM_PROMPT, LLAMACPP_SYSTEM_PROMPT
+from cuddlytoddly.planning.prompts import LLAMACPP_SYSTEM_PROMPT, LLM_SYSTEM_PROMPT
 
+# Re-export schemas so existing callers that imported them from here continue to work.
+from cuddlytoddly.planning.schemas import (  # noqa: F401  (public re-exports)
+    DEPENDENCY_CHECK_SCHEMA,
+    EVENT_LIST_SCHEMA,
+    EXECUTION_TURN_SCHEMA,
+    GOAL_SUMMARY_SCHEMA,
+    PLAN_SCHEMA,
+    REFINER_OUTPUT_SCHEMA,
+    RESULT_VERIFICATION_SCHEMA,
+)
 
 # ---------------------------------------------------------------------------
 # Token counter
@@ -269,7 +268,7 @@ class FileBasedLLM(BaseLLM):
                     if line.startswith("id:"):
                         if current_id == prompt_id and block_lines:
                             response_text = "\n".join(
-                                l for l in block_lines if l.strip()
+                                ln for ln in block_lines if ln.strip()
                             )
                             logger.info("[LLM] Response matched id=%s", prompt_id)
                             return response_text
@@ -280,7 +279,7 @@ class FileBasedLLM(BaseLLM):
 
                 # last block
                 if current_id == prompt_id and block_lines:
-                    response_text = "\n".join(l for l in block_lines if l.strip())
+                    response_text = "\n".join(ln for ln in block_lines if ln.strip())
                     logger.info("[LLM] Response matched id=%s (last block)", prompt_id)
                     return response_text
             else:
@@ -815,7 +814,7 @@ class ApiLLM(BaseLLM):
         schema_str = json.dumps(schema, indent=2)
         return (
             prompt
-            + f"\n\nYou MUST respond with JSON that strictly conforms to this schema:\n"
+            + "\n\nYou MUST respond with JSON that strictly conforms to this schema:\n"
             + f"```json\n{schema_str}\n```\n"
             + "Respond with valid JSON only. No explanation, no markdown fences."
         )
@@ -983,3 +982,4 @@ def create_llm_client(backend: str = "file", **kwargs) -> BaseLLM:
             f"Unknown backend '{backend}'. "
             "Valid options: 'file', 'llamacpp', 'openai', 'claude'."
         )
+

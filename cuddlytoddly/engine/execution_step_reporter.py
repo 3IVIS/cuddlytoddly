@@ -1,11 +1,16 @@
 # engine/execution_step_reporter.py
 
-import time
 from datetime import datetime, timezone
+
 from cuddlytoddly.core.events import (
-    Event, ADD_NODE, UPDATE_METADATA, MARK_RUNNING, 
-    MARK_DONE, MARK_FAILED, REMOVE_DEPENDENCY,
-    ADD_DEPENDENCY
+    ADD_DEPENDENCY,
+    ADD_NODE,
+    MARK_DONE,
+    MARK_FAILED,
+    MARK_RUNNING,
+    REMOVE_DEPENDENCY,
+    UPDATE_METADATA,
+    Event,
 )
 from cuddlytoddly.infra.logging import get_logger
 
@@ -174,7 +179,6 @@ class ExecutionStepReporter:
 
         with self._graph_lock:
             # Fetch current attempts and append
-            from cuddlytoddly.core.task_graph import TaskGraph   # avoid circular at module level
             node = self._get_live_node(step_id)
             existing_attempts = node.metadata.get("attempts", []) if node else []
             updated_attempts  = existing_attempts + [attempt]
@@ -253,4 +257,6 @@ class ExecutionStepReporter:
     def _get_live_node(self, node_id: str):
         """Must be called with graph_lock held."""
         return self._graph.nodes.get(node_id)
+
+
 

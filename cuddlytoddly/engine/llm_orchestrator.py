@@ -3,21 +3,29 @@
 import json
 import threading
 import time
-import os
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
 from cuddlytoddly.core.events import (
+    ADD_DEPENDENCY,
+    ADD_NODE,
+    MARK_DONE,
+    MARK_FAILED,
+    MARK_RUNNING,
+    REMOVE_DEPENDENCY,
+    REMOVE_NODE,
+    RESET_NODE,
+    RESUME_NODE,
+    SET_NODE_TYPE,
+    SET_RESULT,
+    UPDATE_METADATA,
     Event,
-    ADD_NODE, ADD_DEPENDENCY, REMOVE_DEPENDENCY, UPDATE_METADATA,
-    MARK_RUNNING, MARK_DONE, MARK_FAILED, REMOVE_NODE, RESET_NODE,
-    SET_NODE_TYPE, SET_RESULT, MARK_AWAITING_INPUT, RESUME_NODE,
 )
 from cuddlytoddly.core.reducer import apply_event
+from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
 from cuddlytoddly.infra.event_queue import EventQueue
 from cuddlytoddly.infra.logging import get_logger
-from cuddlytoddly.planning.llm_interface import LLMStoppedError, BaseLLM, token_counter
-from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
+from cuddlytoddly.planning.llm_interface import BaseLLM, token_counter
 
 logger = get_logger(__name__)
 
@@ -1093,3 +1101,4 @@ class Orchestrator:
                 n.status in ("done", "failed")
                 for n in self.graph.nodes.values()
             )
+

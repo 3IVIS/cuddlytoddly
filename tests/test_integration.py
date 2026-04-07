@@ -4,22 +4,20 @@ Integration tests: end-to-end flows through multiple components.
 These tests wire together real components (graph, reducer, event log,
 validator, planner stub) rather than individual units.
 """
-import json
-import time
 import threading
-import pytest
+import time
 from unittest.mock import MagicMock
 
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.core.events import Event, ADD_NODE, MARK_DONE
+from conftest import add_node
+
+from cuddlytoddly.core.events import ADD_NODE, MARK_DONE, Event
 from cuddlytoddly.core.reducer import apply_event
+from cuddlytoddly.core.task_graph import TaskGraph
+from cuddlytoddly.engine.llm_orchestrator import Orchestrator
 from cuddlytoddly.infra.event_log import EventLog
 from cuddlytoddly.infra.event_queue import EventQueue
 from cuddlytoddly.infra.replay import rebuild_graph_from_log
 from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
-from cuddlytoddly.engine.llm_orchestrator import Orchestrator
-from conftest import FakeLLM, add_node, mark_done
-
 
 # ── Crash-and-resume ──────────────────────────────────────────────────────────
 
@@ -284,3 +282,5 @@ class TestPlannerExecutorStub:
         orch.stop()
         assert "generated_task" in g.nodes
         assert g.nodes["generated_task"].status == "done"
+
+

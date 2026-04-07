@@ -2,21 +2,25 @@
 
 import json
 
-from cuddlytoddly.core.events import ADD_NODE, ADD_DEPENDENCY, SET_RESULT, UPDATE_METADATA
-from cuddlytoddly.planning.schemas import (
-    PLAN_SCHEMA,
-    CLARIFICATION_GENERATION_SCHEMA,
+from cuddlytoddly.core.events import (
+    ADD_DEPENDENCY,
+    ADD_NODE,
+    SET_RESULT,
 )
-from cuddlytoddly.planning.prompts import (
-    build_planner_prompt,
-    build_planner_skills_block,
-    build_plan_scrutinizer_prompt,
-    build_clarification_prompt,
-    build_clarification_context_block,
-)
+from cuddlytoddly.infra.logging import get_logger
 from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
 from cuddlytoddly.planning.plan_constraint_checker import PlanConstraintChecker
-from cuddlytoddly.infra.logging import get_logger
+from cuddlytoddly.planning.prompts import (
+    build_clarification_context_block,
+    build_clarification_prompt,
+    build_plan_scrutinizer_prompt,
+    build_planner_prompt,
+    build_planner_skills_block,
+)
+from cuddlytoddly.planning.schemas import (
+    CLARIFICATION_GENERATION_SCHEMA,
+    PLAN_SCHEMA,
+)
 
 logger = get_logger(__name__)
 
@@ -453,3 +457,4 @@ class LLMPlanner:
             normalized.append(item)
 
         return normalized
+

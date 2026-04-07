@@ -1,16 +1,24 @@
 """Tests for cuddlytoddly.core.events and cuddlytoddly.core.reducer."""
-import pytest
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.core.events import (
-    Event,
-    ADD_NODE, REMOVE_NODE, ADD_DEPENDENCY, REMOVE_DEPENDENCY,
-    MARK_RUNNING, MARK_DONE, MARK_FAILED, RESET_NODE,
-    UPDATE_METADATA, DETACH_NODE, UPDATE_STATUS, SET_RESULT,
-    SET_NODE_TYPE, RESET_SUBTREE,
-)
-from cuddlytoddly.core.reducer import apply_event
 from conftest import add_node, mark_done
 
+from cuddlytoddly.core.events import (
+    ADD_DEPENDENCY,
+    ADD_NODE,
+    DETACH_NODE,
+    MARK_DONE,
+    MARK_FAILED,
+    MARK_RUNNING,
+    REMOVE_DEPENDENCY,
+    REMOVE_NODE,
+    RESET_NODE,
+    SET_NODE_TYPE,
+    SET_RESULT,
+    UPDATE_METADATA,
+    UPDATE_STATUS,
+    Event,
+)
+from cuddlytoddly.core.reducer import apply_event
+from cuddlytoddly.core.task_graph import TaskGraph
 
 # ── Event serialization ───────────────────────────────────────────────────────
 
@@ -246,3 +254,5 @@ class TestReducerEventLog:
             "dependencies": [], "metadata": {},
         }), event_log=None)
         assert "a" in g.nodes
+
+

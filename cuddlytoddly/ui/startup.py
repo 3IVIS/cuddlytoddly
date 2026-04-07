@@ -16,7 +16,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-
+from typing import NamedTuple
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -30,7 +30,6 @@ class StartupChoice:
     plan_events: list = field(default_factory=list)
     is_fresh:    bool = True
 
-from typing import NamedTuple
 
 class RunInfo(NamedTuple):
     name:       str
@@ -586,3 +585,4 @@ def build_manual_plan_events(goal_id: str, goal_text: str, tasks: list) -> list:
         })
 
     return events
+

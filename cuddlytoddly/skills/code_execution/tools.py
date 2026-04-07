@@ -1,7 +1,7 @@
 # skills/code_execution/tools.py
 
 import subprocess
-import sys
+
 from cuddlytoddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
@@ -25,7 +25,8 @@ def _run_python(args):
     except SyntaxError:
         pass
 
-    import io, contextlib
+    import contextlib
+    import io
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         exec(code, {"__builtins__": __builtins__})
@@ -63,3 +64,5 @@ TOOLS = {
         "fn": _run_shell,
     },
 }
+
+

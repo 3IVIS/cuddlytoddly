@@ -1,13 +1,15 @@
 """Tests for cuddlytoddly.ui.startup: parse_manual_plan, scan_runs, StartupChoice."""
 import json
 import time
-import pytest
 from pathlib import Path
-from cuddlytoddly.ui.startup import (
-    parse_manual_plan, scan_runs, StartupChoice, build_manual_plan_events,
-)
-from cuddlytoddly.core.events import ADD_NODE, ADD_DEPENDENCY
 
+from cuddlytoddly.core.events import ADD_DEPENDENCY, ADD_NODE
+from cuddlytoddly.ui.startup import (
+    StartupChoice,
+    build_manual_plan_events,
+    parse_manual_plan,
+    scan_runs,
+)
 
 # ── parse_manual_plan ─────────────────────────────────────────────────────────
 
@@ -275,3 +277,5 @@ class TestBuildManualPlanEvents:
         node_events = [e for e in events if e["type"] == ADD_NODE]
         assert len(node_events) == 1  # just the goal
         assert node_events[0]["payload"]["node_id"] == "g"
+
+

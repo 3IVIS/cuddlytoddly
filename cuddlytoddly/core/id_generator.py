@@ -1,7 +1,7 @@
 # core/id_generator.py
 import hashlib
-import string
 import json
+import string
 from pathlib import Path
 from typing import Dict
 
@@ -76,3 +76,5 @@ class StableIDGenerator:
         self._save_mapping()
 
         return short_id
+
+

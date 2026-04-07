@@ -10,39 +10,33 @@ Design:
 """
 
 import curses
-import subprocess
-import re
-import time
-import sys
-
-from collections import deque, defaultdict
-from cuddlytoddly.core.reducer import apply_event
-from cuddlytoddly.ui.git_projection import (
-    rebuild_repo_from_graph,
-    graph_to_dag,
-)
-import textwrap
-import logging
 import hashlib
+import logging
+import re
+import subprocess
+import sys
+import textwrap
+import time
+from collections import defaultdict, deque
+from pathlib import Path
 
-from collections import deque
-
+import cuddlytoddly.ui.git_projection as git_proj
 from cuddlytoddly.core.events import (
-    Event,
-    ADD_NODE,
-    REMOVE_NODE,
     ADD_DEPENDENCY,
+    ADD_NODE,
     REMOVE_DEPENDENCY,
+    REMOVE_NODE,
+    RESET_NODE,
+    SET_RESULT,
     UPDATE_METADATA,
     UPDATE_STATUS,
-    SET_RESULT,
-    RESET_NODE,
-    RESET_SUBTREE
+    Event,
 )
-
 from cuddlytoddly.infra.logging import get_logger
-from pathlib import Path
-import cuddlytoddly.ui.git_projection as git_proj
+from cuddlytoddly.ui.git_projection import (
+    graph_to_dag,
+    rebuild_repo_from_graph,
+)
 
 logger = get_logger(__name__)
 
@@ -617,7 +611,6 @@ class Modal:
 
             # Autocomplete dropdown
             if is_active and field.completions:
-                token = field._current_token()
                 matches = field._dd_matches()
                 if matches:
                     for j, m in enumerate(matches):
@@ -1649,7 +1642,6 @@ def run_ui(
             restart_fn=_init_system,   # callable(StartupChoice) -> (orch, run_dir)
         )
     """
-    import sys
     root = logging.getLogger("dag")
     ch   = getattr(root, "_stderr_handler", None)
     if ch:
@@ -1711,3 +1703,4 @@ def run_ui(
         log_file.close()
         if ch:
             root.addHandler(ch)
+

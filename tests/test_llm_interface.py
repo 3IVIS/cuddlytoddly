@@ -1,13 +1,17 @@
 """Tests for cuddlytoddly.planning.llm_interface (LLM base + API layer)."""
 import json
 import threading
-import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
-from cuddlytoddly.planning.llm_interface import (
-    LLMStoppedError, BaseLLM, TokenCounter,
-    FileBasedLLM, LlamaCppCache, create_llm_client,
-)
 
+import pytest
+
+from cuddlytoddly.planning.llm_interface import (
+    BaseLLM,
+    FileBasedLLM,
+    LlamaCppCache,
+    LLMStoppedError,
+    TokenCounter,
+    create_llm_client,
+)
 
 # ── TokenCounter ──────────────────────────────────────────────────────────────
 
@@ -253,3 +257,5 @@ class TestApiLLMHelpers:
     def test_unknown_provider_raises(self):
         with pytest.raises(ValueError, match="Unknown provider"):
             self.ApiLLM(provider="google")
+
+
