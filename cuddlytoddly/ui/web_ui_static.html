@@ -149,7 +149,6 @@ body {
   stroke: var(--border2);
   stroke-width: 1.5;
   marker-end: url(#arrowhead);
-  transition: stroke 0.3s;
 }
 
 /* ── Zoom controls ───────────────────────────────────────────────────── */
@@ -569,8 +568,11 @@ function renderDAG() {
   edges.enter().append('path').attr('class', 'edge-path')
     .merge(edges)
     .attr('d', d => line(d.points))
-    .attr('stroke', d => STATUS_COLOR_HEX[_src[d.v]?.status] || '#2e3f58')
-    .attr('stroke-opacity', d => _src[d.v]?.status === 'done' ? 0.35 : 0.55);
+    // Use style() rather than attr() for stroke so CSS inline styles
+    // (higher priority, always triggers repaint) are used — same reason
+    // as for .sbar and .tstatus on nodes.
+    .style('stroke', d => STATUS_COLOR_HEX[_src[d.v]?.status] || '#2e3f58')
+    .style('stroke-opacity', d => _src[d.v]?.status === 'done' ? 0.35 : 0.55);
   edges.exit().remove();
 
   // Nodes
@@ -623,7 +625,13 @@ function renderDAG() {
     .attr('stroke', d => d.id === selectedId ? '#6366f1' : 'transparent')
     .attr('stroke-opacity', d => d.id === selectedId ? 0.4 : 0);
 
-  merged.select('.sbar').attr('fill', d => STATUS_COLOR_HEX[d.node.status] || '#475569');
+  // Use style() rather than attr() for status-driven colours so that CSS
+  // inline styles (which have higher priority than SVG presentation attributes
+  // and always trigger a proper repaint) are used.  Also read the status
+  // directly from _src[d.id] rather than the datum's d.node.status reference
+  // so we always get the freshest value even if the datum is momentarily stale.
+  merged.select('.sbar')
+      .style('fill', d => STATUS_COLOR_HEX[_src[d.id]?.status || d.node.status] || '#475569');
 
   merged.select('.ticon')
     .attr('x', -NODE_W/2 + 14).attr('y', -NODE_H/2 + 20)
@@ -640,8 +648,8 @@ function renderDAG() {
   merged.select('.tstatus')
     .attr('x', -NODE_W/2 + 14).attr('y', -NODE_H/2 + 38)
     .attr('font-size', 10).attr('font-family', 'system-ui, sans-serif')
-    .attr('fill', d => STATUS_COLOR_HEX[d.node.status] || '#475569')
-    .text(d => d.node.status);
+    .style('fill', d => STATUS_COLOR_HEX[_src[d.id]?.status || d.node.status] || '#475569')
+    .text(d => _src[d.id]?.status || d.node.status);
 
   merged.select('.ttype')
     .attr('x', NODE_W/2 - 8).attr('y', -NODE_H/2 + 38)
