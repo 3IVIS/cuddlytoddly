@@ -376,7 +376,11 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         max_history_entries=exec_cfg["max_history_entries"],
     )
 
-    quality_gate = QualityGate(llm_client=shared_llm, tool_registry=registry)
+    quality_gate = QualityGate(
+        llm_client=shared_llm,
+        tool_registry=registry,
+        max_total_input_chars=exec_cfg["max_total_input_chars"],
+    )
 
     queue = EventQueue()
     orchestrator = Orchestrator(

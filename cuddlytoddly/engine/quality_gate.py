@@ -46,9 +46,10 @@ class QualityGate:
         }
     )
 
-    def __init__(self, llm_client, tool_registry=None):
+    def __init__(self, llm_client, tool_registry=None, max_total_input_chars: int = 3000):
         self.llm = llm_client
         self.tools = tool_registry
+        self.max_total_input_chars = max_total_input_chars
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -86,6 +87,7 @@ class QualityGate:
         unknown_fields_context = self._collect_unknown_fields(node, snapshot)
         tool_results_context = self._build_tool_results_context(node, snapshot)
         broadening_context = self._build_broadening_context(node)
+        upstream_results_context = self._build_upstream_results_context(node, snapshot)
 
         # ── LLM content check ─────────────────────────────────────────────────
         def _fmt(o):
@@ -102,6 +104,7 @@ class QualityGate:
             unknown_fields_context=unknown_fields_context,
             tool_results_context=tool_results_context,
             broadening_context=broadening_context,
+            upstream_results_context=upstream_results_context,
         )
 
         try:
@@ -302,6 +305,56 @@ class QualityGate:
             f"from the user's private information or a targeted search should cause "
             f"this result to be marked as not satisfied."
         )
+
+    def _build_upstream_results_context(self, node, snapshot) -> str:
+        """
+        Build a summary of the actual results produced by non-clarification
+        upstream task dependencies of this node.
+
+        The verifier uses this to distinguish between values that are legitimately
+        derived from upstream task outputs versus values that are fabricated from
+        the model's prior knowledge.  Without this context the verifier has no
+        way to know that specifics in the result (e.g. a car model name, a price)
+        came from a real upstream result rather than being hallucinated.
+
+        The character budget mirrors the executor: max_total_input_chars is split
+        evenly across all upstream deps so the verifier always sees the same data
+        as the executor prompt did.
+
+        Returns an empty string when there are no completed upstream task deps.
+        """
+        eligible = [
+            (dep_id, snapshot[dep_id])
+            for dep_id in node.dependencies
+            if (dep := snapshot.get(dep_id)) and dep.node_type != "clarification" and dep.result
+        ]
+
+        if not eligible:
+            return ""
+
+        # Mirror the executor's budget split: total chars divided evenly across
+        # all upstream deps so the verifier sees the same data as the executor.
+        per_dep_chars = self.max_total_input_chars // len(eligible)
+
+        lines = []
+        for dep_id, dep in eligible:
+            result_snippet = dep.result
+            if len(result_snippet) > per_dep_chars:
+                result_snippet = result_snippet[:per_dep_chars] + "…[truncated]"
+            declared = dep.metadata.get("output", [])
+            output_names = (
+                ", ".join(o["name"] for o in declared if isinstance(o, dict) and "name" in o)
+                if declared
+                else "unspecified"
+            )
+            lines.append(f"  [{dep_id}] (outputs: {output_names})\n    {result_snippet}")
+
+        header = (
+            "The following data was produced by upstream tasks and was available "
+            "to this task as input. Specific values in the result that match or "
+            "are directly derived from this data are NOT invented:"
+        )
+        return header + "\n" + "\n\n".join(lines)
 
     def _file_exists(self, path: str) -> bool:
         if self.tools and hasattr(self.tools, "execute"):

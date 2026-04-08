@@ -1,4 +1,4 @@
-# cuddlytoddly
+# [cuddlytoddly](https://cuddlytoddly.com)
 
 *Holding AI's hand through planning and into execution.*
 

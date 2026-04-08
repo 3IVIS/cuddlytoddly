@@ -1,3 +1,5 @@
+# --- FILE: cuddlytoddly/planning/prompts.py ---
+
 # planning/prompts.py
 #
 # Single source of truth for every prompt template used by the LLM.
@@ -51,7 +53,6 @@ def build_executor_prompt(
     history_text: str,
     max_inline_result_chars: int,
     turns_remaining: int = 0,
-    prompt_version: str = "v3",
 ) -> str:
     """
     Build the prompt for a single executor turn.
@@ -71,7 +72,6 @@ def build_executor_prompt(
         else ""
     )
     return f"""\
-[prompt_version={prompt_version}]
 You are executing one task inside a larger automated plan.
 Your result will be stored and passed directly to downstream tasks as their input,
 so it must be self-contained, specific, and directly usable — not a summary or stub.
@@ -700,17 +700,22 @@ def build_verify_result_prompt(
     unknown_fields_context: str = "",
     tool_results_context: str = "",
     broadening_context: str = "",
+    upstream_results_context: str = "",
 ) -> str:
     """
     Prompt asking the LLM to verify whether a task result satisfies its declared outputs.
 
-    unknown_fields_context : optional block listing clarification fields that were
-                             unknown when the task ran.
-    tool_results_context   : optional factual summary of how the task's tool calls
-                             fared (all failed / partial / all succeeded).
-    broadening_context     : optional block indicating the task ran with a broadened
-                             description because specific inputs were unavailable.
-                             Tells the verifier to flag any invented specifics.
+    unknown_fields_context   : optional block listing clarification fields that were
+                               unknown when the task ran.
+    tool_results_context     : optional factual summary of how the task's tool calls
+                               fared (all failed / partial / all succeeded).
+    broadening_context       : optional block indicating the task ran with a broadened
+                               description because specific inputs were unavailable.
+                               Tells the verifier to flag any invented specifics.
+    upstream_results_context : optional block containing the actual results produced
+                               by upstream task dependencies.  Tells the verifier which
+                               specific values were legitimately available as inputs so
+                               they are not mistakenly flagged as invented.
     """
     unknown_section = ""
     if unknown_fields_context:
@@ -733,6 +738,13 @@ def build_verify_result_prompt(
     {broadening_context}
 """
 
+    upstream_section = ""
+    if upstream_results_context:
+        upstream_section = f"""
+    UPSTREAM TASK RESULTS (data that was available as input to this task):
+    {upstream_results_context}
+"""
+
     return f"""You are verifying whether a task result satisfies its declared outputs.
 
     TASK
@@ -741,7 +753,7 @@ def build_verify_result_prompt(
 
     DECLARED OUTPUTS (what this task was supposed to produce):
     {outputs_text}
-    {unknown_section}{tool_section}{broadening_section}
+    {unknown_section}{tool_section}{broadening_section}{upstream_section}
     ACTUAL RESULT:
     {result}
 
@@ -764,6 +776,11 @@ def build_verify_result_prompt(
     invented values (exact percentages, named achievements, specific figures) that could
     only come from the user's private information or a successful targeted search, mark
     as not satisfied. Generic guidance without invented specifics is acceptable.
+
+    If UPSTREAM TASK RESULTS is present: specific values in the result that match or are
+    directly derived from that data are legitimate — they are not invented. Only flag
+    specifics as invented if they cannot be traced to the upstream data, clarification
+    fields, or a successful tool call.
 
     Respond only in JSON matching the schema.
 """
@@ -1112,7 +1129,12 @@ Respond only in JSON matching the schema.
 # ---------------------------------------------------------------------------
 
 
-def build_clarification_prompt(goal_text: str, skills_summary: str = "") -> str:
+def build_clarification_prompt(
+    goal_text: str,
+    skills_summary: str = "",
+    min_fields: int = 3,
+    max_fields: int = 8,
+) -> str:
     """
     Build the prompt for the first LLM call that generates the clarification
     node fields — structured context that would most improve the plan.
@@ -1127,6 +1149,8 @@ def build_clarification_prompt(goal_text: str, skills_summary: str = "") -> str:
                      prompt (from ``SkillLoader.prompt_summary``).  When
                      provided, the LLM is instructed not to ask the user for
                      information that those tools can retrieve autonomously.
+    min_fields     : Minimum number of fields to return (from config).
+    max_fields     : Maximum number of fields to return (from config).
     """
     tool_awareness_block = ""
     if skills_summary.strip():
@@ -1181,6 +1205,6 @@ Always include a final field with:
   value:    "unknown"
   rationale: "Free-form context that does not fit the fields above."
 
-Return between 3 and 8 fields total (including the additional_context field).
+Return between {min_fields} and {max_fields} fields total (including the additional_context field).
 Respond only in JSON matching the schema.
 """

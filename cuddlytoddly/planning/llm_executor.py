@@ -55,11 +55,6 @@ class AwaitingInputSignal:
     broadened_output: list = _dc_field(default_factory=list)
 
 
-# Version tag bumped when prompt semantics change significantly.
-# Kept as a code constant (not config) because it tracks internal compatibility.
-PROMPT_VERSION = "v3"
-
-
 class LLMExecutor:
     """
     Executes a ready task node by prompting the LLM with the node's
@@ -359,7 +354,6 @@ class LLMExecutor:
             history_text=history_text,
             max_inline_result_chars=self.max_inline_result_chars,
             turns_remaining=turns_remaining,
-            prompt_version=PROMPT_VERSION,
         )
 
     # ──────────────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 [project]
 name = "cuddlytoddly"
-version = "0.1.8"
+version = "0.1.9"
 description = "AI agent framework that builds an explicit, editable task graph before executing anything."
 readme = "README.md"
 license = { text = "MIT" }

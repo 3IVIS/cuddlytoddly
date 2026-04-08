@@ -222,7 +222,12 @@ class LLMPlanner:
         """
         # Pass skills_summary so the LLM knows which information tools can
         # fetch at runtime and avoids surfacing those as user-facing questions.
-        prompt = build_clarification_prompt(goal_text, skills_summary=self.skills_summary)
+        prompt = build_clarification_prompt(
+            goal_text,
+            skills_summary=self.skills_summary,
+            min_fields=self.min_tasks_per_goal,
+            max_fields=self.max_tasks_per_goal,
+        )
         logger.info("[PLANNER] Generating clarification node for goal %s", goal_id)
 
         try:

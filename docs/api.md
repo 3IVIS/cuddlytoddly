@@ -37,7 +37,7 @@ build_executor_prompt(
     *, node_id, description, retry_notice, extra_reminder,
     outputs_block, output_instruction, inputs_text,
     tools_text, history_text, max_inline_result_chars,
-    turns_remaining=0, prompt_version="v3"
+    turns_remaining=0, 
 ) -> str
 ```
 

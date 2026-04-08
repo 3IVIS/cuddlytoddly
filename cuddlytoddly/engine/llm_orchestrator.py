@@ -1,3 +1,5 @@
+# --- FILE: cuddlytoddly/engine/llm_orchestrator.py ---
+
 # engine/llm_orchestrator.py
 
 import json
@@ -542,6 +544,34 @@ class Orchestrator:
                         "[EXEC] Node %s executed with broadened description (missing: %s)",
                         node_id,
                         signal.broadened_for_missing,
+                    )
+        else:
+            # Node ran with its original description — clear any stale broadened
+            # metadata left over from a previous attempt that did run with
+            # broadening.  Without this, the quality-gate verifier would still
+            # see a BROADENED EXECUTION NOTICE and reject legitimate specific
+            # results as invented.
+            with self.graph_lock:
+                node = self.graph.nodes.get(node_id)
+                if node and node.metadata.get("broadened_description"):
+                    logger.info(
+                        "[EXEC] Node %s: clearing stale broadened metadata "
+                        "(node now runs with original description)",
+                        node_id,
+                    )
+                    self._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": node_id,
+                                "metadata": {
+                                    "broadened_description": "",
+                                    "broadened_for_missing": [],
+                                    "broadened_reason": "",
+                                    "broadened_output": [],
+                                },
+                            },
+                        )
                     )
 
         # ── Pre-flight: check file outputs ────────────────────────────────────

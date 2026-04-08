@@ -165,6 +165,8 @@ max_tool_result_chars = 2000
 # context per turn.  Older entries are dropped to keep prompts short.
 max_history_entries = 3
 
+
+
 # ── File-based LLM (development / testing only) ───────────────────────────────
 [file_llm]
 
