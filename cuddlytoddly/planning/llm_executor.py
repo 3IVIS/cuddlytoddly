@@ -211,6 +211,14 @@ class LLMExecutor:
                     "description": dep.metadata.get("description", dep_id),
                     "declared_output": _format_output_list(dep.metadata.get("output", [])),
                     "result": dep.result,
+                    # Names of outputs this dep declared — used by preflight to
+                    # avoid incorrectly flagging Category A required_inputs as
+                    # missing when they are satisfied by an upstream task result.
+                    "_output_names": [
+                        o["name"]
+                        for o in dep.metadata.get("output", [])
+                        if isinstance(o, dict) and "name" in o
+                    ],
                 }
             )
 
@@ -446,6 +454,15 @@ class LLMExecutor:
         all_clar_keys = {f.get("key") for f in known_fields + unknown_fields}
         required_inputs = node.metadata.get("required_input", [])
 
+        # Collect output names declared by completed upstream task nodes.
+        # These are Category A inputs — satisfied by a dependency result, not
+        # by a clarification field — and must NOT trigger the broadening path.
+        upstream_output_names: set[str] = set()
+        for entry in resolved_inputs:
+            if "_unknown_fields" in entry:
+                continue  # clarification node — handled via all_clar_keys
+            upstream_output_names.update(entry.get("_output_names", []))
+
         def _make_new_field(r: dict) -> dict:
             name = r.get("name", "")
             label = name.replace("_", " ").title()
@@ -459,7 +476,9 @@ class LLMExecutor:
         auto_new_fields = [
             _make_new_field(r)
             for r in required_inputs
-            if r.get("name") and r.get("name") not in all_clar_keys
+            if r.get("name")
+            and r.get("name") not in all_clar_keys
+            and r.get("name") not in upstream_output_names
         ]
 
         if auto_new_fields:

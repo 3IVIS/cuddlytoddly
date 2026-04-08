@@ -575,8 +575,8 @@ function renderDAG() {
 
   // Nodes
   const nodeLayer = svgG.select('.node-layer');
-  const nodeData = g.nodes().filter(id => nodes[id])
-    .map(id => ({ id, pos: g.node(id), node: nodes[id] }));
+  const nodeData = g.nodes().filter(id => _src[id])
+    .map(id => ({ id, pos: g.node(id), node: _src[id] }));
 
   const nodeGs = nodeLayer.selectAll('g.node-g').data(nodeData, d => d.id);
 

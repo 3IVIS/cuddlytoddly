@@ -1,14 +1,14 @@
 [project]
 name = "cuddlytoddly"
-version = "0.1.7"
-description = "LLM-driven autonomous DAG planning and execution system"
+version = "0.1.8"
+description = "AI agent framework that builds an explicit, editable task graph before executing anything."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [
     { name = "3IVIS GmbH" }
 ]
-keywords = ["llm", "dag", "planning", "autonomous", "agent"]
+keywords = ["llm", "agent", "planning", "dag", "orchestration", "ai", "claude", "openai"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
