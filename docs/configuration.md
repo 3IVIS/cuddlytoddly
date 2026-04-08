@@ -57,6 +57,32 @@ temperature = 0.1
 # Cache LLM responses to disk; speeds up resumed runs
 cache_enabled = true
 
+# ── Execution limits (llamacpp) ───────────────────────────────────────────────
+# Conservative limits suited to local inference: single-threaded, tight context.
+
+# Parallel task execution threads. Must stay at 1 — llama.cpp is not thread-safe.
+max_workers = 1
+
+# Maximum LLM turns per task node before marking it failed.
+max_turns = 5
+
+# Maximum tasks the planner generates per goal.
+max_tasks_per_goal = 8
+
+# Maximum characters a task result may contain before the executor asks the
+# LLM to write the content to a file instead of returning it inline.
+max_inline_result_chars = 3000
+
+# Total character budget shared across all upstream results included in a
+# single execution prompt. Budget is split evenly between dependencies.
+max_total_input_chars = 3000
+
+# Maximum characters from a single tool-call result before it is truncated.
+max_tool_result_chars = 2000
+
+# Number of most-recent tool-call entries kept in the executor's history per turn.
+max_history_entries = 3
+
 # ── Anthropic Claude (API) ────────────────────────────────────────────────────
 [claude]
 
@@ -68,6 +94,17 @@ max_tokens    = 8192
 # Cache API responses to disk; avoids re-sending identical prompts.
 # Cache file: <run_dir>/api_cache.json
 cache_enabled = true
+
+# ── Execution limits (claude) ─────────────────────────────────────────────────
+# Higher limits for remote API: large context windows, parallelisable calls.
+
+max_workers             = 4
+max_turns               = 10
+max_tasks_per_goal      = 15
+max_inline_result_chars = 12000
+max_total_input_chars   = 12000
+max_tool_result_chars   = 8000
+max_history_entries     = 10
 
 # ── OpenAI-compatible API ─────────────────────────────────────────────────────
 [openai]
@@ -85,15 +122,20 @@ cache_enabled = true
 # base_url = "https://api.together.xyz/v1"
 # api_key  = ""   # set here or via OPENAI_API_KEY
 
+# ── Execution limits (openai) ─────────────────────────────────────────────────
+# Higher limits for remote API: large context windows, parallelisable calls.
+
+max_workers             = 4
+max_turns               = 10
+max_tasks_per_goal      = 15
+max_inline_result_chars = 12000
+max_total_input_chars   = 12000
+max_tool_result_chars   = 8000
+max_history_entries     = 10
+
 # ── Orchestrator ──────────────────────────────────────────────────────────────
+# Backend-agnostic settings that apply regardless of which LLM is used.
 [orchestrator]
-
-# Parallel task execution threads.
-# Keep at 1 when backend = "llamacpp" — llama.cpp is not thread-safe.
-max_workers = 1
-
-# Maximum LLM turns per task node before marking it failed.
-max_turns = 5
 
 # Maximum times the orchestrator injects a bridge node for a single blocked
 # task before giving up and executing it anyway.
@@ -109,13 +151,11 @@ max_retries = 5
 idle_sleep = 0.5
 
 # ── Planner ───────────────────────────────────────────────────────────────────
+# Backend-agnostic settings. max_tasks_per_goal is set per-backend above.
 [planner]
 
-# Task count range the planner is instructed to stay within when decomposing
-# a goal. Increasing max_tasks_per_goal allows finer-grained plans; decreasing
-# it keeps plans coarser but faster to generate.
+# Minimum tasks the planner must generate per goal.
 min_tasks_per_goal = 3
-max_tasks_per_goal = 8
 
 # When true, every planning call is followed by a scrutinizing call where the
 # LLM reviews its own draft plan for content quality and realism — checking
@@ -130,27 +170,6 @@ max_tasks_per_goal = 8
 # Recommended: true for production goals where plan quality matters more than
 # speed; false for fast iteration or when using a slow/expensive model.
 scrutinize_plan = false
-
-# ── Executor ──────────────────────────────────────────────────────────────────
-[executor]
-
-# Maximum characters a task result may contain before the executor asks the
-# LLM to write the content to a file instead of returning it inline.
-# Increase if tasks routinely need to return large text blobs.
-max_inline_result_chars = 3000
-
-# Total character budget shared across all upstream results included in a
-# single execution prompt. Budget is split evenly between dependencies.
-# Increase if tasks need more context from upstream nodes.
-max_total_input_chars = 3000
-
-# Maximum characters from a single tool-call result before it is truncated.
-# Tools that return large outputs (e.g. web pages) are clipped to this length.
-max_tool_result_chars = 2000
-
-# Number of most-recent tool-call entries kept in the executor's history per
-# turn. Older entries are dropped to keep prompts short.
-max_history_entries = 3
 
 # ── File-based LLM (development / testing only) ───────────────────────────────
 [file_llm]
@@ -168,6 +187,15 @@ progress_log_interval = 2
 # Cache file: <run_dir>/file_llm_cache.json
 cache_enabled = true
 
+# Execution limits — same conservative defaults as llamacpp.
+max_workers             = 1
+max_turns               = 5
+max_tasks_per_goal      = 8
+max_inline_result_chars = 3000
+max_total_input_chars   = 3000
+max_tool_result_chars   = 2000
+max_history_entries     = 3
+
 # ── Web / terminal server ─────────────────────────────────────────────────────
 [server]
 
@@ -182,13 +210,14 @@ port = 8765
 | Section | Tunes |
 |---|---|
 | `[llm]` | Which backend is active |
-| `[llamacpp]` | Local model file, GPU offload, context size, temperature, caching |
-| `[claude]` / `[openai]` | Remote model name, temperature, token limit, caching |
-| `[orchestrator]` | Parallelism, turn limits, retry cap, gap-fill retries, idle polling rate |
-| `[planner]` | Task count range per goal decomposition; optional scrutiny pass |
-| `[executor]` | Character budgets for inputs, tool results, and inline results |
-| `[file_llm]` | Polling, timeout, and caching for the file-based development backend |
+| `[llamacpp]` | Local model file, GPU offload, context size, temperature, caching, **and all execution limits** |
+| `[claude]` / `[openai]` | Remote model name, temperature, token limit, caching, **and all execution limits** |
+| `[file_llm]` | Polling, timeout, caching, and execution limits for the file-based development backend |
+| `[orchestrator]` | Backend-agnostic settings: gap-fill retries, verification retry cap, idle polling rate |
+| `[planner]` | Backend-agnostic settings: minimum task count per goal, optional scrutiny pass |
 | `[server]` | Host and port for the web UI |
+
+Execution limits (`max_workers`, `max_turns`, `max_tasks_per_goal`, `max_inline_result_chars`, `max_total_input_chars`, `max_tool_result_chars`, `max_history_entries`) live in the active backend's section so their values are always visible alongside the model settings they apply to.
 
 ---
 
@@ -300,11 +329,10 @@ cache_enabled = false
 
 ### Tasks feel too coarse / too granular
 
-Adjust `[planner] min_tasks_per_goal` and `max_tasks_per_goal`. The planner prompt instructs the LLM to stay within this range.
+Adjust `max_tasks_per_goal` in your active backend's section. The planner prompt instructs the LLM to stay within this range.
 
 ```toml
-[planner]
-min_tasks_per_goal = 4
+[claude]   # or [openai] / [llamacpp] depending on your backend
 max_tasks_per_goal = 12
 ```
 
@@ -321,29 +349,29 @@ This adds one LLM call per planning cycle. If you are using a slow or expensive 
 
 ### Tasks hit the turn limit before finishing
 
-Raise `[orchestrator] max_turns`. This allows the executor more LLM iterations per task before it is marked failed.
+Raise `max_turns` in your active backend's section. This allows the executor more LLM iterations per task before it is marked failed.
 
 ```toml
-[orchestrator]
-max_turns = 10
+[claude]   # or [openai] / [llamacpp] depending on your backend
+max_turns = 15
 ```
 
 ### Upstream context is being truncated
 
-Raise `[executor] max_total_input_chars` to give tasks more of their upstream results. Note that larger values mean larger prompts and higher token costs.
+Raise `max_total_input_chars` in your active backend's section to give tasks more of their upstream results. Note that larger values mean larger prompts and higher token costs.
 
 ```toml
-[executor]
-max_total_input_chars = 6000
+[claude]   # or [openai] / [llamacpp] depending on your backend
+max_total_input_chars = 20000
 ```
 
 ### Tool results are cut off
 
-Raise `[executor] max_tool_result_chars` if tools that return long text (web fetches, file reads) are being truncated too aggressively.
+Raise `max_tool_result_chars` in your active backend's section if tools that return long text (web fetches, file reads) are being truncated too aggressively.
 
 ```toml
-[executor]
-max_tool_result_chars = 4000
+[claude]   # or [openai] / [llamacpp] depending on your backend
+max_tool_result_chars = 12000
 ```
 
 ### Gap-fill bridge nodes keep being injected

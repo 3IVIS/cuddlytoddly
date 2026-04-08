@@ -85,70 +85,18 @@ temperature = 0.1
 # Cache LLM responses to disk; speeds up resumed runs
 cache_enabled = true
 
-# ── Anthropic Claude (API) ────────────────────────────────────────────────────
-[claude]
-
-# Requires the ANTHROPIC_API_KEY environment variable.
-model         = "claude-opus-4-6"
-temperature   = 0.1
-max_tokens    = 8192
-
-# Cache API responses to disk; avoids re-sending identical prompts
-cache_enabled = true
-
-# ── OpenAI-compatible API ─────────────────────────────────────────────────────
-[openai]
-
-# Requires the OPENAI_API_KEY environment variable (or api_key below).
-model         = "gpt-4o"
-temperature   = 0.1
-max_tokens    = 8192
-
-# Cache API responses to disk; avoids re-sending identical prompts
-cache_enabled = true
-
-# Uncomment for OpenAI-compatible providers (Together, Groq, Mistral, etc.)
-# base_url = "https://api.together.xyz/v1"
-# api_key  = ""   # set here or via OPENAI_API_KEY
-
-# ── Orchestrator ──────────────────────────────────────────────────────────────
-[orchestrator]
+# ── Execution limits (llamacpp) ───────────────────────────────────────────────
+# Conservative limits for local inference: single-threaded, tight context window.
 
 # Parallel task execution threads.
-# Keep at 1 when backend = "llamacpp" — llama.cpp is not thread-safe.
+# Must stay at 1 — llama.cpp is not thread-safe.
 max_workers = 1
 
-# Maximum LLM turns per task node before marking it failed
+# Maximum LLM turns per task node before marking it failed.
 max_turns = 5
 
-# Maximum times the orchestrator injects a bridge node for a single blocked
-# task before giving up and executing it anyway.
-max_gap_fill_attempts = 2
-
-# Maximum verification failures before a node is permanently failed instead
-# of being reset and retried.  Each retry waits an exponentially increasing
-# backoff (1s, 2s, 4s … capped at 60s) before re-launching.
-max_retries = 5
-
-# Seconds the orchestrator loop sleeps when idle (no planning or execution work).
-idle_sleep = 0.5
-
-# ── Planner ───────────────────────────────────────────────────────────────────
-[planner]
-
-# Task count guidelines per goal decomposition.
-# The planner prompt instructs the LLM to stay within this range.
-min_tasks_per_goal = 3
+# Maximum tasks the planner generates per goal.
 max_tasks_per_goal = 8
-
-# When true, every planning call is followed by a scrutinizing call where the
-# LLM reviews its own plan against all original constraints and produces an
-# improved version.  The improved plan is what reaches the reducer.
-# Set to false to skip scrutiny and use the raw plan directly (faster, cheaper).
-scrutinize_plan = true
-
-# ── Executor ──────────────────────────────────────────────────────────────────
-[executor]
 
 # Maximum characters a task result may contain before the executor asks the
 # LLM to write the content to a file instead of returning it inline.
@@ -165,7 +113,83 @@ max_tool_result_chars = 2000
 # context per turn.  Older entries are dropped to keep prompts short.
 max_history_entries = 3
 
+# ── Anthropic Claude (API) ────────────────────────────────────────────────────
+[claude]
 
+# Requires the ANTHROPIC_API_KEY environment variable.
+model         = "claude-opus-4-6"
+temperature   = 0.1
+max_tokens    = 8192
+
+# Cache API responses to disk; avoids re-sending identical prompts
+cache_enabled = true
+
+# ── Execution limits (claude) ─────────────────────────────────────────────────
+# Higher limits for remote API: large context windows, parallelisable calls.
+
+max_workers             = 4
+max_turns               = 10
+max_tasks_per_goal      = 15
+max_inline_result_chars = 12000
+max_total_input_chars   = 12000
+max_tool_result_chars   = 8000
+max_history_entries     = 10
+
+# ── OpenAI-compatible API ─────────────────────────────────────────────────────
+[openai]
+
+# Requires the OPENAI_API_KEY environment variable (or api_key below).
+model         = "gpt-4o"
+temperature   = 0.1
+max_tokens    = 8192
+
+# Cache API responses to disk; avoids re-sending identical prompts
+cache_enabled = true
+
+# Uncomment for OpenAI-compatible providers (Together, Groq, Mistral, etc.)
+# base_url = "https://api.together.xyz/v1"
+# api_key  = ""   # set here or via OPENAI_API_KEY
+
+# ── Execution limits (openai) ─────────────────────────────────────────────────
+# Higher limits for remote API: large context windows, parallelisable calls.
+
+max_workers             = 4
+max_turns               = 10
+max_tasks_per_goal      = 15
+max_inline_result_chars = 12000
+max_total_input_chars   = 12000
+max_tool_result_chars   = 8000
+max_history_entries     = 10
+
+# ── Orchestrator ──────────────────────────────────────────────────────────────
+# These settings are backend-agnostic and apply regardless of which LLM is used.
+[orchestrator]
+
+# Maximum times the orchestrator injects a bridge node for a single blocked
+# task before giving up and executing it anyway.
+max_gap_fill_attempts = 2
+
+# Maximum verification failures before a node is permanently failed instead
+# of being reset and retried.  Each retry waits an exponentially increasing
+# backoff (1s, 2s, 4s … capped at 60s) before re-launching.
+max_retries = 5
+
+# Seconds the orchestrator loop sleeps when idle (no planning or execution work).
+idle_sleep = 0.5
+
+# ── Planner ───────────────────────────────────────────────────────────────────
+# These settings are backend-agnostic.  max_tasks_per_goal and max_turns are
+# set per-backend above because their ideal values differ significantly.
+[planner]
+
+# Minimum tasks the planner must generate per goal.
+min_tasks_per_goal = 3
+
+# When true, every planning call is followed by a scrutinizing call where the
+# LLM reviews its own plan against all original constraints and produces an
+# improved version.  The improved plan is what reaches the reducer.
+# Set to false to skip scrutiny and use the raw plan directly (faster, cheaper).
+scrutinize_plan = true
 
 # ── File-based LLM (development / testing only) ───────────────────────────────
 [file_llm]
@@ -182,6 +206,15 @@ progress_log_interval = 2
 # Cache responses to disk; on a cache hit the poll loop is skipped entirely.
 cache_enabled = true
 
+# Execution limits for the file backend (dev/testing — same as llamacpp).
+max_workers             = 1
+max_turns               = 5
+max_tasks_per_goal      = 8
+max_inline_result_chars = 3000
+max_total_input_chars   = 3000
+max_tool_result_chars   = 2000
+max_history_entries     = 3
+
 # ── Web / terminal server ─────────────────────────────────────────────────────
 [server]
 
@@ -190,6 +223,9 @@ port = 8765
 """
 
 _VALID_BACKENDS = {"llamacpp", "claude", "openai"}
+
+# Backends that use a remote API and can therefore afford higher limits.
+_API_BACKENDS = {"claude", "openai"}
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
@@ -423,38 +459,87 @@ def preflight_check(cfg: dict) -> list[dict]:
 
 
 # ── Config section accessors ──────────────────────────────────────────────────
-# Convenience helpers used by __main__.py to read the new sections with
-# sensible defaults (so configs written before these sections were added
-# continue to work without requiring a manual edit).
+# Convenience helpers used by __main__.py to read config values with sensible
+# fallbacks (so configs written before any section was added continue to work).
+#
+# Lookup order for per-backend parameters:
+#   1. cfg[active_backend][key]   — explicit per-backend value (wins)
+#   2. cfg[shared_section][key]   — legacy shared-section value (compat)
+#   3. hardcoded default          — last resort
+#
+# Parameters that are the same regardless of backend (gap-fill limits, retry
+# counts, flags) are read from their shared section only.
+
+
+def get_backend(cfg: dict) -> str:
+    """Return the configured backend name, lower-cased."""
+    return cfg.get("llm", {}).get("backend", "llamacpp").lower()
+
+
+def _is_api_backend(cfg: dict) -> bool:
+    """Return True when the configured backend is a remote API provider."""
+    return get_backend(cfg) in _API_BACKENDS
+
+
+def _get(cfg: dict, key: str, shared_section: str, api_default, local_default):
+    """
+    Resolve a per-backend parameter with graceful fallback.
+
+    Checks the active backend's config section first, then the shared
+    section for backward compatibility with pre-restructured configs,
+    then falls back to a hardcoded default chosen by backend tier.
+    """
+    backend = get_backend(cfg)
+    # 1. Per-backend section (new-style config)
+    val = cfg.get(backend, {}).get(key)
+    if val is not None:
+        return val
+    # 2. Shared section (old-style config — backward compat)
+    val = cfg.get(shared_section, {}).get(key)
+    if val is not None:
+        return val
+    # 3. Hardcoded default — tiered by backend type
+    return api_default if _is_api_backend(cfg) else local_default
 
 
 def get_executor_cfg(cfg: dict) -> dict:
-    """Return the [executor] section with defaults filled in."""
-    c = cfg.get("executor", {})
+    """Return executor parameters, resolved from the active backend's section."""
     return {
-        "max_inline_result_chars": c.get("max_inline_result_chars", 3000),
-        "max_total_input_chars": c.get("max_total_input_chars", 3000),
-        "max_tool_result_chars": c.get("max_tool_result_chars", 2000),
-        "max_history_entries": c.get("max_history_entries", 3),
+        # Characters a result may contain before the LLM is asked to write
+        # it to a file.  API models handle larger inline payloads comfortably.
+        "max_inline_result_chars": _get(cfg, "max_inline_result_chars", "executor", 12_000, 3_000),
+        # Total character budget shared across all upstream results injected
+        # into a single execution prompt.
+        "max_total_input_chars": _get(cfg, "max_total_input_chars", "executor", 12_000, 3_000),
+        # Characters from a single tool-call result before truncation.
+        # Web search / fetch results need room to be genuinely useful.
+        "max_tool_result_chars": _get(cfg, "max_tool_result_chars", "executor", 8_000, 2_000),
+        # Tool-call history entries kept in context per turn.
+        "max_history_entries": _get(cfg, "max_history_entries", "executor", 10, 3),
     }
 
 
 def get_planner_cfg(cfg: dict) -> dict:
-    """Return the [planner] section with defaults filled in."""
+    """Return planner parameters, with max_tasks_per_goal resolved per-backend."""
     c = cfg.get("planner", {})
     return {
         "min_tasks_per_goal": c.get("min_tasks_per_goal", 3),
-        "max_tasks_per_goal": c.get("max_tasks_per_goal", 8),
+        # API models handle larger, more complex plans reliably.
+        "max_tasks_per_goal": _get(cfg, "max_tasks_per_goal", "planner", 15, 8),
         "scrutinize_plan": c.get("scrutinize_plan", False),
     }
 
 
 def get_orchestrator_cfg(cfg: dict) -> dict:
-    """Return the [orchestrator] section with defaults filled in."""
+    """Return orchestrator parameters, with backend-sensitive values resolved per-backend."""
     c = cfg.get("orchestrator", {})
     return {
-        "max_workers": c.get("max_workers", 1),
-        "max_turns": c.get("max_turns", 5),
+        # API calls are independent and parallelisable.  llama.cpp is not
+        # thread-safe and must stay at 1.
+        "max_workers": _get(cfg, "max_workers", "orchestrator", 4, 1),
+        # API models sustain longer research loops without context degradation.
+        "max_turns": _get(cfg, "max_turns", "orchestrator", 10, 5),
+        # The remaining params don't vary meaningfully by backend.
         "max_gap_fill_attempts": c.get("max_gap_fill_attempts", 2),
         "max_retries": c.get("max_retries", 5),
         "idle_sleep": c.get("idle_sleep", 0.5),
@@ -517,11 +602,15 @@ def _print_first_run_notice(backend: str) -> None:
         lines += [
             "  Detected ANTHROPIC_API_KEY → backend set to 'claude'.",
             "  You're ready to go.",
+            "",
+            "  Execution limits are configured under [claude] in config.toml.",
         ]
     elif backend == "openai":
         lines += [
             "  Detected OPENAI_API_KEY → backend set to 'openai'.",
             "  You're ready to go.",
+            "",
+            "  Execution limits are configured under [openai] in config.toml.",
         ]
     else:
         lines += [
