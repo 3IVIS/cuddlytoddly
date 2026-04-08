@@ -1,5 +1,3 @@
-# --- FILE: cuddlytoddly/planning/prompts.py ---
-
 # planning/prompts.py
 #
 # Single source of truth for every prompt template used by the LLM.
@@ -33,6 +31,15 @@ LLAMACPP_SYSTEM_PROMPT = (
     "You are a DAG planning assistant. "
     "Always respond with a valid JSON array and nothing else. "
     "No explanation, no markdown, no code fences."
+)
+
+# Used by ApiLLM.ask_with_tools() — replaces the JSON-only system prompt for
+# native tool-use calls where the model responds with plain text, not JSON.
+EXECUTOR_NATIVE_SYSTEM_PROMPT = (
+    "You are an AI assistant executing one task inside an automated plan. "
+    "Use the tools provided to gather any information you need. "
+    "When you have everything required, respond with your final answer as plain text — "
+    "detailed, self-contained, and ready to be passed to downstream tasks."
 )
 
 # ---------------------------------------------------------------------------
@@ -173,6 +180,108 @@ def build_executor_file_reminder(expected_files: list[str], turns_remaining: int
     return (
         f"\nREMINDER: You must call write_file to create "
         f"{expected_files} before setting done=true. "
+        f"You have {turns_remaining} turn(s) remaining."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Native tool-use executor prompt (no JSON schema / done+tool_call protocol)
+# ---------------------------------------------------------------------------
+
+
+def build_executor_native_prompt(
+    *,
+    node_id: str,
+    description: str,
+    retry_notice: str,
+    extra_reminder: str,
+    outputs_block: str,
+    output_instruction: str,
+    inputs_text: str,
+    turns_remaining: int = 0,
+) -> str:
+    """
+    Prompt for a single native tool-use executor turn.
+
+    Unlike build_executor_prompt, this version:
+    - Omits the AVAILABLE TOOLS text block (tools are passed via the provider API).
+    - Omits the previous-tool-call history block (history lives in the message list).
+    - Omits all references to done=true / tool_call JSON fields.
+    - Instructs the model to respond with plain text when the task is complete.
+    """
+    turns_line = (
+        f"- Turns remaining (including this one): {turns_remaining}. "
+        "If you have already made multiple searches, synthesise what you have "
+        "now rather than searching again.\n"
+        if turns_remaining > 0
+        else ""
+    )
+    return f"""\
+You are executing one task inside a larger automated plan.
+Your result will be stored and passed directly to downstream tasks as their input,
+so it must be self-contained, specific, and directly usable — not a summary or stub.
+
+════════════════════════════════════════
+TASK
+{retry_notice}{extra_reminder}
+════════════════════════════════════════
+ID:          {node_id}
+Description: {description}
+
+{outputs_block}
+
+════════════════════════════════════════
+INPUTS FROM UPSTREAM TASKS
+════════════════════════════════════════
+{inputs_text}
+
+════════════════════════════════════════
+INSTRUCTIONS
+════════════════════════════════════════
+- Use upstream results provided in this prompt directly. They are text strings,
+  not files on disk. Do not attempt to read them from the filesystem.
+{output_instruction}
+- Your result must be detailed enough that a downstream task can use it
+  without any other context. Label each output clearly:
+    investment_analysis: <full content>
+    risk_assessment: <full content>
+- Call tools as needed to gather information. When you have everything required,
+  respond with your final answer as plain text — do not produce JSON unless the
+  task description explicitly requires it.
+{turns_line}- Use \\n for line breaks and 4 spaces for indentation in Python code.
+  Do NOT compress multi-line code onto one line with semicolons.
+"""
+
+
+def build_executor_native_file_output_instruction(expected_files: list[str]) -> str:
+    """Native-path instruction when the task is expected to write file(s) to disk."""
+    return (
+        "- This task is expected to produce a file on disk.\n"
+        "        Call write_file (or append_file if editing an existing file) "
+        "before giving your final answer.\n"
+        "        Your final text response should confirm what was written:\n"
+        "            file_written: <filename>\n"
+        "            summary: <brief description of contents>"
+    )
+
+
+def build_executor_native_inline_output_instruction(max_inline_result_chars: int) -> str:
+    """Native-path instruction when the task should return its result inline."""
+    return (
+        f"- Return your result as a self-contained text string.\n"
+        f"        Do NOT write files unless explicitly required by this task's description.\n"
+        f"        Do NOT read from or write to disk — pass results inline as text.\n"
+        f"        If your result would exceed {max_inline_result_chars} characters, "
+        f"write it to a file\n"
+        f"        using write_file and return the filename + a summary instead."
+    )
+
+
+def build_executor_native_file_reminder(expected_files: list[str], turns_remaining: int) -> str:
+    """Native-path reminder injected when file outputs are declared but not yet written."""
+    return (
+        f"\nREMINDER: You must call write_file to create "
+        f"{expected_files} before giving your final answer. "
         f"You have {turns_remaining} turn(s) remaining."
     )
 

@@ -25,6 +25,8 @@ import json
 import threading
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from dataclasses import field as _dc_field
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +34,11 @@ from cuddlytoddly.core.id_generator import StableIDGenerator
 from cuddlytoddly.infra.logging import get_logger
 
 # System prompt text is owned by prompts.py.
-from cuddlytoddly.planning.prompts import LLAMACPP_SYSTEM_PROMPT, LLM_SYSTEM_PROMPT
+from cuddlytoddly.planning.prompts import (
+    EXECUTOR_NATIVE_SYSTEM_PROMPT,
+    LLAMACPP_SYSTEM_PROMPT,
+    LLM_SYSTEM_PROMPT,
+)
 
 # Re-export schemas so existing callers that imported them from here continue to work.
 from cuddlytoddly.planning.schemas import (  # noqa: F401  (public re-exports)
@@ -44,6 +50,32 @@ from cuddlytoddly.planning.schemas import (  # noqa: F401  (public re-exports)
     REFINER_OUTPUT_SCHEMA,
     RESULT_VERIFICATION_SCHEMA,
 )
+
+# ---------------------------------------------------------------------------
+# Native tool-use response type
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class NativeToolResponse:
+    """
+    Returned by ApiLLM.ask_with_tools() for each LLM turn.
+
+    kind        : "text"      — model produced a final plain-text answer
+                  "tool_call" — model wants to invoke a tool
+    text        : final answer text (populated when kind="text")
+    tool_name   : name of the tool to call (populated when kind="tool_call")
+    tool_args   : dict of arguments for the tool call
+    tool_use_id : provider-assigned ID that must be echoed back in the
+                  tool_result message so the conversation stays valid
+    """
+
+    kind: str
+    text: str = ""
+    tool_name: str = ""
+    tool_args: dict = _dc_field(default_factory=dict)
+    tool_use_id: str = ""
+
 
 # ---------------------------------------------------------------------------
 # Token counter
@@ -151,7 +183,16 @@ class BaseLLM(ABC):
     Use stop() / resume() to set/clear the flag.
     The orchestrator calls these on all its clients via stop_llm_calls() /
     resume_llm_calls(), which the UI triggers with the 's' key.
+
+    Native tool use
+    ---------------
+    supports_native_tools = True means the backend implements ask_with_tools()
+    and the LLMExecutor will use the provider's structured tool-use API instead
+    of the legacy JSON-in-prompt protocol.  Defaults False for all backends
+    except ApiLLM (openai / claude).
     """
+
+    supports_native_tools: bool = False
 
     def __init__(self):
         self._stop_event = threading.Event()
@@ -739,7 +780,17 @@ class ApiLLM(BaseLLM):
 
     The system prompt text is defined in planning/prompts.py (LLM_SYSTEM_PROMPT)
     and can be overridden per-instance via the system_prompt parameter.
+
+    Native tool use
+    ---------------
+    ask_with_tools() uses the provider's structured tool-use API (Claude's
+    `tools=` parameter / OpenAI's `tools=` + `tool_choice="auto"`).  This is
+    significantly more reliable than the legacy JSON-in-prompt approach because
+    the model was fine-tuned on the native format, argument validation is
+    handled by the provider, and there are no JSON parse errors on tool calls.
     """
+
+    supports_native_tools: bool = True
 
     _DEFAULTS = {
         "openai": "gpt-4o",
@@ -961,6 +1012,313 @@ class ApiLLM(BaseLLM):
                     continue
 
         raise ValueError(f"[API] {self.provider} returned invalid JSON after 2 attempts")
+
+    # ── Native tool-use API ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_input_schema(schema: dict) -> dict:
+        """
+        Ensure a tool's input_schema is a valid JSON Schema object.
+
+        Local skills use a simplified flat format: {"arg": "type_string"}.
+        MCP tools already arrive as proper JSON Schema ({"type": "object", ...}).
+        Both Claude and OpenAI require proper JSON Schema for their tools API.
+
+        Detection rule:
+          - Empty dict → return minimal schema.
+          - Top-level key "type" present → already proper JSON Schema, pass through.
+          - All values are strings → simplified format, promote to JSON Schema.
+          - Mixed / already dict values → treat as proper JSON Schema, pass through.
+        """
+        if not schema:
+            return {"type": "object", "properties": {}}
+
+        # Already proper JSON Schema
+        if "type" in schema:
+            return schema
+
+        # Check whether values look like simplified type strings
+        if not all(isinstance(v, str) for v in schema.values()):
+            # Contains dict values — assume it's already a JSON Schema fragment
+            return {"type": "object", "properties": schema}
+
+        # Simplified {"arg_name": "type_string"} format
+        properties: dict = {}
+        required: list = []
+        for key, type_str in schema.items():
+            # "integer (optional, default 5)" → type="integer", not required
+            base_type = type_str.split()[0].rstrip(".,;")
+            is_optional = "optional" in type_str.lower()
+            # Normalise type to a valid JSON Schema primitive
+            if base_type not in ("string", "integer", "number", "boolean", "array", "object"):
+                base_type = "string"
+            properties[key] = {"type": base_type}
+            if not is_optional:
+                required.append(key)
+
+        result: dict = {"type": "object", "properties": properties}
+        if required:
+            result["required"] = required
+        return result
+
+    @staticmethod
+    def _tools_to_anthropic(tools: list) -> list[dict]:
+        """Convert a list of Tool objects to Anthropic's tool definition format."""
+        return [
+            {
+                "name": t.name,
+                "description": t.description or t.name,
+                "input_schema": ApiLLM._normalize_input_schema(getattr(t, "input_schema", {})),
+            }
+            for t in tools
+        ]
+
+    @staticmethod
+    def _tools_to_openai(tools: list) -> list[dict]:
+        """Convert a list of Tool objects to OpenAI's tool definition format."""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description or t.name,
+                    "parameters": ApiLLM._normalize_input_schema(getattr(t, "input_schema", {})),
+                },
+            }
+            for t in tools
+        ]
+
+    @staticmethod
+    def _build_native_messages_claude(
+        task_prompt: str,
+        history: list[dict],
+    ) -> list[dict]:
+        """
+        Build a Claude-format message list from the task prompt and tool history.
+
+        Each history entry must have: name, args, result, tool_use_id.
+        Produces alternating assistant (tool_use) + user (tool_result) pairs.
+        """
+        messages: list[dict] = [{"role": "user", "content": task_prompt}]
+        for entry in history:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": entry["tool_use_id"],
+                            "name": entry["name"],
+                            "input": entry["args"],
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": entry["tool_use_id"],
+                            "content": str(entry["result"]),
+                        }
+                    ],
+                }
+            )
+        return messages
+
+    @staticmethod
+    def _build_native_messages_openai(
+        task_prompt: str,
+        history: list[dict],
+    ) -> list[dict]:
+        """
+        Build an OpenAI-format message list from the task prompt and tool history.
+
+        Each history entry must have: name, args, result, tool_use_id.
+        Produces alternating assistant (tool_calls) + tool (tool_result) pairs.
+        """
+        messages: list[dict] = [{"role": "user", "content": task_prompt}]
+        for entry in history:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": entry["tool_use_id"],
+                            "type": "function",
+                            "function": {
+                                "name": entry["name"],
+                                "arguments": json.dumps(entry["args"]),
+                            },
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": entry["tool_use_id"],
+                    "content": str(entry["result"]),
+                }
+            )
+        return messages
+
+    def ask_with_tools(
+        self,
+        task_prompt: str,
+        tools: list,
+        history: list[dict],
+    ) -> NativeToolResponse:
+        """
+        Send a single executor turn using the provider's native tool-use API.
+
+        Parameters
+        ----------
+        task_prompt : str
+            The full task description prompt (built once by the executor).
+        tools : list[Tool]
+            Tool objects from the ToolRegistry.  Converted to provider format
+            internally; callers never need to know the provider schema.
+        history : list[dict]
+            Tool-call history accumulated so far this execution.  Each entry:
+              {"name": str, "args": dict, "result": str, "tool_use_id": str}
+
+        Returns
+        -------
+        NativeToolResponse
+            kind="tool_call"  — model wants to invoke a tool; executor should
+                                run it and append the result to history.
+            kind="text"       — model produced a final plain-text answer.
+        """
+        self._check_stop()
+        self._load()
+        logger.info(
+            "[API] ask_with_tools()  provider=%s  model=%s  history_len=%d",
+            self.provider,
+            self.model,
+            len(history),
+        )
+
+        if self.provider == "claude":
+            return self._ask_with_tools_claude(task_prompt, tools, history)
+        else:
+            return self._ask_with_tools_openai(task_prompt, tools, history)
+
+    def _ask_with_tools_claude(
+        self,
+        task_prompt: str,
+        tools: list,
+        history: list[dict],
+    ) -> NativeToolResponse:
+        messages = self._build_native_messages_claude(task_prompt, history)
+        native_tools = self._tools_to_anthropic(tools)
+
+        logger.debug(
+            "[API/Claude] ask_with_tools: %d message(s), %d tool(s)",
+            len(messages),
+            len(native_tools),
+        )
+
+        response = self._client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=EXECUTOR_NATIVE_SYSTEM_PROMPT,
+            tools=native_tools,
+            messages=messages,
+            temperature=self.temperature,
+        )
+        token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
+        logger.info(
+            "[API/Claude] ask_with_tools response: stop_reason=%s  content_blocks=%d",
+            response.stop_reason,
+            len(response.content),
+        )
+
+        if response.stop_reason == "tool_use":
+            tool_block = next((b for b in response.content if b.type == "tool_use"), None)
+            if tool_block is None:
+                # Shouldn't happen, but fall back to treating the text as done
+                text = next((b.text for b in response.content if b.type == "text"), "")
+                logger.warning("[API/Claude] stop_reason=tool_use but no tool_use block found")
+                return NativeToolResponse(kind="text", text=text)
+
+            logger.info(
+                "[API/Claude] Tool call: %s  args=%s",
+                tool_block.name,
+                str(tool_block.input)[:120],
+            )
+            return NativeToolResponse(
+                kind="tool_call",
+                tool_name=tool_block.name,
+                tool_args=dict(tool_block.input),
+                tool_use_id=tool_block.id,
+            )
+
+        # stop_reason == "end_turn" or anything else → final answer
+        text = next((b.text for b in response.content if b.type == "text"), "")
+        logger.info("[API/Claude] Final answer (%d chars)", len(text))
+        return NativeToolResponse(kind="text", text=text)
+
+    def _ask_with_tools_openai(
+        self,
+        task_prompt: str,
+        tools: list,
+        history: list[dict],
+    ) -> NativeToolResponse:
+        messages = [
+            {"role": "system", "content": EXECUTOR_NATIVE_SYSTEM_PROMPT},
+        ] + self._build_native_messages_openai(task_prompt, history)
+        native_tools = self._tools_to_openai(tools)
+
+        logger.debug(
+            "[API/OpenAI] ask_with_tools: %d message(s), %d tool(s)",
+            len(messages),
+            len(native_tools),
+        )
+
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=native_tools,
+            tool_choice="auto",
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+        if response.usage:
+            token_counter.add(response.usage.prompt_tokens, response.usage.completion_tokens)
+
+        msg = response.choices[0].message
+        finish_reason = response.choices[0].finish_reason
+        logger.info("[API/OpenAI] ask_with_tools response: finish_reason=%s", finish_reason)
+
+        if finish_reason == "tool_calls" and msg.tool_calls:
+            tc = msg.tool_calls[0]
+            try:
+                args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "[API/OpenAI] Could not parse tool arguments: %s",
+                    tc.function.arguments,
+                )
+                args = {}
+            logger.info(
+                "[API/OpenAI] Tool call: %s  args=%s",
+                tc.function.name,
+                str(args)[:120],
+            )
+            return NativeToolResponse(
+                kind="tool_call",
+                tool_name=tc.function.name,
+                tool_args=args,
+                tool_use_id=tc.id,
+            )
+
+        text = msg.content or ""
+        logger.info("[API/OpenAI] Final answer (%d chars)", len(text))
+        return NativeToolResponse(kind="text", text=text)
 
     def clear_cache(self) -> None:
         if self._cache is not None:

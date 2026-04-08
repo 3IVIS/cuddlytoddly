@@ -1,17 +1,22 @@
 # planning/llm_executor.py
 
 import json
+import uuid
 from dataclasses import dataclass
 from dataclasses import field as _dc_field
 
 from cuddlytoddly.infra.logging import get_logger
-from cuddlytoddly.planning.llm_interface import LLMStoppedError
+from cuddlytoddly.planning.llm_interface import LLMStoppedError, NativeToolResponse
 from cuddlytoddly.planning.prompts import (
     build_awaiting_input_check_prompt,
     build_broadened_description_prompt,
     build_executor_file_output_instruction,
     build_executor_file_reminder,
     build_executor_inline_output_instruction,
+    build_executor_native_file_output_instruction,
+    build_executor_native_file_reminder,
+    build_executor_native_inline_output_instruction,
+    build_executor_native_prompt,
     build_executor_outputs_block,
     build_executor_prompt,
     build_executor_retry_notice,
@@ -682,8 +687,44 @@ class LLMExecutor:
             else node.metadata.get("output", [])
         )
 
-        history = []
+        # ── Dispatch to native or legacy execution loop ───────────────────────
+        # Use the provider's native tool-use API when available (Claude, OpenAI).
+        # Fall back to the JSON-in-prompt legacy path for file-based and
+        # llama.cpp backends that cannot use native tool calling.
+        use_native = (
+            getattr(self.llm, "supports_native_tools", False)
+            and self.tools
+            and len(self.tools.tools) > 0
+        )
+        logger.info(
+            "[EXECUTOR] Node %s: using %s execution path",
+            node.id,
+            "native tool-use" if use_native else "legacy JSON",
+        )
 
+        if use_native:
+            return self._execute_native(
+                node, resolved_inputs, effective_description, effective_outputs, reporter
+            )
+        else:
+            return self._execute_legacy(
+                node, resolved_inputs, effective_description, effective_outputs, reporter
+            )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Legacy execution loop (JSON-in-prompt, done+tool_call protocol)
+    # Used by: FileBasedLLM, LlamaCppLLM, and any backend where
+    # supports_native_tools=False.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _execute_legacy(
+        self,
+        node,
+        resolved_inputs,
+        effective_description: str,
+        effective_outputs: list,
+        reporter,
+    ):
         def _output_name(o):
             return o["name"] if isinstance(o, dict) else str(o)
 
@@ -695,14 +736,13 @@ class LLMExecutor:
             return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
 
         expected_files = [_output_name(o) for o in effective_outputs if _is_file(o)]
-
-        tool_not_found_count = 0  # replaces string-match loop guard
+        history: list[dict] = []
+        tool_not_found_count = 0
 
         for turn in range(self.max_turns):
             turns_remaining = self.max_turns - turn
             extra_reminder = ""
 
-            # ── File-write reminder ───────────────────────────────────────────
             if expected_files and "write_file" not in {h["name"] for h in history}:
                 extra_reminder += build_executor_file_reminder(expected_files, turns_remaining)
 
@@ -803,14 +843,10 @@ class LLMExecutor:
                         ),
                     }
                 )
-                # Exit if the LLM is stuck calling unavailable tools.
-                # A counter is used rather than string-matching the error
-                # message — more robust and not tied to error text format.
                 tool_not_found_count += 1
                 if tool_not_found_count >= 2:
                     logger.error(
-                        "[EXECUTOR] Node %s: %d consecutive tool-not-found errors — "
-                        "aborting early, no tools registered for this task",
+                        "[EXECUTOR] Node %s: %d consecutive tool-not-found errors — aborting early",
                         node.id,
                         tool_not_found_count,
                     )
@@ -818,7 +854,7 @@ class LLMExecutor:
                 continue
 
             logger.info("[EXECUTOR] Node %s calling tool '%s'", node.id, tool_name)
-            tool_not_found_count = 0  # reset on any real tool call
+            tool_not_found_count = 0
             step_id = reporter.on_tool_start(tool_name, tool_args) if reporter else None
 
             error = False
@@ -829,10 +865,197 @@ class LLMExecutor:
                 error = True
                 logger.error("[EXECUTOR] Tool '%s' raised: %s", tool_name, e)
 
-            # Some tools (e.g. web_search) swallow exceptions and return an
-            # error string instead of raising.  Detect these so the step node
-            # gets status="error" in the UI and the quality gate can see that
-            # all tool calls failed.
+            tool_result_str = str(tool_result)
+            if not error and tool_result_str.startswith("ERROR:"):
+                error = True
+                logger.warning(
+                    "[EXECUTOR] Tool '%s' returned an error string: %.120s",
+                    tool_name,
+                    tool_result_str,
+                )
+
+            if reporter and step_id:
+                reporter.on_tool_done(step_id, tool_name, tool_args, tool_result_str, error=error)
+
+            if len(tool_result_str) > self.max_tool_result_chars:
+                tool_result_str = (
+                    tool_result_str[: self.max_tool_result_chars]
+                    + f"\n…[truncated — {len(tool_result_str)} chars total]"
+                )
+
+            history.append({"name": tool_name, "args": tool_args, "result": tool_result_str})
+
+            if len(history) > self.max_history_entries:
+                history = history[-self.max_history_entries :]
+
+        logger.error(
+            "[EXECUTOR] Node %s did not complete within %d turns",
+            node.id,
+            self.max_turns,
+        )
+        return None
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Native execution loop (provider tool-use API)
+    # Used by: ApiLLM (claude, openai) when supports_native_tools=True.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _execute_native(
+        self,
+        node,
+        resolved_inputs,
+        effective_description: str,
+        effective_outputs: list,
+        reporter,
+    ):
+        def _output_name(o):
+            return o["name"] if isinstance(o, dict) else str(o)
+
+        def _is_file(o):
+            if isinstance(o, dict):
+                return o.get("type") == "file" or any(
+                    _output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS
+                )
+            return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
+
+        expected_files = [_output_name(o) for o in effective_outputs if _is_file(o)]
+        tools = list(self.tools.tools.values())
+
+        # history entries: {name, args, result, tool_use_id}
+        # Each entry becomes an assistant tool_use + user tool_result pair in
+        # the message list that ask_with_tools() sends to the provider.
+        history: list[dict] = []
+        tool_not_found_count = 0
+
+        # Build the task prompt once — it does not change between turns because
+        # the conversation history is maintained in the message list, not the
+        # prompt string.
+        task_prompt = self._build_native_task_prompt(
+            node=node,
+            resolved_inputs=resolved_inputs,
+            effective_description=effective_description,
+            effective_outputs=effective_outputs,
+        )
+
+        for turn in range(self.max_turns):
+            turns_remaining = self.max_turns - turn
+
+            # Inject file-write reminder as extra text on the first turn and
+            # whenever write_file still hasn't been called.
+            extra_reminder = ""
+            if expected_files and "write_file" not in {h["name"] for h in history}:
+                extra_reminder = build_executor_native_file_reminder(
+                    expected_files, turns_remaining
+                )
+
+            # Rebuild prompt with updated reminder each turn
+            if extra_reminder:
+                current_prompt = task_prompt + "\n" + extra_reminder
+            else:
+                current_prompt = task_prompt
+
+            if reporter:
+                reporter.on_llm_turn(turn)
+
+            try:
+                response: NativeToolResponse = self.llm.ask_with_tools(
+                    current_prompt, tools, history
+                )
+            except LLMStoppedError:
+                logger.warning("[EXECUTOR] LLM stopped during native execution of %s", node.id)
+                return None
+            except Exception as e:
+                logger.error("[EXECUTOR] LLM error during native execution of %s: %s", node.id, e)
+                if reporter:
+                    reporter.on_llm_error(turn, str(e))
+                return None
+
+            # ── Final answer ──────────────────────────────────────────────────
+            if response.kind == "text":
+                result = response.text
+
+                # Enforce write_file: if a file output is expected but write_file
+                # was never called, inject a synthetic correction entry so the
+                # model sees an error and retries.  The entry is given a
+                # fabricated tool_use_id so the message list stays structurally
+                # valid (provider requires every tool_use to have a matching
+                # tool_result).
+                if expected_files and "write_file" not in {h["name"] for h in history}:
+                    correction_id = f"toolu_correction_{uuid.uuid4().hex[:8]}"
+                    logger.warning(
+                        "[EXECUTOR] Node %s gave final answer without calling write_file "
+                        "— injecting correction turn",
+                        node.id,
+                    )
+                    history.append(
+                        {
+                            "name": "write_file",
+                            "args": {"path": expected_files[0], "content": ""},
+                            "result": (
+                                f"ERROR: write_file was called with empty content. "
+                                f"You must call write_file again with the actual content of "
+                                f"{expected_files[0]}. Do not give a final answer until the "
+                                f"file has been written with real content."
+                            ),
+                            "tool_use_id": correction_id,
+                        }
+                    )
+                    continue
+
+                logger.info(
+                    "[EXECUTOR] Node %s completed (native). Result: %.120s", node.id, result
+                )
+                return result
+
+            # ── Tool call ─────────────────────────────────────────────────────
+            tool_name = response.tool_name
+            tool_args = response.tool_args
+            tool_use_id = response.tool_use_id or f"toolu_{uuid.uuid4().hex[:12]}"
+
+            if tool_name not in self.tools.tools:
+                logger.warning("[EXECUTOR] Node %s requested unknown tool '%s'", node.id, tool_name)
+                if reporter:
+                    step_id = reporter.on_tool_start(tool_name, tool_args)
+                    reporter.on_tool_done(
+                        step_id,
+                        tool_name,
+                        tool_args,
+                        f"ERROR: tool '{tool_name}' not found",
+                        error=True,
+                    )
+                history.append(
+                    {
+                        "name": tool_name,
+                        "args": tool_args,
+                        "result": (
+                            f"ERROR: tool '{tool_name}' is not available. "
+                            "Use only the tools listed in the system prompt."
+                        ),
+                        "tool_use_id": tool_use_id,
+                    }
+                )
+                tool_not_found_count += 1
+                if tool_not_found_count >= 2:
+                    logger.error(
+                        "[EXECUTOR] Node %s: %d consecutive tool-not-found errors — aborting early",
+                        node.id,
+                        tool_not_found_count,
+                    )
+                    return None
+                continue
+
+            logger.info("[EXECUTOR] Node %s calling tool '%s' (native)", node.id, tool_name)
+            tool_not_found_count = 0
+            step_id = reporter.on_tool_start(tool_name, tool_args) if reporter else None
+
+            error = False
+            try:
+                tool_result = self.tools.execute(tool_name, tool_args)
+            except Exception as e:
+                tool_result = f"ERROR: {e}"
+                error = True
+                logger.error("[EXECUTOR] Tool '%s' raised: %s", tool_name, e)
+
             tool_result_str = str(tool_result)
             if not error and tool_result_str.startswith("ERROR:"):
                 error = True
@@ -856,15 +1079,100 @@ class LLMExecutor:
                     "name": tool_name,
                     "args": tool_args,
                     "result": tool_result_str,
+                    "tool_use_id": tool_use_id,
                 }
             )
 
+            # Trim history in pairs from the front so the message list always
+            # has valid alternating structure (tool_use + tool_result).
             if len(history) > self.max_history_entries:
                 history = history[-self.max_history_entries :]
 
         logger.error(
-            "[EXECUTOR] Node %s did not complete within %d turns",
+            "[EXECUTOR] Node %s did not complete within %d turns (native)",
             node.id,
             self.max_turns,
         )
         return None
+
+    def _build_native_task_prompt(
+        self,
+        node,
+        resolved_inputs: list,
+        effective_description: str,
+        effective_outputs: list,
+    ) -> str:
+        """
+        Build the static task prompt for the native tool-use path.
+
+        Unlike _build_prompt(), this version:
+        - Omits the AVAILABLE TOOLS section (tools are passed via the API).
+        - Omits the tool-call history section (history lives in message turns).
+        - Uses native-mode output instructions (no done=true / tool_call refs).
+        """
+
+        def _fmt_output(o):
+            if isinstance(o, dict):
+                return f"  - [{o['type']}] {o['name']}: {o['description']}"
+            return f"  - {o}"
+
+        def _output_name(o):
+            return o["name"] if isinstance(o, dict) else str(o)
+
+        def _is_file(o):
+            if isinstance(o, dict):
+                return o.get("type") == "file" or any(
+                    _output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS
+                )
+            return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
+
+        # Upstream results
+        if resolved_inputs:
+            inputs_text = "\n".join(
+                f"  [{e['node_id']}]\n"
+                f"    Description:      {e['description']}\n"
+                f"    Declared outputs: {e['declared_output']}\n"
+                f"    Actual result:    {e['result']}"
+                for e in resolved_inputs
+            )
+        else:
+            inputs_text = "  (none — this is a root task)"
+
+        # Retry notice
+        retry = node.metadata.get("retry_count", 0)
+        if retry > 0:
+            failure = node.metadata.get("verification_failure", "unknown")[:200]
+            prev_result = node.result or "(none)"
+            if len(prev_result) > 200:
+                prev_result = prev_result[:200] + "…"
+        else:
+            failure = ""
+            prev_result = ""
+        retry_notice = build_executor_retry_notice(retry, failure, prev_result)
+
+        # Expected outputs
+        outputs_text = (
+            "\n".join(_fmt_output(o) for o in effective_outputs)
+            if effective_outputs
+            else "  (not specified)"
+        )
+        outputs_block = build_executor_outputs_block(outputs_text)
+
+        expected_files = [_output_name(o) for o in effective_outputs if _is_file(o)]
+        if expected_files:
+            output_instruction = build_executor_native_file_output_instruction(expected_files)
+        else:
+            output_instruction = build_executor_native_inline_output_instruction(
+                self.max_inline_result_chars
+            )
+
+        return build_executor_native_prompt(
+            node_id=node.id,
+            description=effective_description,
+            retry_notice=retry_notice,
+            extra_reminder="",
+            outputs_block=outputs_block,
+            output_instruction=output_instruction,
+            inputs_text=inputs_text,
+            turns_remaining=self.max_turns,
+        )

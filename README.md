@@ -40,15 +40,15 @@ Think of it as holding AI's hand through planning and into execution — not bli
 
 ### How it compares
 
-|  | cuddlytoddly | LangGraph | CrewAI | AutoGPT |
-|--|:--:|:--:|:--:|:--:|
-| Explicit plan before execution | ✅ | ❌ | ❌ | ❌ |
-| Live plan editing during a run | ✅ | ❌ | ❌ | ❌ |
-| Pause & redirect at any time | ✅ | ❌ | ❌ | ❌ |
-| Crash-proof resume | ✅ | ⚠️ partial | ❌ | ❌ |
-| Web UI with editable task graph | ✅ | ❌ | ❌ | ❌ |
-| Local model support | ✅ | ✅ | ✅ | ❌ |
-| Zero-config backend switching | ✅ | ❌ | ❌ | ❌ |
+|  | cuddlytoddly | LangGraph | CrewAI | AutoGen | OpenHands | AutoGPT |
+|--|:--:|:--:|:--:|:--:|:--:|:--:|
+| Explicit plan before execution | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Live plan editing during a run | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Pause & redirect at any time | ✅ | ⚠️ custom code | ⚠️ API/webhooks only | ❌ | ⚠️ no graph editing | ❌ |
+| Crash-proof resume | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
+| Web UI with editable task graph | ✅ | ❌ | ❌ | ⚠️ AutoGen Studio | ⚠️ chat UI only | ❌ |
+| Local model support | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Zero-config backend switching | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 ---
 
@@ -351,7 +351,7 @@ python -c "from platformdirs import user_data_dir; print(user_data_dir('cuddlyto
 
 Contributions are welcome — bug fixes, new features, new skills, new backends, and documentation improvements.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) to get started. The easiest entry point is [adding a skill](CONTRIBUTING.md#adding-a-new-skill) — no core code changes required.
+See [CONTRIBUTING.md](https://github.com/3IVIS/cuddlytoddly/blob/main/CONTRIBUTING.md) to get started. The easiest entry point is [adding a skill](https://github.com/3IVIS/cuddlytoddly/blob/main/CONTRIBUTING.md#adding-a-new-skill) — no core code changes required.
 
 ---
 
