@@ -41,6 +41,7 @@ EXECUTION_EVENTS = {
     RESUME_NODE,
 }
 
+
 def apply_event(graph: TaskGraph, event: Event, event_log=None):
     t = event.type
     p = event.payload or {}
@@ -110,7 +111,7 @@ def apply_event(graph: TaskGraph, event: Event, event_log=None):
         node = graph.nodes.get(p["node_id"])
         if node:
             node.status = "awaiting_input"
-            node.metadata["missing_fields"]        = p.get("missing_fields", [])
+            node.metadata["missing_fields"] = p.get("missing_fields", [])
             node.metadata["awaiting_input_reason"] = p.get("awaiting_input_reason", "")
 
     elif t == RESUME_NODE:
@@ -119,11 +120,11 @@ def apply_event(graph: TaskGraph, event: Event, event_log=None):
         if node:
             node.status = "pending"
             node.result = None
-            node.metadata.pop("missing_fields",        None)
+            node.metadata.pop("missing_fields", None)
             node.metadata.pop("awaiting_input_reason", None)
-            node.metadata.pop("retry_count",           None)
-            node.metadata.pop("retry_after",           None)
-            node.metadata.pop("verification_failure",  None)
+            node.metadata.pop("retry_count", None)
+            node.metadata.pop("retry_after", None)
+            node.metadata.pop("verification_failure", None)
 
     elif t == DETACH_NODE:
         graph.detach_node(p["node_id"])
@@ -162,7 +163,3 @@ def apply_event(graph: TaskGraph, event: Event, event_log=None):
 
     if event_log:
         event_log.append(event)
-
-
-
-

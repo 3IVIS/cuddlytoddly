@@ -1,4 +1,5 @@
 """Tests for cuddlytoddly.planning.llm_interface (LLM base + API layer)."""
+
 import json
 import threading
 
@@ -14,6 +15,7 @@ from cuddlytoddly.planning.llm_interface import (
 )
 
 # ── TokenCounter ──────────────────────────────────────────────────────────────
+
 
 class TestTokenCounter:
     def test_initial_values_zero(self):
@@ -70,6 +72,7 @@ class TestTokenCounter:
 
 # ── LLMStoppedError ───────────────────────────────────────────────────────────
 
+
 class TestLLMStoppedError:
     def test_is_runtime_error(self):
         assert issubclass(LLMStoppedError, RuntimeError)
@@ -81,8 +84,10 @@ class TestLLMStoppedError:
 
 # ── BaseLLM stop / resume ─────────────────────────────────────────────────────
 
+
 class ConcreteLLM(BaseLLM):
     """Minimal concrete subclass for testing BaseLLM behaviour."""
+
     def ask(self, prompt: str, schema=None) -> str:
         self._check_stop()
         return "{}"
@@ -123,6 +128,7 @@ class TestBaseLLM:
 
 
 # ── LlamaCppCache ─────────────────────────────────────────────────────────────
+
 
 class TestLlamaCppCache:
     def test_get_miss_returns_none(self, tmp_path):
@@ -181,6 +187,7 @@ class TestLlamaCppCache:
     def test_backward_compat_bare_string_value(self, tmp_path):
         """Old cache format stored bare string, not a dict."""
         import hashlib
+
         path = tmp_path / "cache.json"
         prompt = "old prompt"
         key = hashlib.sha256(prompt.encode()).hexdigest()
@@ -191,11 +198,14 @@ class TestLlamaCppCache:
 
 # ── create_llm_client factory ─────────────────────────────────────────────────
 
+
 class TestCreateLLMClient:
     def test_file_backend(self, tmp_path):
-        llm = create_llm_client("file",
-                                prompt_log_file=str(tmp_path / "prompts.txt"),
-                                response_file=str(tmp_path / "responses.txt"))
+        llm = create_llm_client(
+            "file",
+            prompt_log_file=str(tmp_path / "prompts.txt"),
+            response_file=str(tmp_path / "responses.txt"),
+        )
         assert isinstance(llm, FileBasedLLM)
 
     def test_unknown_backend_raises(self):
@@ -208,28 +218,32 @@ class TestCreateLLMClient:
 
     def test_openai_backend_returns_api_llm(self):
         from cuddlytoddly.planning.llm_interface import ApiLLM
+
         llm = create_llm_client("openai", api_key="fake-key")
         assert isinstance(llm, ApiLLM)
         assert llm.provider == "openai"
 
     def test_claude_backend_returns_api_llm(self):
         from cuddlytoddly.planning.llm_interface import ApiLLM
+
         llm = create_llm_client("claude", api_key="fake-key")
         assert isinstance(llm, ApiLLM)
         assert llm.provider == "claude"
 
     def test_backend_case_insensitive(self):
-        llm = create_llm_client("FILE",
-                                prompt_log_file="/tmp/p.txt",
-                                response_file="/tmp/r.txt")
+        llm = create_llm_client(
+            "FILE", prompt_log_file="/tmp/p.txt", response_file="/tmp/r.txt"
+        )
         assert isinstance(llm, FileBasedLLM)
 
 
 # ── ApiLLM schema helpers ─────────────────────────────────────────────────────
 
+
 class TestApiLLMHelpers:
     def setup_method(self):
         from cuddlytoddly.planning.llm_interface import ApiLLM
+
         self.ApiLLM = ApiLLM
 
     def test_schema_root_type_object(self):
@@ -257,5 +271,3 @@ class TestApiLLMHelpers:
     def test_unknown_provider_raises(self):
         with pytest.raises(ValueError, match="Unknown provider"):
             self.ApiLLM(provider="google")
-
-

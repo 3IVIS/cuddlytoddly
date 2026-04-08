@@ -54,11 +54,16 @@ EVENT_LIST_SCHEMA = {
                     "type": {"type": "string", "const": "ADD_NODE"},
                     "payload": {
                         "type": "object",
-                        "required": ["node_id", "node_type", "dependencies", "metadata"],
+                        "required": [
+                            "node_id",
+                            "node_type",
+                            "dependencies",
+                            "metadata",
+                        ],
                         "additionalProperties": False,
                         "properties": {
-                            "node_id":      {"type": "string"},
-                            "node_type":    {
+                            "node_id": {"type": "string"},
+                            "node_type": {
                                 "type": "string",
                                 "enum": ["task", "goal", "reflection", "clarification"],
                             },
@@ -70,13 +75,13 @@ EVENT_LIST_SCHEMA = {
                                 "type": "object",
                                 "additionalProperties": False,
                                 "properties": {
-                                    "description":      {"type": "string"},
-                                    "parallel_group":   {"type": ["string", "null"]},
-                                    "required_input":   {
+                                    "description": {"type": "string"},
+                                    "parallel_group": {"type": ["string", "null"]},
+                                    "required_input": {
                                         "type": "array",
                                         "items": _IO_ITEM,
                                     },
-                                    "output":           {
+                                    "output": {
                                         "type": "array",
                                         "items": _IO_ITEM,
                                     },
@@ -106,7 +111,7 @@ EVENT_LIST_SCHEMA = {
                         "required": ["node_id", "depends_on"],
                         "additionalProperties": False,
                         "properties": {
-                            "node_id":    {"type": "string"},
+                            "node_id": {"type": "string"},
                             "depends_on": {"type": "string"},
                         },
                     },
@@ -132,7 +137,7 @@ PLAN_SCHEMA = {
         },
         "events": {
             "type": "array",
-            "items": EVENT_LIST_SCHEMA["items"],   # reuses item definitions above
+            "items": EVENT_LIST_SCHEMA["items"],  # reuses item definitions above
         },
         "additional_clarification_fields": {
             "type": "array",
@@ -145,10 +150,19 @@ PLAN_SCHEMA = {
                 "required": ["key", "label", "value", "rationale"],
                 "additionalProperties": False,
                 "properties": {
-                    "key":      {"type": "string", "description": "snake_case identifier"},
-                    "label":    {"type": "string", "description": "Human-readable question"},
-                    "value":    {"type": "string", "description": "Best-guess answer or 'unknown'"},
-                    "rationale":{"type": "string", "description": "One sentence: why this matters"},
+                    "key": {"type": "string", "description": "snake_case identifier"},
+                    "label": {
+                        "type": "string",
+                        "description": "Human-readable question",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Best-guess answer or 'unknown'",
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One sentence: why this matters",
+                    },
                 },
             },
         },
@@ -189,11 +203,11 @@ REFINER_OUTPUT_SCHEMA = {
     ],
     "additionalProperties": False,
     "properties": {
-        "needs_refinement":  {"type": "boolean"},
-        "tasks_to_expand":   {"type": "array", "items": {"type": "string"}},
-        "validated_atomic":  {"type": "array", "items": {"type": "string"}},
+        "needs_refinement": {"type": "boolean"},
+        "tasks_to_expand": {"type": "array", "items": {"type": "string"}},
+        "validated_atomic": {"type": "array", "items": {"type": "string"}},
         "dependency_issues": {"type": "array", "items": {"type": "string"}},
-        "reasoning":         {"type": "string"},
+        "reasoning": {"type": "string"},
     },
 }
 
@@ -349,8 +363,13 @@ CLARIFICATION_GENERATION_SCHEMA = {
 
 AWAITING_INPUT_CHECK_SCHEMA = {
     "type": "object",
-    "required": ["blocked", "reason", "broadened_description", "broadened_for_missing",
-                 "broadened_output"],
+    "required": [
+        "blocked",
+        "reason",
+        "broadened_description",
+        "broadened_for_missing",
+        "broadened_output",
+    ],
     "additionalProperties": False,
     "properties": {
         "blocked": {
@@ -393,14 +412,19 @@ AWAITING_INPUT_CHECK_SCHEMA = {
                 "required": ["key", "label", "value", "rationale"],
                 "additionalProperties": False,
                 "properties": {
-                    "key":       {"type": "string",
-                                  "description": "snake_case identifier"},
-                    "label":     {"type": "string",
-                                  "description": "Human-readable field name shown in the UI"},
-                    "value":     {"type": "string",
-                                  "description": "Always 'unknown' for new fields"},
-                    "rationale": {"type": "string",
-                                  "description": "One sentence: why this field is needed"},
+                    "key": {"type": "string", "description": "snake_case identifier"},
+                    "label": {
+                        "type": "string",
+                        "description": "Human-readable field name shown in the UI",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Always 'unknown' for new fields",
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One sentence: why this field is needed",
+                    },
                 },
             },
         },
@@ -500,4 +524,3 @@ GHOST_NODE_RESOLUTION_SCHEMA = {
         },
     },
 }
-

@@ -56,10 +56,10 @@ class Orchestrator:
     @property
     def token_counts(self) -> dict:
         return {
-            "prompt":     token_counter.prompt_tokens,
+            "prompt": token_counter.prompt_tokens,
             "completion": token_counter.completion_tokens,
-            "total":      token_counter.total_tokens,
-            "calls":      token_counter.calls,
+            "total": token_counter.total_tokens,
+            "calls": token_counter.calls,
         }
 
     def __init__(
@@ -75,26 +75,26 @@ class Orchestrator:
         idle_sleep: float = 0.5,
         max_retries: int = 5,
     ):
-        self.graph                 = graph
-        self.planner               = planner
-        self.executor              = executor
-        self.event_log             = event_log
-        self.event_queue           = event_queue or EventQueue()
-        self.max_workers           = max_workers
-        self.quality_gate          = quality_gate
+        self.graph = graph
+        self.planner = planner
+        self.executor = executor
+        self.event_log = event_log
+        self.event_queue = event_queue or EventQueue()
+        self.max_workers = max_workers
+        self.quality_gate = quality_gate
         self.max_gap_fill_attempts = max_gap_fill_attempts
-        self.idle_sleep            = idle_sleep
-        self.max_retries           = max_retries
+        self.idle_sleep = idle_sleep
+        self.max_retries = max_retries
 
         # UI contract
-        self.graph_lock        = threading.RLock()
-        self.current_activity: str | None   = None
+        self.graph_lock = threading.RLock()
+        self.current_activity: str | None = None
         self.activity_started: float | None = None
 
         # Internals
-        self._pool                          = ThreadPoolExecutor(max_workers=max_workers)
+        self._pool = ThreadPoolExecutor(max_workers=max_workers)
         self._running_futures: dict[str, object] = {}
-        self._stop_event                    = threading.Event()
+        self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._prev_results: dict[str, object] = {}
 
@@ -165,7 +165,7 @@ class Orchestrator:
             try:
                 self._drain_event_queue()
                 self._expansion_request_pass()
-                planned  = self._planning_pass()
+                planned = self._planning_pass()
                 self._complete_finished_goals()
                 self._resume_unblocked_pass()
                 launched = self._execution_pass()
@@ -199,8 +199,10 @@ class Orchestrator:
             try:
                 event = self.event_queue.get()
                 if event.type == "RESET_SUBTREE":
-                    logger.info("[ORCHESTRATOR] RESET_SUBTREE received for: %s",
-                                event.payload.get("node_id"))
+                    logger.info(
+                        "[ORCHESTRATOR] RESET_SUBTREE received for: %s",
+                        event.payload.get("node_id"),
+                    )
                     self._reset_subtree_impl(event.payload["node_id"])
                 else:
                     with self.graph_lock:
@@ -214,8 +216,8 @@ class Orchestrator:
                 return
 
             to_reset = []
-            queue    = [root_id]
-            visited  = set()
+            queue = [root_id]
+            visited = set()
             while queue:
                 nid = queue.pop(0)
                 if nid in visited:
@@ -236,9 +238,9 @@ class Orchestrator:
                     continue
                 node.status = "pending"
                 node.result = None
-                node.metadata.pop("verified",             None)
+                node.metadata.pop("verified", None)
                 node.metadata.pop("verification_failure", None)
-                node.metadata.pop("retry_count",          None)
+                node.metadata.pop("retry_count", None)
                 logger.info("[RESET_SUBTREE] Reset: %s", nid)
 
             self.graph.recompute_readiness()
@@ -251,9 +253,9 @@ class Orchestrator:
 
         with self.graph_lock:
             unexpanded = [
-                n for n in self.graph.nodes.values()
-                if n.node_type == "goal"
-                and not n.metadata.get("expanded", False)
+                n
+                for n in self.graph.nodes.values()
+                if n.node_type == "goal" and not n.metadata.get("expanded", False)
             ]
 
         total = 0
@@ -286,10 +288,15 @@ class Orchestrator:
                 for evt in events:
                     self._apply(Event(evt["type"], evt["payload"]))
                     total += 1
-                self._apply(Event(UPDATE_METADATA, {
-                    "node_id":  goal.id,
-                    "metadata": {"expanded": True},
-                }))
+                self._apply(
+                    Event(
+                        UPDATE_METADATA,
+                        {
+                            "node_id": goal.id,
+                            "metadata": {"expanded": True},
+                        },
+                    )
+                )
 
             logger.info("[PLAN] Goal %s → %d events", goal.id, len(events))
 
@@ -307,7 +314,7 @@ class Orchestrator:
                 if not node.metadata.get("expanded", False):
                     continue
 
-                related  = set(node.dependencies) | set(node.children)
+                related = set(node.dependencies) | set(node.children)
                 if not related:
                     continue
 
@@ -318,10 +325,15 @@ class Orchestrator:
                 )
                 if all_done:
                     existing_result = node.result
-                    self._apply(Event(MARK_DONE, {
-                        "node_id": node.id,
-                        "result":  existing_result,
-                    }))
+                    self._apply(
+                        Event(
+                            MARK_DONE,
+                            {
+                                "node_id": node.id,
+                                "result": existing_result,
+                            },
+                        )
+                    )
                     logger.info("[ORCHESTRATOR] Goal completed: %s", node.id)
 
     # ── Execution pass ───────────────────────────────────────────────────────
@@ -331,7 +343,8 @@ class Orchestrator:
 
         with self.graph_lock:
             ready = [
-                n for n in self.graph.nodes.values()
+                n
+                for n in self.graph.nodes.values()
                 if n.status == "ready"
                 and n.node_type not in ("clarification", "execution_step")
                 and n.id not in self._running_futures
@@ -358,7 +371,8 @@ class Orchestrator:
                 remaining = retry_after - time.time()
                 logger.debug(
                     "[EXEC] Node %s in backoff — %.1fs remaining",
-                    node.id, remaining,
+                    node.id,
+                    remaining,
                 )
                 continue
 
@@ -401,8 +415,7 @@ class Orchestrator:
     def _expansion_request_pass(self):
         with self.graph_lock:
             to_expand = [
-                n.id for n in self.graph.nodes.values()
-                if n.status == "to_be_expanded"
+                n.id for n in self.graph.nodes.values() if n.status == "to_be_expanded"
             ]
 
         for node_id in to_expand:
@@ -413,22 +426,32 @@ class Orchestrator:
                 if not n:
                     continue
 
-                self._apply(Event(SET_NODE_TYPE, {
-                    "node_id":   node_id,
-                    "node_type": "goal",
-                }))
-                self._apply(Event(UPDATE_METADATA, {
-                    "node_id":  node_id,
-                    "metadata": {
-                        "expanded":    False,
-                        "description": n.metadata.get("description", node_id),
-                    },
-                }))
+                self._apply(
+                    Event(
+                        SET_NODE_TYPE,
+                        {
+                            "node_id": node_id,
+                            "node_type": "goal",
+                        },
+                    )
+                )
+                self._apply(
+                    Event(
+                        UPDATE_METADATA,
+                        {
+                            "node_id": node_id,
+                            "metadata": {
+                                "expanded": False,
+                                "description": n.metadata.get("description", node_id),
+                            },
+                        },
+                    )
+                )
                 self._apply(Event(RESET_NODE, {"node_id": node_id}))
 
                 to_reset = []
-                queue    = list(self.graph.nodes[node_id].children)
-                visited  = set()
+                queue = list(self.graph.nodes[node_id].children)
+                visited = set()
                 while queue:
                     child_id = queue.pop()
                     if child_id in visited or child_id not in self.graph.nodes:
@@ -441,8 +464,9 @@ class Orchestrator:
 
                 for desc_id in to_reset:
                     self._apply(Event(RESET_NODE, {"node_id": desc_id}))
-                    logger.info("[ORCHESTRATOR] Reset dependent for re-execution: %s",
-                                desc_id)
+                    logger.info(
+                        "[ORCHESTRATOR] Reset dependent for re-execution: %s", desc_id
+                    )
 
     def _on_node_done(self, node_id: str, future):
         self._running_futures.pop(node_id, None)
@@ -509,26 +533,32 @@ class Orchestrator:
                             signal.new_fields,
                             signal.clarification_node_id,
                         )
-                    self._apply(Event(UPDATE_METADATA, {
-                        "node_id":  node_id,
-                        "metadata": {
-                            "broadened_description": signal.broadened_description,
-                            "broadened_for_missing": signal.broadened_for_missing,
-                            "broadened_reason":      signal.reason,
-                            "broadened_output":      signal.broadened_output,
-                        },
-                    }))
+                    self._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": node_id,
+                                "metadata": {
+                                    "broadened_description": signal.broadened_description,
+                                    "broadened_for_missing": signal.broadened_for_missing,
+                                    "broadened_reason": signal.reason,
+                                    "broadened_output": signal.broadened_output,
+                                },
+                            },
+                        )
+                    )
                     logger.info(
                         "[EXEC] Node %s executed with broadened description "
                         "(missing: %s)",
-                        node_id, signal.broadened_for_missing,
+                        node_id,
+                        signal.broadened_for_missing,
                     )
 
         # ── Pre-flight: check file outputs ────────────────────────────────────
-        satisfied:       bool | None = None
-        reason:          str         = ""
-        expected_files:  list        = []
-        tool_calls_made: set         = set()
+        satisfied: bool | None = None
+        reason: str = ""
+        expected_files: list = []
+        tool_calls_made: set = set()
 
         reporter = self._reporters.get(node_id)
 
@@ -536,7 +566,8 @@ class Orchestrator:
             with self.graph_lock:
                 declared_outputs = (
                     self.graph.nodes[node_id].metadata.get("output", [])
-                    if node_id in self.graph.nodes else []
+                    if node_id in self.graph.nodes
+                    else []
                 )
                 tool_calls_made = {
                     self.graph.nodes[sid].metadata.get("tool_name")
@@ -545,19 +576,23 @@ class Orchestrator:
                 }
 
             expected_files = [
-                o for o in declared_outputs
-                if any(str(o).endswith(ext)
-                       for ext in self.quality_gate.FILE_EXTENSIONS)
+                o
+                for o in declared_outputs
+                if any(
+                    str(o).endswith(ext) for ext in self.quality_gate.FILE_EXTENSIONS
+                )
             ]
 
             if expected_files and "write_file" not in tool_calls_made:
                 import re
+
                 file_path = expected_files[0]
-                content   = result
+                content = result
 
                 match = re.search(
-                    r'(?:summary|content)\s*:\s*(.+)',
-                    result, re.DOTALL | re.IGNORECASE,
+                    r"(?:summary|content)\s*:\s*(.+)",
+                    result,
+                    re.DOTALL | re.IGNORECASE,
                 )
                 if match:
                     content = match.group(1).strip()
@@ -566,29 +601,33 @@ class Orchestrator:
                     try:
                         tools = getattr(self.executor, "tools", None)
                         if tools:
-                            tools.execute("write_file", {
-                                "path":    str(file_path),
-                                "content": content,
-                            })
+                            tools.execute(
+                                "write_file",
+                                {
+                                    "path": str(file_path),
+                                    "content": content,
+                                },
+                            )
                             logger.info(
                                 "[EXEC] Auto-wrote missing file output: %s", file_path
                             )
                     except Exception as e:
-                        logger.warning("[EXEC] Auto-write failed for %s: %s",
-                                       file_path, e)
+                        logger.warning(
+                            "[EXEC] Auto-write failed for %s: %s", file_path, e
+                        )
 
         # ── LLM verification ──────────────────────────────────────────────────
         if self.quality_gate:
             with self.graph_lock:
                 if node_id not in self.graph.nodes:
                     return
-                node     = self.graph.nodes[node_id]
+                node = self.graph.nodes[node_id]
                 snapshot = self.graph.get_snapshot()
 
             satisfied, reason = self._verify_result(node, result, snapshot)
         else:
             satisfied = True
-            reason    = ""
+            reason = ""
 
         # ── Consolidate state mutation in a single lock acquisition ──────────
         # Holding the lock across both MARK_FAILED and RESET_NODE prevents
@@ -603,15 +642,20 @@ class Orchestrator:
                 retry = node.metadata.get("retry_count", 0)
                 logger.warning(
                     "[EXEC] Node %s verification FAILED (attempt %d): %s",
-                    node_id, retry + 1, reason,
+                    node_id,
+                    retry + 1,
+                    reason,
                 )
 
                 # ── Max retries cap ───────────────────────────────────────────
-                if retry + 1 >= self.max_retries:  # retry is 0-indexed; this is the (retry+1)th failure
+                if (
+                    retry + 1 >= self.max_retries
+                ):  # retry is 0-indexed; this is the (retry+1)th failure
                     logger.error(
                         "[EXEC] Node %s exhausted %d retries — "
                         "marking permanently failed",
-                        node_id, self.max_retries,
+                        node_id,
+                        self.max_retries,
                     )
                     if reporter:
                         reporter.expose_all()
@@ -620,33 +664,48 @@ class Orchestrator:
                     return
 
                 # ── Exponential backoff before retry ─────────────────────────
-                backoff_secs = min(2 ** retry, 60)  # 1s, 2s, 4s ... capped at 60s
+                backoff_secs = min(2**retry, 60)  # 1s, 2s, 4s ... capped at 60s
                 node.metadata["verification_failure"] = reason
-                node.metadata["retry_count"]          = retry + 1
-                node.metadata["retry_after"]          = time.time() + backoff_secs
+                node.metadata["retry_count"] = retry + 1
+                node.metadata["retry_after"] = time.time() + backoff_secs
                 node.metadata.pop("verified", None)
                 logger.info(
                     "[EXEC] Node %s will retry in %.0fs (attempt %d/%d)",
-                    node_id, backoff_secs, retry + 1, self.max_retries,
+                    node_id,
+                    backoff_secs,
+                    retry + 1,
+                    self.max_retries,
                 )
                 if reporter:
                     reporter.expose_all()
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
-                self._apply(Event(RESET_NODE,  {"node_id": node_id}))
+                self._apply(Event(RESET_NODE, {"node_id": node_id}))
             else:
-                logger.info("[EXEC] Node %s verified OK. Result: %.120s",
-                            node_id, result)
-                self._apply(Event(MARK_DONE, {
-                    "node_id": node_id,
-                    "result":  result,
-                }))
-                self._apply(Event(UPDATE_METADATA, {
-                    "node_id":  node_id,
-                    "metadata": {"verified": True},
-                }))
+                logger.info(
+                    "[EXEC] Node %s verified OK. Result: %.120s", node_id, result
+                )
+                self._apply(
+                    Event(
+                        MARK_DONE,
+                        {
+                            "node_id": node_id,
+                            "result": result,
+                        },
+                    )
+                )
+                self._apply(
+                    Event(
+                        UPDATE_METADATA,
+                        {
+                            "node_id": node_id,
+                            "metadata": {"verified": True},
+                        },
+                    )
+                )
                 if reporter:
                     reporter.hide_all()
                 self._reporters.pop(node_id, None)
+
     # ── Verification ─────────────────────────────────────────────────────────
 
     def _verify_result(self, node, result: str, snapshot):
@@ -674,14 +733,21 @@ class Orchestrator:
 
         Returns the number of nodes resumed.
         """
-        _PLACEHOLDERS = {"unknown", "n/a", "not specified", "not provided",
-                         "none", "unspecified", "tbd", ""}
+        _PLACEHOLDERS = {
+            "unknown",
+            "n/a",
+            "not specified",
+            "not provided",
+            "none",
+            "unspecified",
+            "tbd",
+            "",
+        }
 
         with self.graph_lock:
             snapshot = self.graph.get_snapshot()
             awaiting = [
-                n for n in self.graph.nodes.values()
-                if n.status == "awaiting_input"
+                n for n in self.graph.nodes.values() if n.status == "awaiting_input"
             ]
 
         resumed = 0
@@ -741,7 +807,8 @@ class Orchestrator:
                         self._apply(Event(RESUME_NODE, {"node_id": node.id}))
                         logger.info(
                             "[ORCHESTRATOR] Node %s resumed — missing fields: %s",
-                            node.id, missing_keys or "(none specified)",
+                            node.id,
+                            missing_keys or "(none specified)",
                         )
                         resumed += 1
 
@@ -781,30 +848,41 @@ class Orchestrator:
 
         clar = self.graph.nodes[clar_id]
         existing_fields = clar.metadata.get("fields", [])
-        existing_keys   = {f.get("key") for f in existing_fields}
+        existing_keys = {f.get("key") for f in existing_fields}
 
         fields_to_add = [f for f in new_fields if f.get("key") not in existing_keys]
         if not fields_to_add:
             return
 
         updated_fields = existing_fields + fields_to_add
-        self._apply(Event(UPDATE_METADATA, {
-            "node_id":  clar_id,
-            "metadata": {"fields": updated_fields},
-        }))
+        self._apply(
+            Event(
+                UPDATE_METADATA,
+                {
+                    "node_id": clar_id,
+                    "metadata": {"fields": updated_fields},
+                },
+            )
+        )
 
         # Patch the result JSON so _resume_unblocked_pass can read the new keys
         try:
             result_fields = json.loads(clar.result) if clar.result else []
             result_fields.extend(fields_to_add)
-            self._apply(Event(SET_RESULT, {
-                "node_id": clar_id,
-                "result":  json.dumps(result_fields, ensure_ascii=False),
-            }))
+            self._apply(
+                Event(
+                    SET_RESULT,
+                    {
+                        "node_id": clar_id,
+                        "result": json.dumps(result_fields, ensure_ascii=False),
+                    },
+                )
+            )
         except Exception as e:
             logger.warning(
                 "[ORCHESTRATOR] Failed to patch clarification result for %s: %s",
-                clar_id, e,
+                clar_id,
+                e,
             )
 
         logger.info(
@@ -824,45 +902,64 @@ class Orchestrator:
             if bridge_id in self.graph.nodes:
                 return
 
-            self._apply(Event(ADD_NODE, {
-                "node_id":      bridge_id,
-                "node_type":    "task",
-                "dependencies": [],
-                "origin":       "quality_gate",
-                "metadata": {
-                    "description":   bridge.get("description", bridge_id),
-                    "output":        [{"name": bridge.get("output", "bridge_output"),
-                                       "type": "document",
-                                       "description": bridge.get("output", "")}],
-                    "fully_refined": True,
-                },
-            }))
+            self._apply(
+                Event(
+                    ADD_NODE,
+                    {
+                        "node_id": bridge_id,
+                        "node_type": "task",
+                        "dependencies": [],
+                        "origin": "quality_gate",
+                        "metadata": {
+                            "description": bridge.get("description", bridge_id),
+                            "output": [
+                                {
+                                    "name": bridge.get("output", "bridge_output"),
+                                    "type": "document",
+                                    "description": bridge.get("output", ""),
+                                }
+                            ],
+                            "fully_refined": True,
+                        },
+                    },
+                )
+            )
 
-            self._apply(Event(ADD_DEPENDENCY, {
-                "node_id":    blocked_node_id,
-                "depends_on": bridge_id,
-            }))
+            self._apply(
+                Event(
+                    ADD_DEPENDENCY,
+                    {
+                        "node_id": blocked_node_id,
+                        "depends_on": bridge_id,
+                    },
+                )
+            )
 
             current_node = self.graph.nodes.get(blocked_node_id)
             if current_node:
                 attempts = current_node.metadata.get("gap_fill_attempts", 0)
-                self._apply(Event(UPDATE_METADATA, {
-                    "node_id":  blocked_node_id,
-                    "metadata": {"gap_fill_attempts": attempts + 1},
-                }))
+                self._apply(
+                    Event(
+                        UPDATE_METADATA,
+                        {
+                            "node_id": blocked_node_id,
+                            "metadata": {"gap_fill_attempts": attempts + 1},
+                        },
+                    )
+                )
 
-        logger.info("[ORCHESTRATOR] Injected bridge node %s for %s",
-                    bridge_id, blocked_node_id)
+        logger.info(
+            "[ORCHESTRATOR] Injected bridge node %s for %s", bridge_id, blocked_node_id
+        )
 
     # ── Startup verification ─────────────────────────────────────────────────
 
     def verify_restored_nodes(self):
         with self.graph_lock:
             done_tasks = [
-                n for n in self.graph.nodes.values()
-                if n.node_type == "task"
-                and n.status == "done"
-                and n.result is not None
+                n
+                for n in self.graph.nodes.values()
+                if n.node_type == "task" and n.status == "done" and n.result is not None
             ]
 
         # Pass 1: file-existence check for nodes with declared file outputs.
@@ -876,17 +973,16 @@ class Orchestrator:
             missing_files = []
             for output in declared_outputs:
                 if isinstance(output, dict):
-                    is_file = (
-                        output.get("type") == "file"
-                        or any(
-                            output.get("name", "").endswith(ext)
-                            for ext in self.quality_gate.FILE_EXTENSIONS
-                        )
+                    is_file = output.get("type") == "file" or any(
+                        output.get("name", "").endswith(ext)
+                        for ext in self.quality_gate.FILE_EXTENSIONS
                     )
                     path = output.get("name", "")
                 else:
-                    is_file = any(str(output).endswith(ext)
-                                  for ext in self.quality_gate.FILE_EXTENSIONS)
+                    is_file = any(
+                        str(output).endswith(ext)
+                        for ext in self.quality_gate.FILE_EXTENSIONS
+                    )
                     path = str(output)
                 if is_file and path and not self.quality_gate._file_exists(path):
                     missing_files.append(path)
@@ -894,26 +990,26 @@ class Orchestrator:
                 logger.warning(
                     "[STARTUP] Node %s declared file output(s) %s do not exist "
                     "on disk — resetting",
-                    node.id, missing_files,
+                    node.id,
+                    missing_files,
                 )
                 with self.graph_lock:
                     n = self.graph.nodes.get(node.id)
                     if n:
-                        n.status  = "pending"
-                        n.result  = None
+                        n.status = "pending"
+                        n.result = None
                         n.metadata["verification_failure"] = (
                             f"declared file output(s) {missing_files} "
                             f"do not exist on disk"
                         )
                         n.metadata.pop("verified", None)
-                        n.metadata["retry_count"] = (
-                            n.metadata.get("retry_count", 0) + 1
-                        )
+                        n.metadata["retry_count"] = n.metadata.get("retry_count", 0) + 1
 
         # Pass 2: LLM verification for nodes never verified
         with self.graph_lock:
             candidates = [
-                n for n in self.graph.nodes.values()
+                n
+                for n in self.graph.nodes.values()
                 if n.node_type == "task"
                 and n.status == "done"
                 and n.result is not None
@@ -921,9 +1017,13 @@ class Orchestrator:
             ]
 
         if not candidates:
-            logger.info("[STARTUP] All restored nodes already verified — nothing to check")
+            logger.info(
+                "[STARTUP] All restored nodes already verified — nothing to check"
+            )
         else:
-            logger.info("[STARTUP] %d restored node(s) need verification", len(candidates))
+            logger.info(
+                "[STARTUP] %d restored node(s) need verification", len(candidates)
+            )
 
         for node in candidates:
             if self._stop_event.is_set():
@@ -947,20 +1047,26 @@ class Orchestrator:
                 if not satisfied:
                     logger.warning(
                         "[STARTUP] Restored node %s failed verification: %s — resetting",
-                        node.id, reason,
+                        node.id,
+                        reason,
                     )
-                    n           = self.graph.nodes[node.id]
-                    n.status    = "pending"
-                    n.result    = None
+                    n = self.graph.nodes[node.id]
+                    n.status = "pending"
+                    n.result = None
                     n.metadata["verification_failure"] = reason
                     n.metadata.pop("verified", None)
                     n.metadata["retry_count"] = n.metadata.get("retry_count", 0) + 1
                 else:
                     logger.info("[STARTUP] Restored node %s verified OK", node.id)
-                    self._apply(Event(UPDATE_METADATA, {
-                        "node_id":  node.id,
-                        "metadata": {"verified": True},
-                    }))
+                    self._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": node.id,
+                                "metadata": {"verified": True},
+                            },
+                        )
+                    )
 
         with self.graph_lock:
             self.graph.recompute_readiness()
@@ -970,31 +1076,45 @@ class Orchestrator:
 
     # ── User-facing edit API ─────────────────────────────────────────────────
 
-    def add_goal(self, goal_id: str, description: str = "",
-                 dependencies: list = None):
+    def add_goal(self, goal_id: str, description: str = "", dependencies: list = None):
         with self.graph_lock:
-            self._apply(Event(ADD_NODE, {
-                "node_id":      goal_id,
-                "node_type":    "goal",
-                "dependencies": dependencies or [],
-                "origin":       "user",
-                "metadata":     {"description": description, "expanded": False},
-            }))
+            self._apply(
+                Event(
+                    ADD_NODE,
+                    {
+                        "node_id": goal_id,
+                        "node_type": "goal",
+                        "dependencies": dependencies or [],
+                        "origin": "user",
+                        "metadata": {"description": description, "expanded": False},
+                    },
+                )
+            )
         logger.info("[USER] Added goal: %s", goal_id)
 
-    def add_task(self, node_id: str, dependencies: list = None,
-                 description: str = "", metadata: dict = None):
+    def add_task(
+        self,
+        node_id: str,
+        dependencies: list = None,
+        description: str = "",
+        metadata: dict = None,
+    ):
         meta = {"description": description, "fully_refined": True}
         if metadata:
             meta.update(metadata)
         with self.graph_lock:
-            self._apply(Event(ADD_NODE, {
-                "node_id":      node_id,
-                "node_type":    "task",
-                "dependencies": dependencies or [],
-                "origin":       "user",
-                "metadata":     meta,
-            }))
+            self._apply(
+                Event(
+                    ADD_NODE,
+                    {
+                        "node_id": node_id,
+                        "node_type": "task",
+                        "dependencies": dependencies or [],
+                        "origin": "user",
+                        "metadata": meta,
+                    },
+                )
+            )
 
     def remove_node(self, node_id: str):
         with self.graph_lock:
@@ -1005,15 +1125,27 @@ class Orchestrator:
 
     def add_dependency(self, node_id: str, depends_on: str):
         with self.graph_lock:
-            self._apply(Event(ADD_DEPENDENCY, {
-                "node_id": node_id, "depends_on": depends_on,
-            }))
+            self._apply(
+                Event(
+                    ADD_DEPENDENCY,
+                    {
+                        "node_id": node_id,
+                        "depends_on": depends_on,
+                    },
+                )
+            )
 
     def remove_dependency(self, node_id: str, depends_on: str):
         with self.graph_lock:
-            self._apply(Event(REMOVE_DEPENDENCY, {
-                "node_id": node_id, "depends_on": depends_on,
-            }))
+            self._apply(
+                Event(
+                    REMOVE_DEPENDENCY,
+                    {
+                        "node_id": node_id,
+                        "depends_on": depends_on,
+                    },
+                )
+            )
 
     def retry_node(self, node_id: str):
         with self.graph_lock:
@@ -1040,13 +1172,12 @@ class Orchestrator:
                 logger.warning(
                     "[ORCHESTRATOR] resume_node called on %s "
                     "which is not awaiting_input (status=%s)",
-                    node_id, node.status,
+                    node_id,
+                    node.status,
                 )
                 return False
             self._apply(Event(RESUME_NODE, {"node_id": node_id}))
-            logger.info(
-                "[ORCHESTRATOR] Node %s manually resumed by user", node_id
-            )
+            logger.info("[ORCHESTRATOR] Node %s manually resumed by user", node_id)
             return True
 
     def replan_goal(self, goal_id: str):
@@ -1055,21 +1186,33 @@ class Orchestrator:
             if not goal or goal.node_type != "goal":
                 return
             for cid in list(goal.children):
-                if (cid in self.graph.nodes
-                        and self.graph.nodes[cid].status in ("pending", "ready")
-                        and cid not in self._running_futures):
+                if (
+                    cid in self.graph.nodes
+                    and self.graph.nodes[cid].status in ("pending", "ready")
+                    and cid not in self._running_futures
+                ):
                     self._apply(Event(REMOVE_NODE, {"node_id": cid}))
-            self._apply(Event(UPDATE_METADATA, {
-                "node_id":  goal_id,
-                "metadata": {"expanded": False},
-            }))
+            self._apply(
+                Event(
+                    UPDATE_METADATA,
+                    {
+                        "node_id": goal_id,
+                        "metadata": {"expanded": False},
+                    },
+                )
+            )
 
     def update_metadata(self, node_id: str, metadata: dict):
         with self.graph_lock:
-            self._apply(Event(UPDATE_METADATA, {
-                "node_id":  node_id,
-                "metadata": metadata,
-            }))
+            self._apply(
+                Event(
+                    UPDATE_METADATA,
+                    {
+                        "node_id": node_id,
+                        "metadata": metadata,
+                    },
+                )
+            )
 
     # ── Read access ──────────────────────────────────────────────────────────
 
@@ -1084,8 +1227,8 @@ class Orchestrator:
         for n in nodes:
             counts[n.status] = counts.get(n.status, 0) + 1
         return {
-            "total":         len(nodes),
-            "by_status":     counts,
+            "total": len(nodes),
+            "by_status": counts,
             "running_nodes": list(self._running_futures.keys()),
         }
 
@@ -1098,7 +1241,5 @@ class Orchestrator:
     def _is_fully_done(self) -> bool:
         with self.graph_lock:
             return all(
-                n.status in ("done", "failed")
-                for n in self.graph.nodes.values()
+                n.status in ("done", "failed") for n in self.graph.nodes.values()
             )
-

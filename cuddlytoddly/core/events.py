@@ -30,6 +30,7 @@ class Event:
             timestamp=data.get("timestamp"),
         )
 
+
 # Event types
 ADD_NODE = "ADD_NODE"
 REMOVE_NODE = "REMOVE_NODE"

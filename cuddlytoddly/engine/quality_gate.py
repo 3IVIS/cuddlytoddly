@@ -30,13 +30,24 @@ class QualityGate:
     the graph directly.
     """
 
-    FILE_EXTENSIONS = frozenset({
-        ".md", ".txt", ".py", ".json", ".csv", ".html",
-        ".yaml", ".yml", ".xml", ".pdf", ".log",
-    })
+    FILE_EXTENSIONS = frozenset(
+        {
+            ".md",
+            ".txt",
+            ".py",
+            ".json",
+            ".csv",
+            ".html",
+            ".yaml",
+            ".yml",
+            ".xml",
+            ".pdf",
+            ".log",
+        }
+    )
 
     def __init__(self, llm_client, tool_registry=None):
-        self.llm   = llm_client
+        self.llm = llm_client
         self.tools = tool_registry
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -60,9 +71,8 @@ class QualityGate:
 
         def _is_file_output(o):
             if isinstance(o, dict):
-                return (
-                    o.get("type") == "file"
-                    or any(_output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
+                return o.get("type") == "file" or any(
+                    _output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS
                 )
             return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
 
@@ -76,8 +86,8 @@ class QualityGate:
 
         # ── Collect upstream context for the LLM verifier ────────────────────
         unknown_fields_context = self._collect_unknown_fields(node, snapshot)
-        tool_results_context   = self._build_tool_results_context(node, snapshot)
-        broadening_context     = self._build_broadening_context(node)
+        tool_results_context = self._build_tool_results_context(node, snapshot)
+        broadening_context = self._build_broadening_context(node)
 
         # ── LLM content check ─────────────────────────────────────────────────
         def _fmt(o):
@@ -97,7 +107,7 @@ class QualityGate:
         )
 
         try:
-            raw    = self.llm.ask(prompt, schema=RESULT_VERIFICATION_SCHEMA)
+            raw = self.llm.ask(prompt, schema=RESULT_VERIFICATION_SCHEMA)
             parsed = json.loads(raw)
             return bool(parsed.get("satisfied", True)), parsed.get("reason", "")
         except LLMStoppedError:
@@ -115,8 +125,17 @@ class QualityGate:
         all fields were known — the prompt helper omits the section in that case.
         """
         import json as _json
-        _PLACEHOLDERS = {"unknown", "n/a", "not specified", "not provided",
-                         "none", "unspecified", "tbd", ""}
+
+        _PLACEHOLDERS = {
+            "unknown",
+            "n/a",
+            "not specified",
+            "not provided",
+            "none",
+            "unspecified",
+            "tbd",
+            "",
+        }
         unknown_labels = []
 
         for dep_id in node.dependencies:
@@ -170,9 +189,7 @@ class QualityGate:
                     f"    Description: {dep.metadata.get('description', dep_id)}\n"
                     f"    Result:      {dep.result}"
                 )
-        upstream_text = (
-            "\n\n".join(dep_lines) if dep_lines else "  (none — root task)"
-        )
+        upstream_text = "\n\n".join(dep_lines) if dep_lines else "  (none — root task)"
 
         required_inputs = node.metadata.get("required_input", [])
 
@@ -183,7 +200,8 @@ class QualityGate:
 
         inputs_text = (
             "\n".join(_fmt_input(i) for i in required_inputs)
-            if required_inputs else "  (not specified)"
+            if required_inputs
+            else "  (not specified)"
         )
 
         prompt = build_check_dependencies_prompt(
@@ -194,7 +212,7 @@ class QualityGate:
         )
 
         try:
-            raw    = self.llm.ask(prompt, schema=DEPENDENCY_CHECK_SCHEMA)
+            raw = self.llm.ask(prompt, schema=DEPENDENCY_CHECK_SCHEMA)
             parsed = json.loads(raw)
             if parsed.get("ok", True):
                 return None
@@ -203,7 +221,9 @@ class QualityGate:
                 return None
             logger.info(
                 "[QUALITY] Gap detected for %s: %s → bridge: %s",
-                node.id, parsed.get("missing", "?"), bridge["node_id"],
+                node.id,
+                parsed.get("missing", "?"),
+                bridge["node_id"],
             )
             return bridge
         except LLMStoppedError:
@@ -224,14 +244,15 @@ class QualityGate:
         they are likely fabricated from prior knowledge.
         """
         step_nodes = [
-            n for nid, n in snapshot.items()
+            n
+            for nid, n in snapshot.items()
             if nid.startswith(node.id + "__step_")
             and n.metadata.get("step_type") == "tool_call"
         ]
         if not step_nodes:
             return ""
 
-        total  = 0
+        total = 0
         failed = 0
         for sn in step_nodes:
             for attempt in sn.metadata.get("attempts", []):
@@ -265,20 +286,21 @@ class QualityGate:
         """
         broadened_description = node.metadata.get("broadened_description", "")
         broadened_for_missing = node.metadata.get("broadened_for_missing", [])
-        broadened_reason      = node.metadata.get("broadened_reason", "")
+        broadened_reason = node.metadata.get("broadened_reason", "")
 
         if not broadened_description:
             return ""
 
         missing_text = (
             ", ".join(broadened_for_missing)
-            if broadened_for_missing else "unspecified fields"
+            if broadened_for_missing
+            else "unspecified fields"
         )
         reason_text = f" Reason: {broadened_reason}" if broadened_reason else ""
         return (
             f"This task ran with a broadened goal because the following inputs "
             f"were unavailable: {missing_text}.{reason_text} "
-            f"The broadened goal was: \"{broadened_description}\". "
+            f'The broadened goal was: "{broadened_description}". '
             f"The result must therefore be general — templates, frameworks, ranges, "
             f"or guided questions. Any specific invented values (exact percentages, "
             f"named personal achievements, specific figures) that could only come "
@@ -294,6 +316,3 @@ class QualityGate:
             except Exception:
                 return False
         return os.path.exists(path)
-
-
-

@@ -1,4 +1,5 @@
 """Tests for cuddlytoddly.skills.skill_loader."""
+
 import shutil
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 from cuddlytoddly.skills.skill_loader import SkillLoader, Tool, ToolRegistry
 
 # ── ToolRegistry ──────────────────────────────────────────────────────────────
+
 
 class TestToolRegistry:
     def test_register_and_execute(self):
@@ -55,8 +57,10 @@ class TestToolRegistry:
 # This fixture copies those skills into a tmp dir and adds the missing SKILL.md
 # so SkillLoader can discover them, matching the intended package behaviour.
 
+
 def _build_real_skills_dir(tmp_path: Path) -> Path:
     from cuddlytoddly.skills.skill_loader import SKILLS_DIR
+
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     for skill_name in ["file_ops", "code_execution"]:
@@ -122,6 +126,7 @@ class TestSkillLoaderWithRealSkills:
 
 # ── SkillLoader with synthetic skill dir ──────────────────────────────────────
 
+
 class TestSkillLoaderSynthetic:
     @pytest.fixture
     def skills_dir(self, tmp_path):
@@ -135,13 +140,13 @@ class TestSkillLoaderSynthetic:
             "## Expected output format\nA string with the result.\n"
         )
         (skill_dir / "tools.py").write_text(
-            'TOOLS = {\n'
+            "TOOLS = {\n"
             '    "do_thing": {\n'
             '        "description": "Does the thing.",\n'
             '        "input_schema": {"input": "string"},\n'
             '        "fn": lambda args: f"did: {args[\'input\']}",\n'
-            '    }\n'
-            '}\n'
+            "    }\n"
+            "}\n"
         )
         return tmp_path
 
@@ -174,7 +179,9 @@ class TestSkillLoaderSynthetic:
     def test_broken_tools_py_skipped_gracefully(self, tmp_path):
         skill_dir = tmp_path / "broken_skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("# Broken\n\n## Description\nBroken tools.\n")
+        (skill_dir / "SKILL.md").write_text(
+            "# Broken\n\n## Description\nBroken tools.\n"
+        )
         (skill_dir / "tools.py").write_text("this is not valid python )()(")
         loader = SkillLoader(skills_dir=tmp_path)
         assert len(loader.registry.tools) == 0
@@ -182,7 +189,9 @@ class TestSkillLoaderSynthetic:
     def test_tools_py_without_tools_dict_skipped(self, tmp_path):
         skill_dir = tmp_path / "no_dict_skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("# NoDictSkill\n\n## Description\nNo dict.\n")
+        (skill_dir / "SKILL.md").write_text(
+            "# NoDictSkill\n\n## Description\nNo dict.\n"
+        )
         (skill_dir / "tools.py").write_text("TOOLS = 'not a dict'\n")
         loader = SkillLoader(skills_dir=tmp_path)
         assert len(loader.registry.tools) == 0
@@ -194,5 +203,3 @@ class TestSkillLoaderSynthetic:
         loader.merge_mcp(external)
         assert "mcp_tool" in loader.registry.tools
         assert "do_thing" in loader.registry.tools
-
-

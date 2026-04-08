@@ -1,9 +1,11 @@
 """Tests for cuddlytoddly.core.task_graph."""
+
 from conftest import add_node, mark_done
 
 from cuddlytoddly.core.task_graph import TaskGraph
 
 # ── add_node ──────────────────────────────────────────────────────────────────
+
 
 class TestAddNode:
     def test_adds_node(self, graph):
@@ -45,6 +47,7 @@ class TestAddNode:
 
 # ── remove_node ───────────────────────────────────────────────────────────────
 
+
 class TestRemoveNode:
     def test_removes_single_node(self, graph):
         add_node(graph, "a")
@@ -79,6 +82,7 @@ class TestRemoveNode:
 
 # ── add_dependency / remove_dependency ───────────────────────────────────────
 
+
 class TestDependencies:
     def test_add_dependency(self, graph):
         add_node(graph, "a")
@@ -112,6 +116,7 @@ class TestDependencies:
 
 
 # ── recompute_readiness ───────────────────────────────────────────────────────
+
 
 class TestReadiness:
     def test_ready_when_all_deps_done(self, graph):
@@ -151,6 +156,7 @@ class TestReadiness:
 
 # ── get_snapshot ──────────────────────────────────────────────────────────────
 
+
 class TestSnapshot:
     def test_returns_all_nodes(self, linear_graph):
         snap = linear_graph.get_snapshot()
@@ -167,6 +173,7 @@ class TestSnapshot:
 
 
 # ── get_ready_nodes ───────────────────────────────────────────────────────────
+
 
 class TestGetReadyNodes:
     def test_returns_ready_nodes(self, graph):
@@ -191,6 +198,7 @@ class TestGetReadyNodes:
 
 
 # ── detach_node ───────────────────────────────────────────────────────────────
+
 
 class TestDetachNode:
     def test_detach_removes_only_that_node(self, graph):
@@ -221,6 +229,7 @@ class TestDetachNode:
 
 # ── update_status ─────────────────────────────────────────────────────────────
 
+
 class TestUpdateStatus:
     def test_valid_status_set(self, graph):
         add_node(graph, "a")
@@ -241,16 +250,26 @@ class TestUpdateStatus:
 
 # ── version counters ──────────────────────────────────────────────────────────
 
+
 class TestVersions:
     def test_structure_version_increments_on_add(self):
         from cuddlytoddly.core.events import ADD_NODE, Event
         from cuddlytoddly.core.reducer import apply_event
+
         g = TaskGraph()
         v = g.structure_version
-        apply_event(g, Event(ADD_NODE, {
-            "node_id": "x", "node_type": "task",
-            "dependencies": [], "metadata": {},
-        }))
+        apply_event(
+            g,
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "x",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
+        )
         assert g.structure_version > v
 
     def test_execution_version_increments_on_mark_done(self, graph):
@@ -261,6 +280,7 @@ class TestVersions:
 
 
 # ── get_branch ────────────────────────────────────────────────────────────────
+
 
 class TestGetBranch:
     def test_branch_includes_root_and_ancestors(self, graph):
@@ -286,6 +306,7 @@ class TestGetBranch:
 # These tests verify the fixed _would_create_cycle implementation.
 # Requires source fix: change `children` to `dependencies` in _would_create_cycle.
 
+
 class TestCycleDetection:
     def test_direct_cycle_blocked(self, graph):
         """b depends on a. Adding a depends on b would make a→b→a — must be blocked."""
@@ -308,5 +329,3 @@ class TestCycleDetection:
         add_node(graph, "b")
         graph.add_dependency("b", "a")
         assert "a" in graph.nodes["b"].dependencies
-
-

@@ -1,4 +1,5 @@
 """Tests for cuddlytoddly.infra: EventLog, EventQueue, replay."""
+
 import threading
 
 from cuddlytoddly.core.events import ADD_NODE, MARK_DONE, Event
@@ -8,11 +9,14 @@ from cuddlytoddly.infra.replay import rebuild_graph_from_log
 
 # ── EventLog ──────────────────────────────────────────────────────────────────
 
+
 class TestEventLog:
     def test_append_and_replay(self, tmp_path):
         log = EventLog(str(tmp_path / "events.jsonl"))
-        e = Event(ADD_NODE, {"node_id": "a", "node_type": "task",
-                              "dependencies": [], "metadata": {}})
+        e = Event(
+            ADD_NODE,
+            {"node_id": "a", "node_type": "task", "dependencies": [], "metadata": {}},
+        )
         log.append(e)
         events = list(log.replay())
         assert len(events) == 1
@@ -22,8 +26,17 @@ class TestEventLog:
     def test_multiple_events_in_order(self, tmp_path):
         log = EventLog(str(tmp_path / "events.jsonl"))
         for i in range(5):
-            log.append(Event(ADD_NODE, {"node_id": str(i), "node_type": "task",
-                                         "dependencies": [], "metadata": {}}))
+            log.append(
+                Event(
+                    ADD_NODE,
+                    {
+                        "node_id": str(i),
+                        "node_type": "task",
+                        "dependencies": [],
+                        "metadata": {},
+                    },
+                )
+            )
         events = list(log.replay())
         assert len(events) == 5
         assert [e.payload["node_id"] for e in events] == ["0", "1", "2", "3", "4"]
@@ -31,13 +44,31 @@ class TestEventLog:
     def test_replay_skips_corrupt_lines(self, tmp_path):
         path = tmp_path / "events.jsonl"
         log = EventLog(str(path))
-        log.append(Event(ADD_NODE, {"node_id": "a", "node_type": "task",
-                                     "dependencies": [], "metadata": {}}))
+        log.append(
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            )
+        )
         # Inject a corrupt line
         with path.open("a") as f:
             f.write("this is not json\n")
-        log.append(Event(ADD_NODE, {"node_id": "b", "node_type": "task",
-                                     "dependencies": [], "metadata": {}}))
+        log.append(
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "b",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            )
+        )
         events = list(log.replay())
         assert len(events) == 2  # corrupt line skipped
 
@@ -56,8 +87,17 @@ class TestEventLog:
 
     def test_clear_empties_file(self, tmp_path):
         log = EventLog(str(tmp_path / "events.jsonl"))
-        log.append(Event(ADD_NODE, {"node_id": "a", "node_type": "task",
-                                     "dependencies": [], "metadata": {}}))
+        log.append(
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            )
+        )
         log.clear()
         events = list(log.replay())
         assert events == []
@@ -81,8 +121,17 @@ class TestEventLog:
 
         def writer(node_id):
             try:
-                log.append(Event(ADD_NODE, {"node_id": node_id, "node_type": "task",
-                                             "dependencies": [], "metadata": {}}))
+                log.append(
+                    Event(
+                        ADD_NODE,
+                        {
+                            "node_id": node_id,
+                            "node_type": "task",
+                            "dependencies": [],
+                            "metadata": {},
+                        },
+                    )
+                )
             except Exception as e:
                 errors.append(e)
 
@@ -98,6 +147,7 @@ class TestEventLog:
 
 
 # ── EventQueue ────────────────────────────────────────────────────────────────
+
 
 class TestEventQueue:
     def test_put_and_get(self):
@@ -146,6 +196,7 @@ class TestEventQueue:
 
 # ── rebuild_graph_from_log ────────────────────────────────────────────────────
 
+
 class TestRebuildGraphFromLog:
     def _make_log(self, tmp_path, events):
         log = EventLog(str(tmp_path / "events.jsonl"))
@@ -155,10 +206,24 @@ class TestRebuildGraphFromLog:
 
     def test_rebuilds_nodes(self, tmp_path):
         events = [
-            Event(ADD_NODE, {"node_id": "a", "node_type": "task",
-                              "dependencies": [], "metadata": {}}),
-            Event(ADD_NODE, {"node_id": "b", "node_type": "task",
-                              "dependencies": ["a"], "metadata": {}}),
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "b",
+                    "node_type": "task",
+                    "dependencies": ["a"],
+                    "metadata": {},
+                },
+            ),
         ]
         log = self._make_log(tmp_path, events)
         graph = rebuild_graph_from_log(log)
@@ -167,10 +232,24 @@ class TestRebuildGraphFromLog:
 
     def test_rebuilds_dependencies(self, tmp_path):
         events = [
-            Event(ADD_NODE, {"node_id": "a", "node_type": "task",
-                              "dependencies": [], "metadata": {}}),
-            Event(ADD_NODE, {"node_id": "b", "node_type": "task",
-                              "dependencies": [], "metadata": {}}),
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "b",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
             Event("ADD_DEPENDENCY", {"node_id": "b", "depends_on": "a"}),
         ]
         log = self._make_log(tmp_path, events)
@@ -179,8 +258,15 @@ class TestRebuildGraphFromLog:
 
     def test_rebuilds_status(self, tmp_path):
         events = [
-            Event(ADD_NODE, {"node_id": "a", "node_type": "task",
-                              "dependencies": [], "metadata": {}}),
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
             Event(MARK_DONE, {"node_id": "a", "result": "done result"}),
         ]
         log = self._make_log(tmp_path, events)
@@ -190,10 +276,24 @@ class TestRebuildGraphFromLog:
 
     def test_duplicate_dependency_not_added_twice(self, tmp_path):
         events = [
-            Event(ADD_NODE, {"node_id": "a", "node_type": "task",
-                              "dependencies": [], "metadata": {}}),
-            Event(ADD_NODE, {"node_id": "b", "node_type": "task",
-                              "dependencies": ["a"], "metadata": {}}),
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "b",
+                    "node_type": "task",
+                    "dependencies": ["a"],
+                    "metadata": {},
+                },
+            ),
             # Replay the same dependency again
             Event("ADD_DEPENDENCY", {"node_id": "b", "depends_on": "a"}),
         ]
@@ -209,12 +309,17 @@ class TestRebuildGraphFromLog:
 
     def test_removed_node_not_in_graph(self, tmp_path):
         events = [
-            Event(ADD_NODE, {"node_id": "a", "node_type": "task",
-                              "dependencies": [], "metadata": {}}),
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
             Event("REMOVE_NODE", {"node_id": "a"}),
         ]
         log = self._make_log(tmp_path, events)
         graph = rebuild_graph_from_log(log)
         assert "a" not in graph.nodes
-
-

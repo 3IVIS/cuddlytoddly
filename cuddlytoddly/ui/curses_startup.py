@@ -7,6 +7,7 @@ Usage in __main__.py:
     choice = run_startup_selection(repo_root, issues=issues)
     # choice is a StartupChoice namedtuple
 """
+
 from __future__ import annotations
 
 import curses
@@ -21,28 +22,29 @@ from cuddlytoddly.ui.startup import (
 )
 
 # ── Colour pairs (set up once inside curses.wrapper) ─────────────────────────
-_C_TITLE   = 1
-_C_SEL     = 2
-_C_DIM     = 3
-_C_DONE    = 4
-_C_ACCENT  = 5
-_C_ERR     = 6
-_C_WARN    = 7
+_C_TITLE = 1
+_C_SEL = 2
+_C_DIM = 3
+_C_DONE = 4
+_C_ACCENT = 5
+_C_ERR = 6
+_C_WARN = 7
 
 
 def _init_colors():
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(_C_TITLE,  curses.COLOR_CYAN,    -1)
-    curses.init_pair(_C_SEL,    curses.COLOR_BLACK,   curses.COLOR_CYAN)
-    curses.init_pair(_C_DIM,    curses.COLOR_WHITE,   -1)
-    curses.init_pair(_C_DONE,   curses.COLOR_GREEN,   -1)
-    curses.init_pair(_C_ACCENT, curses.COLOR_YELLOW,  -1)
-    curses.init_pair(_C_ERR,    curses.COLOR_RED,     -1)
-    curses.init_pair(_C_WARN,   curses.COLOR_YELLOW,  -1)
+    curses.init_pair(_C_TITLE, curses.COLOR_CYAN, -1)
+    curses.init_pair(_C_SEL, curses.COLOR_BLACK, curses.COLOR_CYAN)
+    curses.init_pair(_C_DIM, curses.COLOR_WHITE, -1)
+    curses.init_pair(_C_DONE, curses.COLOR_GREEN, -1)
+    curses.init_pair(_C_ACCENT, curses.COLOR_YELLOW, -1)
+    curses.init_pair(_C_ERR, curses.COLOR_RED, -1)
+    curses.init_pair(_C_WARN, curses.COLOR_YELLOW, -1)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _safe_addstr(win, y, x, text, attr=0):
     h, w = win.getmaxyx()
@@ -73,6 +75,7 @@ def _hline(win, y, char="─"):
 
 # ── Preflight banner ──────────────────────────────────────────────────────────
 
+
 def _draw_preflight_banner(stdscr, issues: list[dict], start_y: int) -> int:
     """
     Draw pre-flight issues on *stdscr* starting at *start_y*.
@@ -90,8 +93,11 @@ def _draw_preflight_banner(stdscr, issues: list[dict], start_y: int) -> int:
             break
         is_err = issue["level"] == "error"
         prefix = "✗" if is_err else "⚠"
-        attr   = curses.color_pair(_C_ERR) | curses.A_BOLD if is_err \
-                 else curses.color_pair(_C_WARN) | curses.A_BOLD
+        attr = (
+            curses.color_pair(_C_ERR) | curses.A_BOLD
+            if is_err
+            else curses.color_pair(_C_WARN) | curses.A_BOLD
+        )
         _safe_addstr(stdscr, y, 2, f"{prefix} {issue['message']}", attr)
         y += 1
 
@@ -111,41 +117,58 @@ def _draw_preflight_banner(stdscr, issues: list[dict], start_y: int) -> int:
 
 # ── Tab 1 — Resume existing run ───────────────────────────────────────────────
 
+
 def _draw_resume_tab(win, runs: list[RunInfo], sel: int, scroll: int):
     h, w = win.getmaxyx()
     y = 0
-    _safe_addstr(win, y, 2, "Existing runs  (↑↓ select, Enter resume)", curses.color_pair(_C_DIM))
+    _safe_addstr(
+        win, y, 2, "Existing runs  (↑↓ select, Enter resume)", curses.color_pair(_C_DIM)
+    )
     y += 1
     _hline(win, y)
     y += 1
 
     visible = h - y - 3
-    for i, run in enumerate(runs[scroll: scroll + visible]):
-        idx    = i + scroll
+    for i, run in enumerate(runs[scroll : scroll + visible]):
+        idx = i + scroll
         is_sel = idx == sel
-        attr   = curses.color_pair(_C_SEL) | curses.A_BOLD if is_sel else 0
+        attr = curses.color_pair(_C_SEL) | curses.A_BOLD if is_sel else 0
 
-        date   = run.age
-        label  = f"  {run.goal[:w - 30]}".ljust(w - 28)
-        stats  = f"{run.node_count} nodes  {date}  "
+        date = run.age
+        label = f"  {run.goal[: w - 30]}".ljust(w - 28)
+        stats = f"{run.node_count} nodes  {date}  "
 
         try:
-            win.addstr(y + i, 0, label[:w - len(stats) - 1].ljust(w - len(stats) - 1), attr)
-            win.addstr(y + i, w - len(stats) - 1, stats,
-                       curses.color_pair(_C_DONE) if not is_sel else attr)
+            win.addstr(
+                y + i, 0, label[: w - len(stats) - 1].ljust(w - len(stats) - 1), attr
+            )
+            win.addstr(
+                y + i,
+                w - len(stats) - 1,
+                stats,
+                curses.color_pair(_C_DONE) if not is_sel else attr,
+            )
         except curses.error:
             pass
 
     if not runs:
-        _center(win, y + 2, "No existing runs found.", curses.color_pair(_C_DIM) | curses.A_DIM)
+        _center(
+            win,
+            y + 2,
+            "No existing runs found.",
+            curses.color_pair(_C_DIM) | curses.A_DIM,
+        )
 
 
 # ── Tab 2 — New goal ──────────────────────────────────────────────────────────
 
+
 def _draw_new_goal_tab(win, text: str, cursor: int, error: str):
     h, w = win.getmaxyx()
     y = 0
-    _safe_addstr(win, y, 2, "New goal  (type goal, Enter to start)", curses.color_pair(_C_DIM))
+    _safe_addstr(
+        win, y, 2, "New goal  (type goal, Enter to start)", curses.color_pair(_C_DIM)
+    )
     y += 1
     _hline(win, y)
     y += 1
@@ -154,12 +177,12 @@ def _draw_new_goal_tab(win, text: str, cursor: int, error: str):
     y += 1
 
     # Wrap the text into the available width
-    box_w  = w - 6
-    lines  = textwrap.wrap(text, box_w) if text else [""]
+    box_w = w - 6
+    lines = textwrap.wrap(text, box_w) if text else [""]
     # Find cursor position
     cur_line, cur_col = _cursor_pos(text, cursor, box_w)
 
-    for li, line in enumerate(lines[:h - y - 4]):
+    for li, line in enumerate(lines[: h - y - 4]):
         is_cur_line = li == cur_line
         attr = curses.A_REVERSE if is_cur_line else curses.color_pair(_C_DIM)
         _safe_addstr(win, y + li, 4, line.ljust(box_w), attr)
@@ -171,10 +194,10 @@ def _draw_new_goal_tab(win, text: str, cursor: int, error: str):
 
 def _cursor_pos(text: str, cursor: int, wrap_w: int) -> tuple[int, int]:
     """Return (line_index, col_index) of cursor in wrapped text."""
-    before  = text[:cursor]
+    before = text[:cursor]
     wrapped = textwrap.wrap(before, wrap_w) if before else [""]
-    li      = len(wrapped) - 1
-    col     = len(wrapped[-1]) if wrapped else 0
+    li = len(wrapped) - 1
+    col = len(wrapped[-1]) if wrapped else 0
     return li, col
 
 
@@ -197,12 +220,24 @@ _MANUAL_HELP = [
 ]
 
 
-def _draw_manual_tab(win, goal_text: str, goal_cursor: int,
-                      plan_text: str, plan_cursor: int,
-                      active_field: int, error: str):
+def _draw_manual_tab(
+    win,
+    goal_text: str,
+    goal_cursor: int,
+    plan_text: str,
+    plan_cursor: int,
+    active_field: int,
+    error: str,
+):
     h, w = win.getmaxyx()
     y = 0
-    _safe_addstr(win, y, 2, "Manual plan  (Tab: switch fields, Enter: confirm)", curses.color_pair(_C_DIM))
+    _safe_addstr(
+        win,
+        y,
+        2,
+        "Manual plan  (Tab: switch fields, Enter: confirm)",
+        curses.color_pair(_C_DIM),
+    )
     y += 1
     _hline(win, y)
     y += 1
@@ -213,8 +248,13 @@ def _draw_manual_tab(win, goal_text: str, goal_cursor: int,
     y += 1
     box_w = w - 6
     goal_disp = goal_text or "(enter goal description)"
-    _safe_addstr(win, y, 4, goal_disp[:box_w].ljust(box_w),
-                 curses.A_REVERSE if active_field == 0 else curses.color_pair(_C_DIM))
+    _safe_addstr(
+        win,
+        y,
+        4,
+        goal_disp[:box_w].ljust(box_w),
+        curses.A_REVERSE if active_field == 0 else curses.color_pair(_C_DIM),
+    )
     y += 2
 
     # Plan textarea
@@ -234,8 +274,13 @@ def _draw_manual_tab(win, goal_text: str, goal_cursor: int,
         _safe_addstr(win, min(y, h - 3), 2, f"! {error}", curses.color_pair(_C_ERR))
 
     for hi, hline in enumerate(_MANUAL_HELP):
-        _safe_addstr(win, h - len(_MANUAL_HELP) + hi - 1, 2,
-                     hline, curses.color_pair(_C_DIM) | curses.A_DIM)
+        _safe_addstr(
+            win,
+            h - len(_MANUAL_HELP) + hi - 1,
+            2,
+            hline,
+            curses.color_pair(_C_DIM) | curses.A_DIM,
+        )
 
 
 # ── Tab bar ───────────────────────────────────────────────────────────────────
@@ -251,19 +296,27 @@ def _draw_tab_bar(win, active_tab: int):
     x = 2
     for i, name in enumerate(_TABS):
         label = f"  {name}  "
-        attr  = (curses.color_pair(_C_SEL) | curses.A_BOLD) if i == active_tab \
-                else curses.color_pair(_C_DIM)
+        attr = (
+            (curses.color_pair(_C_SEL) | curses.A_BOLD)
+            if i == active_tab
+            else curses.color_pair(_C_DIM)
+        )
         _safe_addstr(win, y, x, label, attr)
         x += len(label) + 1
     _hline(win, y + 1)
 
     # Footer
-    _safe_addstr(win, h - 1, 2,
-                 "Tab/←/→: switch tabs   ↑↓: navigate   Enter: confirm   Esc: quit",
-                 curses.color_pair(_C_DIM) | curses.A_DIM)
+    _safe_addstr(
+        win,
+        h - 1,
+        2,
+        "Tab/←/→: switch tabs   ↑↓: navigate   Enter: confirm   Esc: quit",
+        curses.color_pair(_C_DIM) | curses.A_DIM,
+    )
 
 
 # ── Main startup screen ───────────────────────────────────────────────────────
+
 
 def _startup_screen(
     stdscr,
@@ -274,26 +327,26 @@ def _startup_screen(
     stdscr.nodelay(False)
     _init_colors()
 
-    _raw_runs   = scan_runs(repo_root)
-    runs        = [RunInfo(**r) if isinstance(r, dict) else r for r in _raw_runs]
-    active_tab  = 0 if runs else 1
+    _raw_runs = scan_runs(repo_root)
+    runs = [RunInfo(**r) if isinstance(r, dict) else r for r in _raw_runs]
+    active_tab = 0 if runs else 1
 
     # Tab 1 state
-    resume_sel    = 0
+    resume_sel = 0
     resume_scroll = 0
 
     # Tab 2 state
-    goal_text   = ""
+    goal_text = ""
     goal_cursor = 0
-    goal_error  = ""
+    goal_error = ""
 
     # Tab 3 state
-    manual_goal_text   = ""
+    manual_goal_text = ""
     manual_goal_cursor = 0
-    manual_plan_text   = ""
+    manual_plan_text = ""
     manual_plan_cursor = 0
-    manual_active_fld  = 0   # 0=goal, 1=plan
-    manual_error       = ""
+    manual_active_fld = 0  # 0=goal, 1=plan
+    manual_error = ""
 
     _issues = issues or []
 
@@ -325,10 +378,15 @@ def _startup_screen(
         elif active_tab == 1:
             _draw_new_goal_tab(content, goal_text, goal_cursor, goal_error)
         elif active_tab == 2:
-            _draw_manual_tab(content,
-                             manual_goal_text, manual_goal_cursor,
-                             manual_plan_text, manual_plan_cursor,
-                             manual_active_fld, manual_error)
+            _draw_manual_tab(
+                content,
+                manual_goal_text,
+                manual_goal_cursor,
+                manual_plan_text,
+                manual_plan_cursor,
+                manual_active_fld,
+                manual_error,
+            )
 
         stdscr.refresh()
         content.refresh()
@@ -336,37 +394,37 @@ def _startup_screen(
         k = stdscr.getch()
 
         # ── Global tab switching ──────────────────────────────────────────────
-        if k == 27:   # Escape → quit
+        if k == 27:  # Escape → quit
             return None
 
-        if k == curses.KEY_LEFT or (k == ord('\t') and active_tab == 0):
+        if k == curses.KEY_LEFT or (k == ord("\t") and active_tab == 0):
             active_tab = (active_tab - 1) % len(_TABS)
             continue
         if k == curses.KEY_RIGHT:
             active_tab = (active_tab + 1) % len(_TABS)
             continue
         # Tab key cycles forward through tabs when not in a text field
-        if k == ord('\t') and active_tab != 2:
+        if k == ord("\t") and active_tab != 2:
             active_tab = (active_tab + 1) % len(_TABS)
             continue
 
         # ── Tab-specific key handling ─────────────────────────────────────────
         if active_tab == 0:
             if k == curses.KEY_UP:
-                resume_sel    = max(0, resume_sel - 1)
+                resume_sel = max(0, resume_sel - 1)
                 resume_scroll = max(0, min(resume_scroll, resume_sel))
             elif k == curses.KEY_DOWN:
-                resume_sel    = min(len(runs) - 1, resume_sel + 1)
-                visible       = content_h - 4
+                resume_sel = min(len(runs) - 1, resume_sel + 1)
+                visible = content_h - 4
                 if resume_sel >= resume_scroll + visible:
                     resume_scroll = resume_sel - visible + 1
             elif k in (10, 13) and runs:
                 run = runs[resume_sel]
                 return StartupChoice(
-                    mode      = "resume",
-                    run_dir   = Path(run.path),
-                    goal_text = run.goal,
-                    is_fresh  = False,
+                    mode="resume",
+                    run_dir=Path(run.path),
+                    goal_text=run.goal,
+                    is_fresh=False,
                 )
 
         elif active_tab == 1:
@@ -377,32 +435,32 @@ def _startup_screen(
                     goal_error = "Goal cannot be empty."
                 else:
                     return StartupChoice(
-                        mode      = "new_goal",
-                        run_dir   = None,
-                        goal_text = gt,
-                        is_fresh  = True,
+                        mode="new_goal",
+                        run_dir=None,
+                        goal_text=gt,
+                        is_fresh=True,
                     )
             elif k == curses.KEY_BACKSPACE or k == 127:
                 if goal_cursor > 0:
-                    goal_text   = goal_text[:goal_cursor - 1] + goal_text[goal_cursor:]
+                    goal_text = goal_text[: goal_cursor - 1] + goal_text[goal_cursor:]
                     goal_cursor -= 1
             elif k == curses.KEY_LEFT:
                 goal_cursor = max(0, goal_cursor - 1)
             elif k == curses.KEY_RIGHT:
                 goal_cursor = min(len(goal_text), goal_cursor + 1)
             elif 32 <= k <= 126:
-                ch          = chr(k)
-                goal_text   = goal_text[:goal_cursor] + ch + goal_text[goal_cursor:]
+                ch = chr(k)
+                goal_text = goal_text[:goal_cursor] + ch + goal_text[goal_cursor:]
                 goal_cursor += 1
 
         elif active_tab == 2:
             manual_error = ""
-            if k == ord('\t'):
+            if k == ord("\t"):
                 # Tab switches between goal and plan fields
                 manual_active_fld = 1 - manual_active_fld
             elif k in (10, 13) and manual_active_fld == 1:
                 # Enter in plan field = confirm
-                gt   = manual_goal_text.strip()
+                gt = manual_goal_text.strip()
                 plan = manual_plan_text.strip()
                 if not gt:
                     manual_error = "Goal cannot be empty."
@@ -414,44 +472,66 @@ def _startup_screen(
                         manual_error = "No tasks found. Use 'task: Name' lines."
                     else:
                         return StartupChoice(
-                            mode      = "manual_plan",
-                            run_dir   = None,
-                            goal_text = gt,
-                            plan_events = tasks,
-                            is_fresh    = True,
+                            mode="manual_plan",
+                            run_dir=None,
+                            goal_text=gt,
+                            plan_events=tasks,
+                            is_fresh=True,
                         )
             elif manual_active_fld == 0:
                 # Editing goal field
                 if k == curses.KEY_BACKSPACE or k == 127:
                     if manual_goal_cursor > 0:
-                        manual_goal_text   = manual_goal_text[:manual_goal_cursor - 1] + manual_goal_text[manual_goal_cursor:]
+                        manual_goal_text = (
+                            manual_goal_text[: manual_goal_cursor - 1]
+                            + manual_goal_text[manual_goal_cursor:]
+                        )
                         manual_goal_cursor -= 1
                 elif k == curses.KEY_LEFT:
                     manual_goal_cursor = max(0, manual_goal_cursor - 1)
                 elif k == curses.KEY_RIGHT:
-                    manual_goal_cursor = min(len(manual_goal_text), manual_goal_cursor + 1)
+                    manual_goal_cursor = min(
+                        len(manual_goal_text), manual_goal_cursor + 1
+                    )
                 elif k in (10, 13):
-                    manual_active_fld = 1   # move to plan
+                    manual_active_fld = 1  # move to plan
                 elif 32 <= k <= 126:
-                    ch                 = chr(k)
-                    manual_goal_text   = manual_goal_text[:manual_goal_cursor] + ch + manual_goal_text[manual_goal_cursor:]
+                    ch = chr(k)
+                    manual_goal_text = (
+                        manual_goal_text[:manual_goal_cursor]
+                        + ch
+                        + manual_goal_text[manual_goal_cursor:]
+                    )
                     manual_goal_cursor += 1
             else:
                 # Editing plan textarea — newlines allowed
                 if k == curses.KEY_BACKSPACE or k == 127:
                     if manual_plan_cursor > 0:
-                        manual_plan_text   = manual_plan_text[:manual_plan_cursor - 1] + manual_plan_text[manual_plan_cursor:]
+                        manual_plan_text = (
+                            manual_plan_text[: manual_plan_cursor - 1]
+                            + manual_plan_text[manual_plan_cursor:]
+                        )
                         manual_plan_cursor -= 1
                 elif k == curses.KEY_LEFT:
                     manual_plan_cursor = max(0, manual_plan_cursor - 1)
                 elif k == curses.KEY_RIGHT:
-                    manual_plan_cursor = min(len(manual_plan_text), manual_plan_cursor + 1)
+                    manual_plan_cursor = min(
+                        len(manual_plan_text), manual_plan_cursor + 1
+                    )
                 elif k in (10, 13):
-                    manual_plan_text   = manual_plan_text[:manual_plan_cursor] + "\n" + manual_plan_text[manual_plan_cursor:]
+                    manual_plan_text = (
+                        manual_plan_text[:manual_plan_cursor]
+                        + "\n"
+                        + manual_plan_text[manual_plan_cursor:]
+                    )
                     manual_plan_cursor += 1
                 elif 32 <= k <= 126:
-                    ch                 = chr(k)
-                    manual_plan_text   = manual_plan_text[:manual_plan_cursor] + ch + manual_plan_text[manual_plan_cursor:]
+                    ch = chr(k)
+                    manual_plan_text = (
+                        manual_plan_text[:manual_plan_cursor]
+                        + ch
+                        + manual_plan_text[manual_plan_cursor:]
+                    )
                     manual_plan_cursor += 1
 
 
@@ -470,7 +550,7 @@ def run_startup_selection(
 
     # Silence stderr during curses — same pattern as run_ui
     root = logging.getLogger("dag")
-    ch   = getattr(root, "_stderr_handler", None)
+    ch = getattr(root, "_stderr_handler", None)
     if ch:
         root.removeHandler(ch)
 
@@ -486,4 +566,3 @@ def run_startup_selection(
             root.addHandler(ch)
 
     return result[0]
-

@@ -1,4 +1,5 @@
 """Tests for cuddlytoddly.engine.quality_gate.QualityGate."""
+
 import json
 import os
 from unittest.mock import MagicMock
@@ -10,13 +11,18 @@ from cuddlytoddly.engine.quality_gate import QualityGate
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def make_node_with_outputs(outputs, node_id="task_1"):
     g = TaskGraph()
-    add_node(g, node_id, metadata={
-        "description": "do something",
-        "output": outputs,
-        "required_input": [],
-    })
+    add_node(
+        g,
+        node_id,
+        metadata={
+            "description": "do something",
+            "output": outputs,
+            "required_input": [],
+        },
+    )
     return g.nodes[node_id], g.get_snapshot()
 
 
@@ -32,19 +38,24 @@ def ok_dep_response():
     return json.dumps({"ok": True})
 
 
-def gap_dep_response(bridge_id="bridge", bridge_desc="do the thing", bridge_output="output.md"):
-    return json.dumps({
-        "ok": False,
-        "missing": "something important",
-        "bridge_node": {
-            "node_id": bridge_id,
-            "description": bridge_desc,
-            "output": bridge_output,
+def gap_dep_response(
+    bridge_id="bridge", bridge_desc="do the thing", bridge_output="output.md"
+):
+    return json.dumps(
+        {
+            "ok": False,
+            "missing": "something important",
+            "bridge_node": {
+                "node_id": bridge_id,
+                "description": bridge_desc,
+                "output": bridge_output,
+            },
         }
-    })
+    )
 
 
 # ── verify_result ─────────────────────────────────────────────────────────────
+
 
 class TestVerifyResult:
     def test_satisfied_when_no_declared_outputs(self):
@@ -60,19 +71,21 @@ class TestVerifyResult:
         gate = QualityGate(llm_client=llm)
         # Use "document" type — a "file" type triggers the disk existence check
         # which would fail in a test environment where no file is written to disk.
-        node, snap = make_node_with_outputs([
-            {"name": "salary_report", "type": "document", "description": "the report"}
-        ])
-        ok, reason = gate.verify_result(node, "Here is the full report content...", snap)
+        node, snap = make_node_with_outputs(
+            [{"name": "salary_report", "type": "document", "description": "the report"}]
+        )
+        ok, reason = gate.verify_result(
+            node, "Here is the full report content...", snap
+        )
         assert ok is True
         assert "all good" in reason
 
     def test_unsatisfied_response_from_llm(self):
         llm = FakeLLM(unsatisfied_response("only a label"))
         gate = QualityGate(llm_client=llm)
-        node, snap = make_node_with_outputs([
-            {"name": "report.md", "type": "file", "description": "the report"}
-        ])
+        node, snap = make_node_with_outputs(
+            [{"name": "report.md", "type": "file", "description": "the report"}]
+        )
         ok, reason = gate.verify_result(node, "report.md", snap)
         assert ok is False
 
@@ -80,9 +93,9 @@ class TestVerifyResult:
         """A bare filename result is checked for existence; missing file → fail."""
         llm = FakeLLM(satisfied_response())
         gate = QualityGate(llm_client=llm)
-        node, snap = make_node_with_outputs([
-            {"name": "output.txt", "type": "file", "description": "the file"}
-        ])
+        node, snap = make_node_with_outputs(
+            [{"name": "output.txt", "type": "file", "description": "the file"}]
+        )
         ok, reason = gate.verify_result(node, "output.txt", snap)
         assert ok is False
 
@@ -96,11 +109,13 @@ class TestVerifyResult:
         # LLM verifier rejects the bare label — this is what a real LLM would do
         # given the prompt instruction "A result that is just a filename, a single
         # word, or a name matching the output label is NOT satisfied."
-        llm = FakeLLM(unsatisfied_response("result is just a label matching the output name"))
+        llm = FakeLLM(
+            unsatisfied_response("result is just a label matching the output name")
+        )
         gate = QualityGate(llm_client=llm)
-        node, snap = make_node_with_outputs([
-            {"name": "output.txt", "type": "file", "description": "the file"}
-        ])
+        node, snap = make_node_with_outputs(
+            [{"name": "output.txt", "type": "file", "description": "the file"}]
+        )
         old_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
@@ -116,9 +131,9 @@ class TestVerifyResult:
         real_file.write_text("# My report\n\nContent here.")
         llm = FakeLLM(satisfied_response())
         gate = QualityGate(llm_client=llm)
-        node, snap = make_node_with_outputs([
-            {"name": "report.md", "type": "file", "description": "the report"}
-        ])
+        node, snap = make_node_with_outputs(
+            [{"name": "report.md", "type": "file", "description": "the report"}]
+        )
         old_dir = os.getcwd()
         try:
             os.chdir(tmp_path)
@@ -133,9 +148,15 @@ class TestVerifyResult:
         """Result that is just the output name string is rejected."""
         llm = FakeLLM(unsatisfied_response("just a label"))
         gate = QualityGate(llm_client=llm)
-        node, snap = make_node_with_outputs([
-            {"name": "investment_report", "type": "document", "description": "the report"}
-        ])
+        node, snap = make_node_with_outputs(
+            [
+                {
+                    "name": "investment_report",
+                    "type": "document",
+                    "description": "the report",
+                }
+            ]
+        )
         ok, reason = gate.verify_result(node, "investment_report", snap)
         assert ok is False
 
@@ -143,9 +164,9 @@ class TestVerifyResult:
         llm = FakeLLM(unsatisfied_response())
         llm.stop()
         gate = QualityGate(llm_client=llm)
-        node, snap = make_node_with_outputs([
-            {"name": "report.md", "type": "file", "description": "r"}
-        ])
+        node, snap = make_node_with_outputs(
+            [{"name": "report.md", "type": "file", "description": "r"}]
+        )
         ok, reason = gate.verify_result(node, "something", snap)
         assert ok is True
         assert "paused" in reason.lower() or "skipped" in reason.lower()
@@ -160,19 +181,21 @@ class TestVerifyResult:
         gate = QualityGate(llm_client=llm)
         # Use "document" type — a "file" type triggers the disk existence check
         # before the LLM call, which would return False rather than True on exception.
-        node, snap = make_node_with_outputs([
-            {"name": "result", "type": "document", "description": "r"}
-        ])
-        ok, reason = gate.verify_result(node, "some substantive content here " * 10, snap)
+        node, snap = make_node_with_outputs(
+            [{"name": "result", "type": "document", "description": "r"}]
+        )
+        ok, reason = gate.verify_result(
+            node, "some substantive content here " * 10, snap
+        )
         assert ok is True
 
     def test_file_label_pattern_checks_disk(self, tmp_path):
         """file_written: ghost.md → check disk → file missing → fail."""
         llm = FakeLLM(satisfied_response())
         gate = QualityGate(llm_client=llm)
-        node, snap = make_node_with_outputs([
-            {"name": "foo.md", "type": "file", "description": "foo"}
-        ])
+        node, snap = make_node_with_outputs(
+            [{"name": "foo.md", "type": "file", "description": "foo"}]
+        )
         result = "file_written: ghost.md\nsummary: stuff"
         ok, reason = gate.verify_result(node, result, snap)
         assert ok is False
@@ -180,6 +203,7 @@ class TestVerifyResult:
 
 
 # ── check_dependencies ────────────────────────────────────────────────────────
+
 
 class TestCheckDependencies:
     def test_returns_none_when_ok(self):
@@ -224,11 +248,9 @@ class TestCheckDependencies:
         assert bridge is None
 
     def test_returns_none_when_bridge_node_missing_required_fields(self):
-        incomplete_response = json.dumps({
-            "ok": False,
-            "missing": "something",
-            "bridge_node": {"node_id": "x"}
-        })
+        incomplete_response = json.dumps(
+            {"ok": False, "missing": "something", "bridge_node": {"node_id": "x"}}
+        )
         llm = FakeLLM(incomplete_response)
         gate = QualityGate(llm_client=llm)
         g = TaskGraph()
@@ -239,6 +261,7 @@ class TestCheckDependencies:
 
     def test_includes_upstream_results_in_prompt(self):
         prompts = []
+
         def capture(prompt, schema=None):
             prompts.append(prompt)
             return ok_dep_response()
@@ -253,5 +276,3 @@ class TestCheckDependencies:
         snap = g.get_snapshot()
         gate.check_dependencies(g.nodes["task_1"], snap)
         assert any("upstream output data" in p for p in prompts)
-
-

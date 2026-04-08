@@ -1,4 +1,5 @@
 """Tests for cuddlytoddly.ui.startup: parse_manual_plan, scan_runs, StartupChoice."""
+
 import json
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ from cuddlytoddly.ui.startup import (
 )
 
 # ── parse_manual_plan ─────────────────────────────────────────────────────────
+
 
 class TestParseManualPlan:
     def test_empty_input_returns_empty(self):
@@ -39,17 +41,23 @@ class TestParseManualPlan:
     def test_goal_node_added(self):
         plan = "My Goal\n- Task_One: Do something"
         goal, events = parse_manual_plan(plan)
-        goal_events = [e for e in events
-                       if e["type"] == ADD_NODE
-                       and e["payload"]["node_type"] == "goal"]
+        goal_events = [
+            e
+            for e in events
+            if e["type"] == ADD_NODE and e["payload"]["node_type"] == "goal"
+        ]
         assert len(goal_events) == 1
 
     def test_dependency_syntax_bracket(self):
         plan = "Goal\n- Task_A: first\n- Task_B: second [depends: Task_A]"
         goal, events = parse_manual_plan(plan)
         task_b_event = next(
-            (e for e in events if e["type"] == ADD_NODE
-             and e["payload"]["node_id"] == "Task_B"), None
+            (
+                e
+                for e in events
+                if e["type"] == ADD_NODE and e["payload"]["node_id"] == "Task_B"
+            ),
+            None,
         )
         assert task_b_event is not None
         assert "Task_A" in task_b_event["payload"]["dependencies"]
@@ -58,8 +66,12 @@ class TestParseManualPlan:
         plan = "Goal\n- Task_A: first\n- Task_B: second depends on: Task_A"
         goal, events = parse_manual_plan(plan)
         task_b_event = next(
-            (e for e in events if e["type"] == ADD_NODE
-             and e["payload"]["node_id"] == "Task_B"), None
+            (
+                e
+                for e in events
+                if e["type"] == ADD_NODE and e["payload"]["node_id"] == "Task_B"
+            ),
+            None,
         )
         if task_b_event:
             assert "Task_A" in task_b_event["payload"]["dependencies"]
@@ -69,8 +81,11 @@ class TestParseManualPlan:
         plan = "Goal\n- Task_A: first\n- Task_B: second [depends: Task_A]"
         goal, events = parse_manual_plan(plan)
         dep_events = [e for e in events if e["type"] == ADD_DEPENDENCY]
-        goal_deps = {e["payload"]["depends_on"] for e in dep_events
-                     if e["payload"]["node_id"] != "Task_A"}
+        goal_deps = {
+            e["payload"]["depends_on"]
+            for e in dep_events
+            if e["payload"]["node_id"] != "Task_A"
+        }
         # Task_B is terminal (nothing depends on it) and should be wired to goal
         assert "Task_B" in goal_deps or len(dep_events) > 0
 
@@ -84,29 +99,42 @@ class TestParseManualPlan:
         plan = "Goal\n- My_Task: This is the description"
         goal, events = parse_manual_plan(plan)
         task_event = next(
-            (e for e in events if e["type"] == ADD_NODE
-             and e["payload"]["node_id"] == "My_Task"), None
+            (
+                e
+                for e in events
+                if e["type"] == ADD_NODE and e["payload"]["node_id"] == "My_Task"
+            ),
+            None,
         )
         assert task_event is not None
         assert "description" in task_event["payload"].get("metadata", {})
-        assert "This is the description" in task_event["payload"]["metadata"]["description"]
+        assert (
+            "This is the description"
+            in task_event["payload"]["metadata"]["description"]
+        )
 
     def test_no_tasks_returns_goal_only(self):
         plan = "Just a goal with no tasks"
         goal, events = parse_manual_plan(plan)
         assert goal != ""
         # No task ADD_NODE events, just the goal one
-        task_events = [e for e in events
-                       if e["type"] == ADD_NODE
-                       and e["payload"]["node_type"] == "task"]
+        task_events = [
+            e
+            for e in events
+            if e["type"] == ADD_NODE and e["payload"]["node_type"] == "task"
+        ]
         assert task_events == []
 
     def test_multiple_deps_parsed(self):
         plan = "Goal\n- A: first\n- B: second\n- C: third [depends: A, B]"
         goal, events = parse_manual_plan(plan)
         c_event = next(
-            (e for e in events if e["type"] == ADD_NODE
-             and e["payload"]["node_id"] == "C"), None
+            (
+                e
+                for e in events
+                if e["type"] == ADD_NODE and e["payload"]["node_id"] == "C"
+            ),
+            None,
         )
         assert c_event is not None
         deps = c_event["payload"]["dependencies"]
@@ -123,6 +151,7 @@ class TestParseManualPlan:
 
 # ── scan_runs ─────────────────────────────────────────────────────────────────
 
+
 class TestScanRuns:
     def _make_run(self, runs_dir, name, goal="test goal", nodes=3):
         run_dir = runs_dir / name
@@ -130,28 +159,36 @@ class TestScanRuns:
         events_file = run_dir / "events.jsonl"
         lines = []
         # Add goal node
-        lines.append(json.dumps({
-            "type": "ADD_NODE",
-            "payload": {
-                "node_id": "goal_1",
-                "node_type": "goal",
-                "dependencies": [],
-                "metadata": {"description": goal},
-            },
-            "timestamp": "2025-01-01T00:00:00",
-        }))
+        lines.append(
+            json.dumps(
+                {
+                    "type": "ADD_NODE",
+                    "payload": {
+                        "node_id": "goal_1",
+                        "node_type": "goal",
+                        "dependencies": [],
+                        "metadata": {"description": goal},
+                    },
+                    "timestamp": "2025-01-01T00:00:00",
+                }
+            )
+        )
         # Add task nodes
         for i in range(nodes - 1):
-            lines.append(json.dumps({
-                "type": "ADD_NODE",
-                "payload": {
-                    "node_id": f"task_{i}",
-                    "node_type": "task",
-                    "dependencies": [],
-                    "metadata": {"description": f"task {i}"},
-                },
-                "timestamp": "2025-01-01T00:00:00",
-            }))
+            lines.append(
+                json.dumps(
+                    {
+                        "type": "ADD_NODE",
+                        "payload": {
+                            "node_id": f"task_{i}",
+                            "node_type": "task",
+                            "dependencies": [],
+                            "metadata": {"description": f"task {i}"},
+                        },
+                        "timestamp": "2025-01-01T00:00:00",
+                    }
+                )
+            )
         events_file.write_text("\n".join(lines) + "\n")
         return run_dir
 
@@ -199,6 +236,7 @@ class TestScanRuns:
             # Touch with slightly different mtime
             mtime = time.time() - (3 - i) * 100
             import os
+
             os.utime(rd, (mtime, mtime))
         runs = scan_runs(tmp_path)
         assert len(runs) == 3
@@ -215,6 +253,7 @@ class TestScanRuns:
 
 
 # ── StartupChoice ─────────────────────────────────────────────────────────────
+
 
 class TestStartupChoice:
     def test_basic_construction(self):
@@ -239,11 +278,16 @@ class TestStartupChoice:
 
 # ── build_manual_plan_events ──────────────────────────────────────────────────
 
+
 class TestBuildManualPlanEvents:
     def test_basic_events_built(self):
         tasks = [
             {"node_id": "Task_A", "description": "first task", "dependencies": []},
-            {"node_id": "Task_B", "description": "second task", "dependencies": ["Task_A"]},
+            {
+                "node_id": "Task_B",
+                "description": "second task",
+                "dependencies": ["Task_A"],
+            },
         ]
         events = build_manual_plan_events("my_goal", "My Goal", tasks)
         node_ids = {e["payload"]["node_id"] for e in events if e["type"] == ADD_NODE}
@@ -267,8 +311,11 @@ class TestBuildManualPlanEvents:
         ]
         events = build_manual_plan_events("goal", "Goal", tasks)
         dep_events = [e for e in events if e["type"] == ADD_DEPENDENCY]
-        goal_dep_targets = {e["payload"]["depends_on"] for e in dep_events
-                            if e["payload"]["node_id"] == "goal"}
+        goal_dep_targets = {
+            e["payload"]["depends_on"]
+            for e in dep_events
+            if e["payload"]["node_id"] == "goal"
+        }
         # B is terminal (no one depends on it), so goal should depend on B
         assert "B" in goal_dep_targets
 
@@ -277,5 +324,3 @@ class TestBuildManualPlanEvents:
         node_events = [e for e in events if e["type"] == ADD_NODE]
         assert len(node_events) == 1  # just the goal
         assert node_events[0]["payload"]["node_id"] == "g"
-
-

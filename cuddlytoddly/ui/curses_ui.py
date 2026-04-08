@@ -63,16 +63,16 @@ ANSI_COLOR_MAP = {
 # --------------------------
 
 
-
 # --------------------------
 # Graph Adapter
 # --------------------------
 
 # remove: ANSI + 7+ hex digits + ANSI
-hash_pattern = re.compile(r'\x1b\[[0-9;]*m[0-9a-f]{7,}\x1b\[[0-9;]*m')
+hash_pattern = re.compile(r"\x1b\[[0-9;]*m[0-9a-f]{7,}\x1b\[[0-9;]*m")
+
 
 def remove_commit_hashes(lines):
-    return [hash_pattern.sub('', line) for line in lines]
+    return [hash_pattern.sub("", line) for line in lines]
 
 
 # --------------------------
@@ -81,14 +81,17 @@ def remove_commit_hashes(lines):
 
 node_to_commit = {}  # maps node_id -> latest commit hash
 
+
 def get_git_dag_text():
     result = subprocess.run(
         ["git", "branch", "--list", "tip_*"],
         cwd=git_proj.REPO_PATH,
         capture_output=True,
-        text=True
+        text=True,
     )
-    tip_branches = [b.strip().lstrip("* ") for b in result.stdout.splitlines() if b.strip()]
+    tip_branches = [
+        b.strip().lstrip("* ") for b in result.stdout.splitlines() if b.strip()
+    ]
 
     if not tip_branches:
         tip_branches = ["master"]
@@ -97,9 +100,10 @@ def get_git_dag_text():
         ["git", "log", "--graph", "--oneline", "--color=always"] + tip_branches,
         cwd=git_proj.REPO_PATH,
         capture_output=True,
-        text=True
+        text=True,
     )
     return remove_commit_hashes(result.stdout.splitlines())
+
 
 def find_root_node(snapshot):
     # root = node with no dependencies
@@ -109,11 +113,13 @@ def find_root_node(snapshot):
     # fallback: just pick the first node
     return next(iter(snapshot.keys()), None)
 
+
 def find_path_to_node(dag, target_node):
     """
     Returns a list of nodes from root -> target_node (excluding target_node).
     dag: dict[node_id] -> list of child node_ids
     """
+
     def dfs(node, path, visited):
         if node == target_node:
             return path
@@ -138,6 +144,7 @@ def find_path_to_node(dag, target_node):
         if path:
             return path
     return []
+
 
 def ensure_path_starts_at_root(dag, path):
     """
@@ -195,6 +202,7 @@ def ensure_path_starts_at_root(dag, path):
     # prefix ends with path[0], so drop the last element to avoid duplication
     return prefix[:-1] + path
 
+
 def get_aggregate_outputs(snapshot):
     """
     Returns a dict of node_id -> result for all nodes that have results.
@@ -205,11 +213,13 @@ def get_aggregate_outputs(snapshot):
             outputs[node_id] = node.result
     return outputs
 
+
 # --------------------------
 # ANSI Parsing
 # --------------------------
 
-ansi_regex = re.compile(r'\x1b\[[0-9;]*m')
+ansi_regex = re.compile(r"\x1b\[[0-9;]*m")
+
 
 def parse_ansi(line):
     parts = []
@@ -225,9 +235,9 @@ def parse_ansi(line):
             parts.append((line[idx], attr))
             idx += 1
 
-        codes = match.group()[2:-1].split(';')
-        if codes == ['']:
-            codes = ['0']
+        codes = match.group()[2:-1].split(";")
+        if codes == [""]:
+            codes = ["0"]
 
         for code in codes:
             code = int(code)
@@ -255,12 +265,15 @@ def parse_ansi(line):
 
     return parts
 
+
 def strip_ansi(line):
-    return ansi_regex.sub('', line)
+    return ansi_regex.sub("", line)
+
 
 # --------------------------
 # Mapping
 # --------------------------
+
 
 def map_nodes_to_lines(git_lines, snapshot):
     # Pre-compute the hash suffix for every node_id
@@ -272,15 +285,15 @@ def map_nodes_to_lines(git_lines, snapshot):
     node_map = {}
     for i, line in enumerate(git_lines):
         clean = strip_ansi(line)
-        if '*' not in clean:
+        if "*" not in clean:
             continue
-        star_pos = clean.index('*')
-        after_star = clean[star_pos + 1:]
+        star_pos = clean.index("*")
+        after_star = clean[star_pos + 1 :]
         message = after_star.lstrip(" |\\/.-")
         if not message:
             continue
 
-        m = re.search(r'(#[0-9a-f]{6})', message)
+        m = re.search(r"(#[0-9a-f]{6})", message)
         if m:
             node_id = hash_to_node_id.get(m.group(1))
             if node_id:
@@ -288,18 +301,31 @@ def map_nodes_to_lines(git_lines, snapshot):
 
     return node_map
 
+
 def get_node_col(line):
     parsed = parse_ansi(line)
     for idx, (ch, _) in enumerate(parsed):
-        if ch == '*':
+        if ch == "*":
             return idx
     return 0
+
 
 # --------------------------
 # UI
 # --------------------------
 
-def trace_branch_path_recursive(git_lines, row, col, child_row, child_col, step=None, visited=None, is_start=True, debug=False):
+
+def trace_branch_path_recursive(
+    git_lines,
+    row,
+    col,
+    child_row,
+    child_col,
+    step=None,
+    visited=None,
+    is_start=True,
+    debug=False,
+):
     """
     Recursive function to find path from (row,col) to (child_row,child_col)
     following \ | / characters, stopping at other *.
@@ -316,21 +342,20 @@ def trace_branch_path_recursive(git_lines, row, col, child_row, child_col, step=
     # Out of bounds
     if row < 0 or row >= len(git_lines) or col < 0 or col >= len(this_line):
         return path_positions
-    
 
     char = this_line[col]
-    
+
     char_matrix = {}
 
-    char_matrix[(0,+2)] = this_line[col+2] if col+2 < len(this_line) else ''
-    char_matrix[(0,+1)] = this_line[col+1] if col+1 < len(this_line) else ''
-    char_matrix[(0,0)] = this_line[col] if col < len(this_line) else ''
-    char_matrix[(0,-1)] = this_line[col-1] if (0 <= col-1 < len(this_line)) else ''
-    char_matrix[(0,-2)] = this_line[col-2] if (0 <= col-2 < len(this_line)) else ''
+    char_matrix[(0, +2)] = this_line[col + 2] if col + 2 < len(this_line) else ""
+    char_matrix[(0, +1)] = this_line[col + 1] if col + 1 < len(this_line) else ""
+    char_matrix[(0, 0)] = this_line[col] if col < len(this_line) else ""
+    char_matrix[(0, -1)] = this_line[col - 1] if (0 <= col - 1 < len(this_line)) else ""
+    char_matrix[(0, -2)] = this_line[col - 2] if (0 <= col - 2 < len(this_line)) else ""
 
     # Stop if we hit a '*' that is not the child (and not the start)
-    if char == '*' and not (row == child_row and col == child_col) and not is_start:
-        return (path_positions|set('x'))
+    if char == "*" and not (row == child_row and col == child_col) and not is_start:
+        return path_positions | set("x")
 
     # Mark visited and add current cell
     if (row, col) in visited:
@@ -341,7 +366,7 @@ def trace_branch_path_recursive(git_lines, row, col, child_row, child_col, step=
     # Stop if reached child
     if row == child_row and col == child_col:
         return path_positions
-    
+
     subpath_positions = []
 
     # Explore next row in step direction
@@ -349,88 +374,227 @@ def trace_branch_path_recursive(git_lines, row, col, child_row, child_col, step=
     if 0 <= next_row < len(git_lines):
         next_line = "".join(ch for ch, _ in parse_ansi(git_lines[next_row]))
 
-        for dcol in range(-2,3):
-            char_matrix[(1,dcol)] = next_line[col+dcol] if (0 <= col+dcol < len(next_line)) else ''
+        for dcol in range(-2, 3):
+            char_matrix[(1, dcol)] = (
+                next_line[col + dcol] if (0 <= col + dcol < len(next_line)) else ""
+            )
 
-        for dcol in range(-2,3):
+        for dcol in range(-2, 3):
             ncol = col + dcol
             if 0 <= ncol < len(next_line):
                 if (
-
-                    (dcol==1 and char_matrix[(1,1)] == '/' and char_matrix[(0,0)] == '/')
-                    or (dcol==1 and char_matrix[(1,1)] == '/' and char_matrix[(0,0)] == '*')
-                    or (dcol==1 and char_matrix[(1,1)] == '\\' and char_matrix[(0,0)] == '/' and char_matrix[(1,0)] == ' ')
-
-                    or (dcol==1 and char_matrix[(1,1)] == '/' and char_matrix[(0,0)] == '|' and char_matrix[(1,0)] == '|' and char_matrix[(0,-1)] != '/' and char_matrix[(1,-1)] != '_')
-                    or (dcol==1 and char_matrix[(1,1)] == '/' and char_matrix[(0,0)] == '|' and char_matrix[(1,0)] == ' ')
-                    or (dcol==1 and char_matrix[(1,1)] == '|' and char_matrix[(0,0)] == '/' and char_matrix[(1,2)] != '/' and char_matrix[(1,2)] != '_')
-                    or (dcol==0 and char_matrix[(1,0)] == '|' and char_matrix[(0,0)] == '*' and char_matrix[(1,1)] == '/')
-
-                    or (dcol==1 and char_matrix[(1,1)] == '*' and char_matrix[(0,0)] == '/')
-
-                    or (dcol==0 and char_matrix[(1,0)] == "|" and char_matrix[(0,0)] == '*')
-                    or (dcol==0 and char_matrix[(1,0)] == "|" and char_matrix[(0,0)] == '/')
-                    or (dcol==0 and char_matrix[(1,0)] == "|" and char_matrix[(0,0)] == '\\')
-                    or (dcol==0 and char_matrix[(1,0)] == "|" and char_matrix[(0,0)] == '|')
-                    or (dcol==0 and char_matrix[(1,0)] == "\\" and char_matrix[(0,0)] == '|')
-                    or (dcol==0 and char_matrix[(1,0)] == "\\" and char_matrix[(0,0)] == '/' and char_matrix[(1,1)] != "/")
-
-                    or (dcol==0 and char_matrix[(1,0)] == '*' and char_matrix[(0,0)] == '|')
-
-                    or (dcol==-1 and char_matrix[(1,-1)] == '|' and char_matrix[(0,0)] == '\\' and char_matrix[(1,0)] == ' ' and char_matrix[(1,-2)] != '\\')
-                    or (dcol==-1 and char_matrix[(1,-1)] == '\\' and char_matrix[(0,0)] == '\\')
-                    or (dcol==-1 and char_matrix[(1,-1)] == '*' and char_matrix[(0,0)] == '\\')
-
-                    or (dcol==-1 and char_matrix[(1,-1)] == '\\' and char_matrix[(0,0)] == '|' and char_matrix[(0,1)] != '\\')
-                    or (dcol==-1 and char_matrix[(1,-1)] == '|' and char_matrix[(0,0)] == '\\' and char_matrix[(1,-2)] != '\\')
-                    or (dcol==-1 and char_matrix[(1,-1)] == '\\' and char_matrix[(0,0)] == '*')
-
-                    or (dcol==-1 and char_matrix[(1,-1)] == '*' and char_matrix[(0,0)] == '\\')
-
-                    ):
-                    subpath_positions += [trace_branch_path_recursive(
-                        git_lines, next_row, ncol, child_row, child_col, step, visited, is_start=False, debug=debug
-                    )]
-        if (char_matrix[(1,2)] in ['_','/'] and char_matrix[(0,0)] == '/' and char_matrix[(0,1)] == '|' and char_matrix[(1,1)] == '|'):
+                    (
+                        dcol == 1
+                        and char_matrix[(1, 1)] == "/"
+                        and char_matrix[(0, 0)] == "/"
+                    )
+                    or (
+                        dcol == 1
+                        and char_matrix[(1, 1)] == "/"
+                        and char_matrix[(0, 0)] == "*"
+                    )
+                    or (
+                        dcol == 1
+                        and char_matrix[(1, 1)] == "\\"
+                        and char_matrix[(0, 0)] == "/"
+                        and char_matrix[(1, 0)] == " "
+                    )
+                    or (
+                        dcol == 1
+                        and char_matrix[(1, 1)] == "/"
+                        and char_matrix[(0, 0)] == "|"
+                        and char_matrix[(1, 0)] == "|"
+                        and char_matrix[(0, -1)] != "/"
+                        and char_matrix[(1, -1)] != "_"
+                    )
+                    or (
+                        dcol == 1
+                        and char_matrix[(1, 1)] == "/"
+                        and char_matrix[(0, 0)] == "|"
+                        and char_matrix[(1, 0)] == " "
+                    )
+                    or (
+                        dcol == 1
+                        and char_matrix[(1, 1)] == "|"
+                        and char_matrix[(0, 0)] == "/"
+                        and char_matrix[(1, 2)] != "/"
+                        and char_matrix[(1, 2)] != "_"
+                    )
+                    or (
+                        dcol == 0
+                        and char_matrix[(1, 0)] == "|"
+                        and char_matrix[(0, 0)] == "*"
+                        and char_matrix[(1, 1)] == "/"
+                    )
+                    or (
+                        dcol == 1
+                        and char_matrix[(1, 1)] == "*"
+                        and char_matrix[(0, 0)] == "/"
+                    )
+                    or (
+                        dcol == 0
+                        and char_matrix[(1, 0)] == "|"
+                        and char_matrix[(0, 0)] == "*"
+                    )
+                    or (
+                        dcol == 0
+                        and char_matrix[(1, 0)] == "|"
+                        and char_matrix[(0, 0)] == "/"
+                    )
+                    or (
+                        dcol == 0
+                        and char_matrix[(1, 0)] == "|"
+                        and char_matrix[(0, 0)] == "\\"
+                    )
+                    or (
+                        dcol == 0
+                        and char_matrix[(1, 0)] == "|"
+                        and char_matrix[(0, 0)] == "|"
+                    )
+                    or (
+                        dcol == 0
+                        and char_matrix[(1, 0)] == "\\"
+                        and char_matrix[(0, 0)] == "|"
+                    )
+                    or (
+                        dcol == 0
+                        and char_matrix[(1, 0)] == "\\"
+                        and char_matrix[(0, 0)] == "/"
+                        and char_matrix[(1, 1)] != "/"
+                    )
+                    or (
+                        dcol == 0
+                        and char_matrix[(1, 0)] == "*"
+                        and char_matrix[(0, 0)] == "|"
+                    )
+                    or (
+                        dcol == -1
+                        and char_matrix[(1, -1)] == "|"
+                        and char_matrix[(0, 0)] == "\\"
+                        and char_matrix[(1, 0)] == " "
+                        and char_matrix[(1, -2)] != "\\"
+                    )
+                    or (
+                        dcol == -1
+                        and char_matrix[(1, -1)] == "\\"
+                        and char_matrix[(0, 0)] == "\\"
+                    )
+                    or (
+                        dcol == -1
+                        and char_matrix[(1, -1)] == "*"
+                        and char_matrix[(0, 0)] == "\\"
+                    )
+                    or (
+                        dcol == -1
+                        and char_matrix[(1, -1)] == "\\"
+                        and char_matrix[(0, 0)] == "|"
+                        and char_matrix[(0, 1)] != "\\"
+                    )
+                    or (
+                        dcol == -1
+                        and char_matrix[(1, -1)] == "|"
+                        and char_matrix[(0, 0)] == "\\"
+                        and char_matrix[(1, -2)] != "\\"
+                    )
+                    or (
+                        dcol == -1
+                        and char_matrix[(1, -1)] == "\\"
+                        and char_matrix[(0, 0)] == "*"
+                    )
+                    or (
+                        dcol == -1
+                        and char_matrix[(1, -1)] == "*"
+                        and char_matrix[(0, 0)] == "\\"
+                    )
+                ):
+                    subpath_positions += [
+                        trace_branch_path_recursive(
+                            git_lines,
+                            next_row,
+                            ncol,
+                            child_row,
+                            child_col,
+                            step,
+                            visited,
+                            is_start=False,
+                            debug=debug,
+                        )
+                    ]
+        if (
+            char_matrix[(1, 2)] in ["_", "/"]
+            and char_matrix[(0, 0)] == "/"
+            and char_matrix[(0, 1)] == "|"
+            and char_matrix[(1, 1)] == "|"
+        ):
             temp_set = set()
             dcol = 2
-            while char_matrix[(1,dcol)] == '_' and char_matrix[(1,dcol-1)] == '|':
+            while char_matrix[(1, dcol)] == "_" and char_matrix[(1, dcol - 1)] == "|":
                 temp_set.add((next_row, col + dcol))
                 dcol += 2
-                char_matrix[(1,dcol)] = next_line[col+dcol] if (0 <= col+dcol < len(next_line)) else ''
-                char_matrix[(1,dcol-1)] = next_line[col+dcol-1] if (0 <= col+dcol-1 < len(next_line)) else ''
+                char_matrix[(1, dcol)] = (
+                    next_line[col + dcol] if (0 <= col + dcol < len(next_line)) else ""
+                )
+                char_matrix[(1, dcol - 1)] = (
+                    next_line[col + dcol - 1]
+                    if (0 <= col + dcol - 1 < len(next_line))
+                    else ""
+                )
 
             ncol = col + dcol
-            subpath_positions += [trace_branch_path_recursive(
-                        git_lines, next_row, ncol, child_row, child_col, step, visited, is_start=False, debug=debug
-                    )|temp_set]
-            
-        if (char_matrix[(1,-1)] in ['.','-'] and char_matrix[(0,0)] == '\\'):
+            subpath_positions += [
+                trace_branch_path_recursive(
+                    git_lines,
+                    next_row,
+                    ncol,
+                    child_row,
+                    child_col,
+                    step,
+                    visited,
+                    is_start=False,
+                    debug=debug,
+                )
+                | temp_set
+            ]
+
+        if char_matrix[(1, -1)] in [".", "-"] and char_matrix[(0, 0)] == "\\":
             temp_set = set()
             dcol = -1
-            while char_matrix[(1,dcol)] in ['.','-']:
+            while char_matrix[(1, dcol)] in [".", "-"]:
                 temp_set.add((next_row, col + dcol))
                 dcol -= 1
-                char_matrix[(1,dcol)] = next_line[col+dcol] if (0 <= col+dcol < len(next_line)) else ''
+                char_matrix[(1, dcol)] = (
+                    next_line[col + dcol] if (0 <= col + dcol < len(next_line)) else ""
+                )
 
             ncol = col + dcol
-            subpath_positions += [trace_branch_path_recursive(
-                        git_lines, next_row, ncol, child_row, child_col, step, visited, is_start=False, debug=debug
-                    )|temp_set]
-        
-    if len(subpath_positions)>1:
+            subpath_positions += [
+                trace_branch_path_recursive(
+                    git_lines,
+                    next_row,
+                    ncol,
+                    child_row,
+                    child_col,
+                    step,
+                    visited,
+                    is_start=False,
+                    debug=debug,
+                )
+                | temp_set
+            ]
+
+    if len(subpath_positions) > 1:
         nothing_added = True
         for subpath_position in subpath_positions:
-            if 'x' not in subpath_position:
+            if "x" not in subpath_position:
                 nothing_added = False
                 path_positions |= subpath_position
         if nothing_added:
-            path_positions |= set('x')
-    elif len(subpath_positions)==1:
+            path_positions |= set("x")
+    elif len(subpath_positions) == 1:
         path_positions |= subpath_positions[0]
 
-
     return path_positions
+
 
 def build_reverse_dag(dag):
     """Returns a dict mapping child_id -> list of parent_ids."""
@@ -440,33 +604,35 @@ def build_reverse_dag(dag):
             reverse[child].append(parent)
     return reverse
 
+
 class ModalField:
     """A single editable field inside a modal."""
+
     def __init__(self, label, value="", completions=None, validator=None):
         self.label = label
         self.value = value
         self.completions = completions or []  # list of strings for autocomplete
-        self.validator = validator             # callable(str) -> str|None (error msg)
+        self.validator = validator  # callable(str) -> str|None (error msg)
         self.cursor = len(value)
         self.error = None
         self._completion_idx = -1
         self._completion_prefix = ""
-        self._dd_idx = -1   # highlighted row in the visible dropdown list (-1 = none)
+        self._dd_idx = -1  # highlighted row in the visible dropdown list (-1 = none)
 
     def _current_token(self):
-            """Return the text after the last comma (stripped), for autocomplete."""
-            parts = self.value[:self.cursor].rsplit(",", 1)
-            return parts[-1].strip()
+        """Return the text after the last comma (stripped), for autocomplete."""
+        parts = self.value[: self.cursor].rsplit(",", 1)
+        return parts[-1].strip()
 
     def _select_dd_item(self, completion):
         """Insert *completion*, replacing the current comma-token."""
-        before_cursor = self.value[:self.cursor]
+        before_cursor = self.value[: self.cursor]
         last_comma = before_cursor.rfind(",")
         if last_comma == -1:
-            self.value = completion + self.value[self.cursor:]
+            self.value = completion + self.value[self.cursor :]
         else:
-            prefix_part = self.value[:last_comma + 1] + " "
-            self.value = prefix_part + completion + self.value[self.cursor:]
+            prefix_part = self.value[: last_comma + 1] + " "
+            self.value = prefix_part + completion + self.value[self.cursor :]
         self.cursor = len(self.value)
         self._completion_idx = -1
         self._dd_idx = -1
@@ -479,52 +645,54 @@ class ModalField:
     def handle_key(self, k):
         if k == curses.KEY_BACKSPACE or k == 127:
             if self.cursor > 0:
-                self.value = self.value[:self.cursor-1] + self.value[self.cursor:]
+                self.value = self.value[: self.cursor - 1] + self.value[self.cursor :]
                 self.cursor -= 1
                 self._completion_idx = -1
         elif k == curses.KEY_LEFT:
             self.cursor = max(0, self.cursor - 1)
         elif k == curses.KEY_RIGHT:
             self.cursor = min(len(self.value), self.cursor + 1)
-        elif k == ord('\t') and self.completions:
+        elif k == ord("\t") and self.completions:
             token = self._current_token()
             matches = [c for c in self.completions if c.startswith(token)]
             if matches:
                 self._completion_idx = (self._completion_idx + 1) % len(matches)
-                self._dd_idx = self._completion_idx   # keep dropdown highlight in sync
+                self._dd_idx = self._completion_idx  # keep dropdown highlight in sync
                 completion = matches[self._completion_idx]
                 # Replace only the current token, preserving everything before it
-                before_cursor = self.value[:self.cursor]
+                before_cursor = self.value[: self.cursor]
                 last_comma = before_cursor.rfind(",")
                 if last_comma == -1:
                     # No comma — replace entire value
-                    self.value = completion + self.value[self.cursor:]
+                    self.value = completion + self.value[self.cursor :]
                 else:
                     # Replace only the token after the last comma
-                    prefix_part = self.value[:last_comma + 1] + " "
-                    self.value = prefix_part + completion + self.value[self.cursor:]
+                    prefix_part = self.value[: last_comma + 1] + " "
+                    self.value = prefix_part + completion + self.value[self.cursor :]
                 self.cursor = len(self.value)
         elif 32 <= k <= 126:
             ch = chr(k)
-            self.value = self.value[:self.cursor] + ch + self.value[self.cursor:]
+            self.value = self.value[: self.cursor] + ch + self.value[self.cursor :]
             self.cursor += 1
             self._completion_idx = -1  # reset on typing
-            self._dd_idx = -1          # reset dropdown selection on typing
-            
+            self._dd_idx = -1  # reset dropdown selection on typing
+
     def validate(self):
         if self.validator:
             self.error = self.validator(self.value)
         return self.error is None
 
+
 class Modal:
     """
     Multi-field modal dialog rendered over the info panel area.
-    
+
     fields: list of ModalField
     title: str
     on_submit: callable(dict of label->value) -> None
     on_cancel: callable() -> None
     """
+
     def __init__(self, title, fields, on_submit, on_cancel):
         self.title = title
         self.fields = fields
@@ -547,7 +715,7 @@ class Modal:
             return
 
         # ── Tab: cycle completions and highlight the chosen match ─────────────
-        if k == ord('\t') and self.fields[self.active_field].completions:
+        if k == ord("\t") and self.fields[self.active_field].completions:
             self.fields[self.active_field].handle_key(k)
             return
 
@@ -575,13 +743,15 @@ class Modal:
         row = 0
         # Title
         try:
-            stdscr.addstr(row, panel_x, f" {self.title} ".center(panel_w, "─"), curses.A_BOLD)
+            stdscr.addstr(
+                row, panel_x, f" {self.title} ".center(panel_w, "─"), curses.A_BOLD
+            )
         except curses.error:
             pass
         row += 2
 
         for i, field in enumerate(self.fields):
-            is_active = (i == self.active_field)
+            is_active = i == self.active_field
             attr = curses.A_REVERSE if is_active else 0
 
             label_str = f" {field.label}: "
@@ -594,7 +764,9 @@ class Modal:
             val_w = w - val_x - 1
 
             # Wrap the value across multiple lines
-            wrapped_val = textwrap.wrap(field.value if field.value else " ", width=val_w) or [" "]
+            wrapped_val = textwrap.wrap(
+                field.value if field.value else " ", width=val_w
+            ) or [" "]
             for j, wline in enumerate(wrapped_val):
                 try:
                     stdscr.addstr(row + j, val_x, wline.ljust(val_w), attr)
@@ -604,7 +776,12 @@ class Modal:
 
             if is_active and field.error:
                 try:
-                    stdscr.addstr(row, panel_x, f" ! {field.error}", curses.color_pair(curses.COLOR_RED + 1))
+                    stdscr.addstr(
+                        row,
+                        panel_x,
+                        f" ! {field.error}",
+                        curses.color_pair(curses.COLOR_RED + 1),
+                    )
                 except curses.error:
                     pass
                 row += 1
@@ -614,11 +791,13 @@ class Modal:
                 matches = field._dd_matches()
                 if matches:
                     for j, m in enumerate(matches):
-                        is_sel = (j == field._dd_idx)
+                        is_sel = j == field._dd_idx
                         item_attr = curses.A_REVERSE if is_sel else curses.A_DIM
                         prefix = "▶ " if is_sel else "  "
                         try:
-                            stdscr.addstr(row + j, val_x, (prefix + m)[:val_w], item_attr)
+                            stdscr.addstr(
+                                row + j, val_x, (prefix + m)[:val_w], item_attr
+                            )
                         except curses.error:
                             pass
                     row += len(matches)
@@ -626,10 +805,15 @@ class Modal:
             row += 1
         # Footer
         try:
-            stdscr.addstr(row + 1, panel_x,
-                          " ↑↓: switch field  Tab: complete  Enter: confirm  Esc: cancel", curses.A_DIM)
+            stdscr.addstr(
+                row + 1,
+                panel_x,
+                " ↑↓: switch field  Tab: complete  Enter: confirm  Esc: cancel",
+                curses.A_DIM,
+            )
         except curses.error:
             pass
+
 
 def export_results_to_markdown(snapshot, run_dir):
     """Walk the DAG in topological order and write all results to a
@@ -639,10 +823,11 @@ def export_results_to_markdown(snapshot, run_dir):
     out_dir = run_dir / "outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path  = out_dir / f"export_{timestamp}.md"
+    out_path = out_dir / f"export_{timestamp}.md"
 
     def topo_sort(snap):
         visited, order = set(), []
+
         def visit(nid):
             if nid in visited:
                 return
@@ -652,45 +837,66 @@ def export_results_to_markdown(snapshot, run_dir):
                 for dep in sorted(node.dependencies):
                     visit(dep)
             order.append(nid)
+
         for nid in sorted(snap.keys()):
             visit(nid)
         return order
 
     order = topo_sort(snapshot)
 
-    goal_nodes = [snapshot[nid] for nid in order
-                  if snapshot.get(nid) and snapshot[nid].node_type == "goal"]
-    title = (goal_nodes[0].metadata.get("description", goal_nodes[0].id)
-             if goal_nodes else run_dir.name.replace("_", " ").title())
+    goal_nodes = [
+        snapshot[nid]
+        for nid in order
+        if snapshot.get(nid) and snapshot[nid].node_type == "goal"
+    ]
+    title = (
+        goal_nodes[0].metadata.get("description", goal_nodes[0].id)
+        if goal_nodes
+        else run_dir.name.replace("_", " ").title()
+    )
 
     lines = [
-        f"# {title}", "",
-        f"*Exported {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*", "",
-        "---", "",
-        "## Summary", "",
+        f"# {title}",
+        "",
+        f"*Exported {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+        "",
+        "---",
+        "",
+        "## Summary",
+        "",
         "| Node | Type | Status |",
         "|------|------|--------|",
     ]
     for nid in order:
         node = snapshot.get(nid)
-        if not node or node.metadata.get("hidden") or node.node_type == "execution_step":
+        if (
+            not node
+            or node.metadata.get("hidden")
+            or node.node_type == "execution_step"
+        ):
             continue
         lines.append(f"| {nid} | {node.node_type} | {node.status} |")
     lines += ["", "---", "", "## Results", ""]
 
     for nid in order:
         node = snapshot.get(nid)
-        if not node or node.node_type == "execution_step" or node.metadata.get("hidden"):
+        if (
+            not node
+            or node.node_type == "execution_step"
+            or node.metadata.get("hidden")
+        ):
             continue
         desc = node.metadata.get("description", "")
         lines.append(f"### {nid}")
         if desc and desc != nid:
             lines += [f"*{desc}*", ""]
         deps = ", ".join(sorted(node.dependencies)) or "none"
-        lines.append(f"**Type:** {node.node_type} | **Status:** {node.status} | **Deps:** {deps}")
+        lines.append(
+            f"**Type:** {node.node_type} | **Status:** {node.status} | **Deps:** {deps}"
+        )
         lines.append("")
         req_input = node.metadata.get("required_input")
-        output    = node.metadata.get("output")
+        output = node.metadata.get("output")
         if req_input:
             lines.append(f"**Input:** `{req_input}`")
         if output:
@@ -710,56 +916,77 @@ def export_results_to_markdown(snapshot, run_dir):
     logger.info("[EXPORT] Written to %s", out_path)
     return out_path
 
+
 def open_add_modal(snapshot, event_queue, current_node, set_modal):
     node_ids = list(snapshot.keys())
- 
+
     def on_submit(values):
-        new_id         = values["ID"].strip()
-        new_desc       = values["Description"].strip()
-        deps_raw       = values["Dependencies"].strip()
+        new_id = values["ID"].strip()
+        new_desc = values["Description"].strip()
+        deps_raw = values["Dependencies"].strip()
         dependents_raw = values["Dependents"].strip()
-        ntype          = values["Type"].strip() or "task"
- 
+        ntype = values["Type"].strip() or "task"
+
         if not new_id or new_id in snapshot:
             set_modal(None)
             return
- 
-        deps = [d.strip() for d in deps_raw.split(",")
-                if d.strip() and d.strip() in snapshot]
-        dependents = [d.strip() for d in dependents_raw.split(",")
-                      if d.strip() and d.strip() in snapshot]
- 
-        event_queue.put(Event(ADD_NODE, {
-            "node_id":      new_id,
-            "node_type":    ntype,
-            "dependencies": deps,
-            "origin":       "user",
-            "metadata":     {"description": new_desc},
-        }))
- 
+
+        deps = [
+            d.strip()
+            for d in deps_raw.split(",")
+            if d.strip() and d.strip() in snapshot
+        ]
+        dependents = [
+            d.strip()
+            for d in dependents_raw.split(",")
+            if d.strip() and d.strip() in snapshot
+        ]
+
+        event_queue.put(
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": new_id,
+                    "node_type": ntype,
+                    "dependencies": deps,
+                    "origin": "user",
+                    "metadata": {"description": new_desc},
+                },
+            )
+        )
+
         for dependent_id in dependents:
-            event_queue.put(Event(ADD_DEPENDENCY, {
-                "node_id":    dependent_id,
-                "depends_on": new_id,
-            }))
+            event_queue.put(
+                Event(
+                    ADD_DEPENDENCY,
+                    {
+                        "node_id": dependent_id,
+                        "depends_on": new_id,
+                    },
+                )
+            )
             # Reset the dependent so it reruns; _on_node_done cascades further if its result changes.
             # with the new node as a prerequisite.
             event_queue.put(Event(RESET_NODE, {"node_id": dependent_id}))
- 
+
         set_modal(None)
- 
-    set_modal(Modal(
-        title="Add Node",
-        fields=[
-            ModalField("ID",           value=""),
-            ModalField("Description",  value=""),
-            ModalField("Type",         value="task", completions=["task", "goal"]),
-            ModalField("Dependencies", value=current_node or "", completions=node_ids),
-            ModalField("Dependents",   value="",                 completions=node_ids),
-        ],
-        on_submit=on_submit,
-        on_cancel=lambda: set_modal(None),
-    ))
+
+    set_modal(
+        Modal(
+            title="Add Node",
+            fields=[
+                ModalField("ID", value=""),
+                ModalField("Description", value=""),
+                ModalField("Type", value="task", completions=["task", "goal"]),
+                ModalField(
+                    "Dependencies", value=current_node or "", completions=node_ids
+                ),
+                ModalField("Dependents", value="", completions=node_ids),
+            ],
+            on_submit=on_submit,
+            on_cancel=lambda: set_modal(None),
+        )
+    )
 
 
 def open_clarification_modal(current_node, snapshot, event_queue, set_modal):
@@ -793,15 +1020,25 @@ def open_clarification_modal(current_node, snapshot, event_queue, set_modal):
         new_result = _json.dumps(draft, ensure_ascii=False)
 
         # Update the node metadata + result
-        event_queue.put(Event(UPDATE_METADATA, {
-            "node_id":  current_node,
-            "origin":   "user",
-            "metadata": {"fields": draft},
-        }))
-        event_queue.put(Event(SET_RESULT, {
-            "node_id": current_node,
-            "result":  new_result,
-        }))
+        event_queue.put(
+            Event(
+                UPDATE_METADATA,
+                {
+                    "node_id": current_node,
+                    "origin": "user",
+                    "metadata": {"fields": draft},
+                },
+            )
+        )
+        event_queue.put(
+            Event(
+                SET_RESULT,
+                {
+                    "node_id": current_node,
+                    "result": new_result,
+                },
+            )
+        )
 
         # Reset direct children only
         for child_id in node.children:
@@ -812,11 +1049,16 @@ def open_clarification_modal(current_node, snapshot, event_queue, set_modal):
         # Mark parent goal unexpanded for partial replan
         goal_id = node.metadata.get("parent_goal")
         if goal_id and goal_id in snapshot:
-            event_queue.put(Event(UPDATE_METADATA, {
-                "node_id":  goal_id,
-                "origin":   "user",
-                "metadata": {"expanded": False},
-            }))
+            event_queue.put(
+                Event(
+                    UPDATE_METADATA,
+                    {
+                        "node_id": goal_id,
+                        "origin": "user",
+                        "metadata": {"expanded": False},
+                    },
+                )
+            )
 
         set_modal(None)
 
@@ -824,27 +1066,33 @@ def open_clarification_modal(current_node, snapshot, event_queue, set_modal):
     # The label encodes the field index so on_submit can match values back.
     modal_fields = []
     for i, f in enumerate(draft):
-        label     = f"Field {i + 1}: {f.get('label', f['key'])}"
+        label = f"Field {i + 1}: {f.get('label', f['key'])}"
         cur_value = f.get("value", "unknown")
         if cur_value == "unknown":
             cur_value = ""
-        modal_fields.append(ModalField(
-            label=label,
-            value=cur_value,
-        ))
+        modal_fields.append(
+            ModalField(
+                label=label,
+                value=cur_value,
+            )
+        )
 
     # Final read-only info field telling the user what Confirm does
-    modal_fields.append(ModalField(
-        label="→ Press Enter on last field or submit to confirm & rerun",
-        value="",
-    ))
+    modal_fields.append(
+        ModalField(
+            label="→ Press Enter on last field or submit to confirm & rerun",
+            value="",
+        )
+    )
 
-    set_modal(Modal(
-        title="Edit goal context  (Tab: next field  Enter: confirm)",
-        fields=modal_fields,
-        on_submit=on_submit,
-        on_cancel=lambda: set_modal(None),
-    ))
+    set_modal(
+        Modal(
+            title="Edit goal context  (Tab: next field  Enter: confirm)",
+            fields=modal_fields,
+            on_submit=on_submit,
+            on_cancel=lambda: set_modal(None),
+        )
+    )
 
 
 def open_edit_modal(current_node, snapshot, event_queue, set_modal):
@@ -852,63 +1100,99 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
     node_ids = [nid for nid in snapshot.keys() if nid != current_node]
     current_deps = ", ".join(node.dependencies)
     current_dependents = ", ".join(
-        nid for nid, n in snapshot.items()
-        if current_node in n.dependencies
+        nid for nid, n in snapshot.items() if current_node in n.dependencies
     )
     current_result = node.result or ""
- 
+
     def on_submit(values):
-        new_id           = values["ID"].strip()
-        new_desc         = values["Description"].strip()
-        new_deps_raw     = values["Dependencies"].strip()
-        new_status       = values["Status"].strip()
-        new_dep_raw      = values["Dependents"].strip()
-        new_result       = values["Result"].strip()
- 
+        new_id = values["ID"].strip()
+        new_desc = values["Description"].strip()
+        new_deps_raw = values["Dependencies"].strip()
+        new_status = values["Status"].strip()
+        new_dep_raw = values["Dependents"].strip()
+        new_result = values["Result"].strip()
+
         new_deps = [d.strip() for d in new_deps_raw.split(",") if d.strip()]
         new_deps = [d for d in new_deps if d in snapshot]
- 
-        new_dependents = [d.strip() for d in new_dep_raw.split(",")
-                          if d.strip() and d.strip() in snapshot
-                          and d.strip() != current_node]
+
+        new_dependents = [
+            d.strip()
+            for d in new_dep_raw.split(",")
+            if d.strip() and d.strip() in snapshot and d.strip() != current_node
+        ]
         new_dependents_set = set(new_dependents)
-        old_dependents = {nid for nid, n in snapshot.items()
-                          if current_node in n.dependencies}
- 
-        event_queue.put(Event(UPDATE_METADATA, {
-            "node_id": current_node,
-            "origin":  "user",
-            "metadata": {"description": new_desc},
-        }))
- 
+        old_dependents = {
+            nid for nid, n in snapshot.items() if current_node in n.dependencies
+        }
+
+        event_queue.put(
+            Event(
+                UPDATE_METADATA,
+                {
+                    "node_id": current_node,
+                    "origin": "user",
+                    "metadata": {"description": new_desc},
+                },
+            )
+        )
+
         if new_status in ("pending", "done", "running", "failed", "to_be_expanded"):
-            event_queue.put(Event(UPDATE_STATUS, {
-                "node_id": current_node,
-                "status":  new_status,
-            }))
- 
-        old_deps     = set(node.dependencies)
+            event_queue.put(
+                Event(
+                    UPDATE_STATUS,
+                    {
+                        "node_id": current_node,
+                        "status": new_status,
+                    },
+                )
+            )
+
+        old_deps = set(node.dependencies)
         new_deps_set = set(new_deps)
         for removed in old_deps - new_deps_set:
-            event_queue.put(Event(REMOVE_DEPENDENCY, {
-                "node_id": current_node, "depends_on": removed,
-            }))
+            event_queue.put(
+                Event(
+                    REMOVE_DEPENDENCY,
+                    {
+                        "node_id": current_node,
+                        "depends_on": removed,
+                    },
+                )
+            )
         for added in new_deps_set - old_deps:
-            event_queue.put(Event(ADD_DEPENDENCY, {
-                "node_id": current_node, "depends_on": added,
-            }))
- 
+            event_queue.put(
+                Event(
+                    ADD_DEPENDENCY,
+                    {
+                        "node_id": current_node,
+                        "depends_on": added,
+                    },
+                )
+            )
+
         for removed in old_dependents - new_dependents_set:
-            event_queue.put(Event(REMOVE_DEPENDENCY, {
-                "node_id": removed, "depends_on": current_node,
-            }))
+            event_queue.put(
+                Event(
+                    REMOVE_DEPENDENCY,
+                    {
+                        "node_id": removed,
+                        "depends_on": current_node,
+                    },
+                )
+            )
             event_queue.put(Event(RESET_NODE, {"node_id": removed}))
         for added in new_dependents_set - old_dependents:
-            event_queue.put(Event(ADD_DEPENDENCY, {
-                "node_id": added, "depends_on": current_node,
-            }))
+            event_queue.put(
+                Event(
+                    ADD_DEPENDENCY,
+                    {
+                        "node_id": added,
+                        "depends_on": current_node,
+                    },
+                )
+            )
             event_queue.put(Event(RESET_NODE, {"node_id": added}))
- 
+
         # ── Cascade decision ──────────────────────────────────────────────
         # Only cascade when something that feeds into the downstream LLM
         # prompt actually changed: result, description, or dependencies.
@@ -925,18 +1209,22 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
         #                     done children if the result changes.
         # • status-only     → no cascade at all.
         result_changed = new_result != current_result
-        desc_changed   = new_desc != node.metadata.get("description", "")
-        deps_changed   = new_deps_set != old_deps
-        is_rename      = bool(new_id and new_id != current_node
-                              and new_id not in snapshot)
+        desc_changed = new_desc != node.metadata.get("description", "")
+        deps_changed = new_deps_set != old_deps
+        is_rename = bool(new_id and new_id != current_node and new_id not in snapshot)
 
         if result_changed:
             # Preserve the node's current status.
             # Reset only done direct children — _on_node_done cascades further.
-            event_queue.put(Event(SET_RESULT, {
-                "node_id": current_node,
-                "result":  new_result if new_result else None,
-            }))
+            event_queue.put(
+                Event(
+                    SET_RESULT,
+                    {
+                        "node_id": current_node,
+                        "result": new_result if new_result else None,
+                    },
+                )
+            )
             for child_id in node.children:
                 child = snapshot.get(child_id)
                 if child and child.status == "done":
@@ -944,102 +1232,150 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
         elif (desc_changed or deps_changed) and not is_rename:
             # Reset the node itself only; _on_node_done cascades if result changes.
             event_queue.put(Event(RESET_NODE, {"node_id": current_node}))
- 
+
         if new_id and new_id != current_node and new_id not in snapshot:
-            event_queue.put(Event(ADD_NODE, {
-                "node_id":      new_id,
-                "node_type":    node.node_type,
-                "dependencies": list(new_deps_set),
-                "origin":       node.origin,
-                "metadata":     {**node.metadata, "description": new_desc},
-            }))
+            event_queue.put(
+                Event(
+                    ADD_NODE,
+                    {
+                        "node_id": new_id,
+                        "node_type": node.node_type,
+                        "dependencies": list(new_deps_set),
+                        "origin": node.origin,
+                        "metadata": {**node.metadata, "description": new_desc},
+                    },
+                )
+            )
             for child in node.children:
-                event_queue.put(Event(ADD_DEPENDENCY,    {"node_id": child, "depends_on": new_id}))
-                event_queue.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": current_node}))
+                event_queue.put(
+                    Event(ADD_DEPENDENCY, {"node_id": child, "depends_on": new_id})
+                )
+                event_queue.put(
+                    Event(
+                        REMOVE_DEPENDENCY,
+                        {"node_id": child, "depends_on": current_node},
+                    )
+                )
             event_queue.put(Event(REMOVE_NODE, {"node_id": current_node}))
             event_queue.put(Event(RESET_NODE, {"node_id": new_id}))
- 
+
         set_modal(None)
- 
-    set_modal(Modal(
-        title="Edit Node",
-        fields=[
-            ModalField("ID",           value=current_node),
-            ModalField("Description",  value=node.metadata.get("description", "")),
-            ModalField("Dependencies", value=current_deps,       completions=node_ids),
-            ModalField("Dependents",   value=current_dependents, completions=node_ids),
-            ModalField("Status",       value=node.status,
-                       completions=["pending", "running", "done", "failed", "to_be_expanded"]),
-            ModalField("Result",       value=current_result),
-        ],
-        on_submit=on_submit,
-        on_cancel=lambda: set_modal(None),
-    ))
-  
+
+    set_modal(
+        Modal(
+            title="Edit Node",
+            fields=[
+                ModalField("ID", value=current_node),
+                ModalField("Description", value=node.metadata.get("description", "")),
+                ModalField("Dependencies", value=current_deps, completions=node_ids),
+                ModalField(
+                    "Dependents", value=current_dependents, completions=node_ids
+                ),
+                ModalField(
+                    "Status",
+                    value=node.status,
+                    completions=[
+                        "pending",
+                        "running",
+                        "done",
+                        "failed",
+                        "to_be_expanded",
+                    ],
+                ),
+                ModalField("Result", value=current_result),
+            ],
+            on_submit=on_submit,
+            on_cancel=lambda: set_modal(None),
+        )
+    )
+
+
 def open_remove_modal(current_node, snapshot, event_queue, set_modal):
-    node     = snapshot[current_node]
-    parents  = list(node.dependencies)
+    node = snapshot[current_node]
+    parents = list(node.dependencies)
     children = list(node.children)
- 
+
     options = [
         ("Remove node only — rewire children to its parents", "rewire"),
-        ("Remove node and all descendants",                   "cascade"),
-        ("Remove node and disconnect everything",             "disconnect"),
+        ("Remove node and all descendants", "cascade"),
+        ("Remove node and disconnect everything", "disconnect"),
     ]
- 
+
     def on_submit(values):
         choice = values["Action"].strip()
-        mode   = next((m for label, m in options if label == choice), None)
- 
+        mode = next((m for label, m in options if label == choice), None)
+
         if mode == "rewire":
             for child in children:
-                event_queue.put(Event(REMOVE_DEPENDENCY, {
-                    "node_id": child, "depends_on": current_node,
-                }))
+                event_queue.put(
+                    Event(
+                        REMOVE_DEPENDENCY,
+                        {
+                            "node_id": child,
+                            "depends_on": current_node,
+                        },
+                    )
+                )
                 for parent in parents:
-                    event_queue.put(Event(ADD_DEPENDENCY, {
-                        "node_id": child, "depends_on": parent,
-                    }))
+                    event_queue.put(
+                        Event(
+                            ADD_DEPENDENCY,
+                            {
+                                "node_id": child,
+                                "depends_on": parent,
+                            },
+                        )
+                    )
             event_queue.put(Event(REMOVE_NODE, {"node_id": current_node}))
             # Children survive — reset them and their subtrees
             for child in children:
                 event_queue.put(Event(RESET_NODE, {"node_id": child}))
- 
+
         elif mode == "cascade":
             # REMOVE_NODE recurses into children — nothing left to reset
             event_queue.put(Event(REMOVE_NODE, {"node_id": current_node}))
- 
+
         elif mode == "disconnect":
             for child in children:
-                event_queue.put(Event(REMOVE_DEPENDENCY, {
-                    "node_id": child, "depends_on": current_node,
-                }))
+                event_queue.put(
+                    Event(
+                        REMOVE_DEPENDENCY,
+                        {
+                            "node_id": child,
+                            "depends_on": current_node,
+                        },
+                    )
+                )
             event_queue.put(Event(REMOVE_NODE, {"node_id": current_node}))
             # Children survive without this dep — reset them
             for child in children:
                 event_queue.put(Event(RESET_NODE, {"node_id": child}))
- 
+
         set_modal(None)
- 
-    set_modal(Modal(
-        title=f"Remove: {current_node}  ({len(children)} children, {len(parents)} parents)",
-        fields=[
-            ModalField(
-                "Action",
-                value=options[0][0],
-                completions=[label for label, _ in options],
-            ),
-        ],
-        on_submit=on_submit,
-        on_cancel=lambda: set_modal(None),
-    ))
- 
+
+    set_modal(
+        Modal(
+            title=f"Remove: {current_node}  ({len(children)} children, {len(parents)} parents)",
+            fields=[
+                ModalField(
+                    "Action",
+                    value=options[0][0],
+                    completions=[label for label, _ in options],
+                ),
+            ],
+            on_submit=on_submit,
+            on_cancel=lambda: set_modal(None),
+        )
+    )
+
+
 def dag_interface(stdscr, orchestrator, run_dir=None):
     graph = orchestrator.graph
     graph_lock = orchestrator.graph_lock
     event_queue = orchestrator.event_queue
 
     active_modal = None
+
     def set_modal(m):
         nonlocal active_modal
         active_modal = m
@@ -1071,7 +1407,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
     selection_index = 0
 
     info_scroll = 0
-    export_notice = None   # (message, expire_time) or None
+    export_notice = None  # (message, expire_time) or None
 
     loop_count = 0
     snapshot = {}
@@ -1097,7 +1433,9 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
             logger.error("[UI LOOP %d] Failed to get snapshot: %s", loop_count, e)
             snapshot = {}
 
-        logger.debug("[UI LOOP %d] Snapshot keys: %s", loop_count, list(snapshot.keys()))
+        logger.debug(
+            "[UI LOOP %d] Snapshot keys: %s", loop_count, list(snapshot.keys())
+        )
 
         version_at_rebuild_start = graph.structure_version
         exec_version_at_rebuild_start = graph.execution_version
@@ -1108,36 +1446,41 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
             graph.structure_version != last_seen_version
             or graph.execution_version != last_exec_version
         ):
-            logger.debug("[UI REBUILD] Version changed from %d to %d",
-                         last_seen_version, graph.structure_version)
+            logger.debug(
+                "[UI REBUILD] Version changed from %d to %d",
+                last_seen_version,
+                graph.structure_version,
+            )
 
             try:
                 with graph_lock:
                     snapshot = graph.get_snapshot()
 
                 rebuild_repo_from_graph(graph)
-                cached_git_lines    = get_git_dag_text()
+                cached_git_lines = get_git_dag_text()
                 cached_node_to_line = map_nodes_to_lines(cached_git_lines, snapshot)
 
-                last_seen_version  = version_at_rebuild_start
-                last_exec_version  = exec_version_at_rebuild_start
+                last_seen_version = version_at_rebuild_start
+                last_exec_version = exec_version_at_rebuild_start
 
-                dag         = graph_to_dag(snapshot)
+                dag = graph_to_dag(snapshot)
                 reverse_dag = build_reverse_dag(dag)
 
                 if current_node not in snapshot:
                     current_node = find_root_node(snapshot)
                     parent_stack = []
-                    child_stack  = find_path_to_node(reverse_dag, current_node)
+                    child_stack = find_path_to_node(reverse_dag, current_node)
                 else:
                     parent_stack = find_path_to_node(dag, current_node)
-                    child_stack  = find_path_to_node(reverse_dag, current_node)
+                    child_stack = find_path_to_node(reverse_dag, current_node)
 
                 missing = set(snapshot.keys()) - set(cached_node_to_line.keys())
                 if missing:
                     missing_frozen = frozenset(missing)
                     if missing_frozen != last_missing_nodes:
-                        logger.warning("[UI] Nodes in snapshot but NOT in git map: %s", missing)
+                        logger.warning(
+                            "[UI] Nodes in snapshot but NOT in git map: %s", missing
+                        )
                         last_missing_nodes = missing_frozen
                     # force rebuild next iteration but don't skip input
                     last_seen_version = -1
@@ -1155,13 +1498,13 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                     snapshot = graph.get_snapshot()
             except Exception:
                 pass
-            dag         = graph_to_dag(snapshot)
+            dag = graph_to_dag(snapshot)
             reverse_dag = build_reverse_dag(dag)
 
         # ── Rendering ─────────────────────────────────────────────────────────
         if not skip_render:
             try:
-                git_lines    = cached_git_lines
+                git_lines = cached_git_lines
                 node_to_line = cached_node_to_line
 
                 if not snapshot:
@@ -1175,20 +1518,26 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
 
                 if current_node:
                     current_line = node_to_line.get(current_node)
-                    current_col  = get_node_col(git_lines[current_line]) \
-                                   if current_line is not None else 0
+                    current_col = (
+                        get_node_col(git_lines[current_line])
+                        if current_line is not None
+                        else 0
+                    )
                 else:
                     current_line = None
-                    current_col  = None
+                    current_col = None
 
                 if parent_node and current_node:
                     parent_line = node_to_line.get(parent_node)
-                    parent_col  = get_node_col(git_lines[parent_line]) \
-                                  if parent_line is not None else None
+                    parent_col = (
+                        get_node_col(git_lines[parent_line])
+                        if parent_line is not None
+                        else None
+                    )
                 else:
-                    parent_node  = None
-                    parent_line  = None
-                    parent_col   = None
+                    parent_node = None
+                    parent_line = None
+                    parent_col = None
 
                 # Branch path highlight
                 if (
@@ -1198,8 +1547,11 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                     and parent_line is not None
                 ):
                     path = trace_branch_path_recursive(
-                        git_lines, parent_line, parent_col,
-                        current_line, current_col,
+                        git_lines,
+                        parent_line,
+                        parent_col,
+                        current_line,
+                        current_col,
                     )
                 else:
                     path = set()
@@ -1213,7 +1565,9 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                         continue
                     nt = getattr(node, "node_type", None)
                     if nt == "goal":
-                        goal_star_positions[line_idx] = get_node_col(git_lines[line_idx])
+                        goal_star_positions[line_idx] = get_node_col(
+                            git_lines[line_idx]
+                        )
                     elif nt == "execution_step":
                         step_star_positions[line_idx] = (
                             get_node_col(git_lines[line_idx]),
@@ -1229,7 +1583,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                     node = snapshot.get(node_id)
                     if not node:
                         continue
-                    h6   = "#" + hashlib.sha256(node_id.encode()).hexdigest()[:6]
+                    h6 = "#" + hashlib.sha256(node_id.encode()).hexdigest()[:6]
                     desc = node.metadata.get("description") or node_id
                     line_label_overrides[line_idx] = (h6, f"{h6} {desc}")
 
@@ -1238,17 +1592,17 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                     if current_line is not None:
                         start = max(0, current_line - h // 2)
 
-                    for i, line in enumerate(git_lines[start:start + h - 1]):
-                        parsed           = parse_ansi(line)
-                        x                = 0
+                    for i, line in enumerate(git_lines[start : start + h - 1]):
+                        parsed = parse_ansi(line)
+                        x = 0
                         current_line_idx = i + start
-                        override         = line_label_overrides.get(current_line_idx)
+                        override = line_label_overrides.get(current_line_idx)
 
                         hash_start_x = None
                         if override:
-                            h6      = override[0]
+                            h6 = override[0]
                             visible = "".join(ch for ch, _ in parsed)
-                            idx     = visible.find(h6)
+                            idx = visible.find(h6)
                             if idx != -1:
                                 hash_start_x = idx
 
@@ -1267,19 +1621,24 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                             if (current_line_idx, x) in path:
                                 highlight = curses.A_REVERSE
 
-                            if ch == '*' and goal_star_positions.get(current_line_idx) == x:
-                                ch = 'o'
+                            if (
+                                ch == "*"
+                                and goal_star_positions.get(current_line_idx) == x
+                            ):
+                                ch = "o"
 
-                            if ch == '*' and current_line_idx in step_star_positions:
-                                col, hidden, failed = step_star_positions[current_line_idx]
+                            if ch == "*" and current_line_idx in step_star_positions:
+                                col, hidden, failed = step_star_positions[
+                                    current_line_idx
+                                ]
                                 if x == col:
-                                    ch = '·' if hidden else ('✗' if failed else '◆')
+                                    ch = "·" if hidden else ("✗" if failed else "◆")
 
                             if hash_start_x is not None and x == hash_start_x:
                                 full_label = override[1]
-                                available  = (w // 2 - 1) - x
+                                available = (w // 2 - 1) - x
                                 label = (
-                                    (full_label[:available - 3] + "...")
+                                    (full_label[: available - 3] + "...")
                                     if len(full_label) > available
                                     else full_label
                                 )
@@ -1300,14 +1659,14 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                             x += 1
 
                 # Status bars
-                node_label      = current_node if current_node else "<empty>"
-                llm_paused      = orchestrator.llm_stopped
+                node_label = current_node if current_node else "<empty>"
+                llm_paused = orchestrator.llm_stopped
                 paused_indicator = " | [PAUSED]" if llm_paused else ""
-                activity        = orchestrator.current_activity
-                started         = orchestrator.activity_started
+                activity = orchestrator.current_activity
+                started = orchestrator.activity_started
 
                 if activity and started:
-                    elapsed      = time.time() - started
+                    elapsed = time.time() - started
                     activity_str = f" {activity} ({elapsed:.0f}s)"
                 else:
                     activity_str = ""
@@ -1345,7 +1704,15 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                 if active_modal:
                     active_modal.draw(stdscr, h, w)
                 else:
-                    draw_info_panel(stdscr, h, w, current_node, snapshot, selected_nodes, info_scroll)
+                    draw_info_panel(
+                        stdscr,
+                        h,
+                        w,
+                        current_node,
+                        snapshot,
+                        selected_nodes,
+                        info_scroll,
+                    )
 
                 stdscr.refresh()
 
@@ -1365,8 +1732,12 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
             if parents:
                 parent_node = parents[0]
 
-        parent_stack = ensure_path_starts_at_root(dag, parent_stack + [current_node])[:-1]
-        child_stack  = ensure_path_starts_at_root(reverse_dag, child_stack + [current_node])[:-1]
+        parent_stack = ensure_path_starts_at_root(dag, parent_stack + [current_node])[
+            :-1
+        ]
+        child_stack = ensure_path_starts_at_root(
+            reverse_dag, child_stack + [current_node]
+        )[:-1]
 
         if active_modal:
             active_modal.handle_key(k)
@@ -1377,9 +1748,9 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
             children = dag.get(current_node, [])
             if not branch_mode and children:
                 parent_stack.append(current_node)
-                parent_node  = current_node
+                parent_node = current_node
                 current_node = child_stack.pop() if child_stack else current_node
-                branch_mode  = True
+                branch_mode = True
             elif branch_mode:
                 branch_mode = False
 
@@ -1403,20 +1774,20 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                 siblings = dag.get(parent_node, [])
                 if siblings and current_node in siblings:
                     current_index = siblings.index(current_node)
-                    delta         = -1 if k == curses.KEY_LEFT else 1
+                    delta = -1 if k == curses.KEY_LEFT else 1
                     selection_index = (current_index + delta) % len(siblings)
-                    current_node    = siblings[selection_index]
-                    child_stack     = find_path_to_node(reverse_dag, current_node)
+                    current_node = siblings[selection_index]
+                    child_stack = find_path_to_node(reverse_dag, current_node)
 
-        elif k in (ord('['), ord(']')):
+        elif k in (ord("["), ord("]")):
             info_scroll = 0
             parents = reverse_dag.get(current_node, [])
             if parent_node and parents and parent_node in parents:
-                parent_index  = parents.index(parent_node)
-                delta         = -1 if k == ord('[') else 1
+                parent_index = parents.index(parent_node)
+                delta = -1 if k == ord("[") else 1
                 selection_index = (parent_index + delta) % len(parents)
-                parent_node     = parents[selection_index]
-                parent_stack    = find_path_to_node(dag, parent_node) + [parent_node]
+                parent_node = parents[selection_index]
+                parent_stack = find_path_to_node(dag, parent_node) + [parent_node]
 
         elif k == ord("s"):
             if orchestrator.llm_stopped:
@@ -1428,7 +1799,9 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
             if current_node:
                 node = snapshot.get(current_node)
                 if node and node.node_type == "clarification":
-                    open_clarification_modal(current_node, snapshot, event_queue, set_modal)
+                    open_clarification_modal(
+                        current_node, snapshot, event_queue, set_modal
+                    )
                 else:
                     open_edit_modal(current_node, snapshot, event_queue, set_modal)
 
@@ -1448,16 +1821,16 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                     export_notice = (f"Export failed: {ex}", time.time() + 4)
                     logger.error("[EXPORT] Failed: %s", ex, exc_info=True)
 
-        elif k in (curses.KEY_PPAGE, ord("<")):   # Page Up
+        elif k in (curses.KEY_PPAGE, ord("<")):  # Page Up
             info_scroll = max(0, info_scroll - (h - 4))
 
-        elif k in (curses.KEY_NPAGE, ord(">")):   # Page Down
-            info_scroll += (h - 4)    # draw_info_panel clamps the max
+        elif k in (curses.KEY_NPAGE, ord(">")):  # Page Down
+            info_scroll += h - 4  # draw_info_panel clamps the max
 
-        elif k == ord("j"):            # fine scroll down
+        elif k == ord("j"):  # fine scroll down
             info_scroll += 3
 
-        elif k == ord("k"):            # fine scroll up
+        elif k == ord("k"):  # fine scroll up
             info_scroll = max(0, info_scroll - 3)
 
         elif k == ord("g"):
@@ -1491,6 +1864,7 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
     # ── Clarification node — show fields instead of generic metadata ──────────
     if node.node_type == "clarification":
         import json as _json
+
         lines.append(" Goal context  (press 'e' to edit, then confirm to rerun)")
         lines.append(" ")
         try:
@@ -1500,7 +1874,7 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
         for f in fields:
             label = f.get("label") or f.get("key", "?")
             value = f.get("value", "unknown")
-            flag  = " [?]" if value == "unknown" else ""
+            flag = " [?]" if value == "unknown" else ""
             lines.append(f" {label}{flag}")
             lines.append(f"   → {value}")
             lines.append(" ")
@@ -1511,9 +1885,9 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
         if desc:
             lines += [f" Desc:   {desc}", " "]
 
-        broad_desc    = node.metadata.get("broadened_description", "")
+        broad_desc = node.metadata.get("broadened_description", "")
         broad_missing = node.metadata.get("broadened_for_missing", [])
-        broad_reason  = node.metadata.get("broadened_reason", "")
+        broad_reason = node.metadata.get("broadened_reason", "")
         if broad_desc:
             lines.append(" ⟳ Running as (broadened goal):")
             for wrapped in textwrap.wrap(broad_desc, width=60):
@@ -1570,12 +1944,15 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
                     dep = snapshot.get(dep_id)
                     if dep and dep.result is not None:
                         lines.append(f"   [{dep_id}]")
-                        for wrapped_line in textwrap.wrap(str(dep.result), width=panel_w - 5):
+                        for wrapped_line in textwrap.wrap(
+                            str(dep.result), width=panel_w - 5
+                        ):
                             lines.append(f"   {wrapped_line}")
 
     # After showing the node's own result, show any visible execution steps
     step_children = [
-        n for n in snapshot.values()
+        n
+        for n in snapshot.values()
         if n.node_type == "execution_step"
         and node_id in n.dependencies
         and not n.metadata.get("hidden", False)
@@ -1584,8 +1961,16 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
         lines.append(" ")
         lines.append(" Execution steps:")
         for step in step_children:
-            status_icon = "✓" if step.status == "done" else "✗" if step.status == "failed" else "…"
-            lines.append(f"   {status_icon} {step.metadata.get('description', step.id)}")
+            status_icon = (
+                "✓"
+                if step.status == "done"
+                else "✗"
+                if step.status == "failed"
+                else "…"
+            )
+            lines.append(
+                f"   {status_icon} {step.metadata.get('description', step.id)}"
+            )
             attempts = step.metadata.get("attempts", [])
             if len(attempts) > 1:
                 lines.append(f"     ({len(attempts)} attempts)")
@@ -1597,7 +1982,7 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
     rendered = []
     for line in lines:
         if not line.strip():
-            rendered.append("")          # blank spacer row
+            rendered.append("")  # blank spacer row
         else:
             for subline in textwrap.wrap(line, width=max(1, panel_w - 2)):
                 rendered.append(subline)
@@ -1606,11 +1991,11 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
     total = len(rendered)
     scroll_offset = max(0, min(scroll_offset, max(0, total - visible_rows)))
 
-    for i, subline in enumerate(rendered[scroll_offset: scroll_offset + visible_rows]):
+    for i, subline in enumerate(rendered[scroll_offset : scroll_offset + visible_rows]):
         if not subline:
-            continue                     # skip empty rows — addstr("") can error
+            continue  # skip empty rows — addstr("") can error
         try:
-            stdscr.addstr(i, panel_x + 1, subline[:panel_w - 2])
+            stdscr.addstr(i, panel_x + 1, subline[: panel_w - 2])
         except curses.error:
             pass
 
@@ -1622,13 +2007,14 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
             stdscr.addstr(0, w - len(indicator) - 1, indicator, curses.A_DIM)
         except curses.error:
             pass
-            
+
+
 def run_ui(
     orchestrator,
     run_dir: Path | None = None,
     repo_root: Path | None = None,
     restart_fn=None,
-    ):
+):
     """
     Run the curses DAG UI.
     If the user presses 'g', the startup screen is shown so they can pick a
@@ -1643,14 +2029,14 @@ def run_ui(
         )
     """
     root = logging.getLogger("dag")
-    ch   = getattr(root, "_stderr_handler", None)
+    ch = getattr(root, "_stderr_handler", None)
     if ch:
         root.removeHandler(ch)
 
-    log_path   = (run_dir / "logs" / "dag.log") if run_dir else Path("logs/dag.log")
-    log_file   = open(log_path, "a", encoding="utf-8", buffering=1)
+    log_path = (run_dir / "logs" / "dag.log") if run_dir else Path("logs/dag.log")
+    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
     old_stderr = sys.stderr
-    sys.stderr  = log_file
+    sys.stderr = log_file
 
     try:
         while True:
@@ -1673,10 +2059,13 @@ def run_ui(
             try:
                 orchestrator.stop_llm_calls()
             except Exception as exc:
-                logger.warning("[UI] Could not stop orchestrator before switch: %s", exc)
+                logger.warning(
+                    "[UI] Could not stop orchestrator before switch: %s", exc
+                )
 
             # Show the startup screen (runs its own curses.wrapper call).
             from cuddlytoddly.ui.curses_startup import run_startup_selection
+
             choice = run_startup_selection(repo_root)
             if choice is None:
                 # User pressed Esc on the startup screen — just exit.
@@ -1689,18 +2078,21 @@ def run_ui(
             try:
                 orchestrator, run_dir = restart_fn(choice, False)
             except Exception as exc:
-                logger.error("[UI] restart_fn failed during goal switch: %s", exc, exc_info=True)
+                logger.error(
+                    "[UI] restart_fn failed during goal switch: %s", exc, exc_info=True
+                )
                 break
 
             # Reopen log file pointed at the new run directory.
             log_file.close()
-            new_log = (run_dir / "logs" / "dag.log") if run_dir else Path("logs/dag.log")
-            log_file   = open(new_log, "a", encoding="utf-8", buffering=1)
-            sys.stderr  = log_file
+            new_log = (
+                (run_dir / "logs" / "dag.log") if run_dir else Path("logs/dag.log")
+            )
+            log_file = open(new_log, "a", encoding="utf-8", buffering=1)
+            sys.stderr = log_file
 
     finally:
         sys.stderr = old_stderr
         log_file.close()
         if ch:
             root.addHandler(ch)
-

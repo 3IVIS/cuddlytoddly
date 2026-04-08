@@ -1,4 +1,5 @@
 """Tests for cuddlytoddly.planning.llm_output_validator."""
+
 from conftest import add_node
 
 from cuddlytoddly.core.events import ADD_DEPENDENCY, ADD_NODE
@@ -19,18 +20,19 @@ def node_event(node_id, node_type="task", deps=None, metadata=None):
             "node_type": node_type,
             "dependencies": deps or [],
             "metadata": metadata or {"description": node_id},
-        }
+        },
     }
 
 
 def dep_event(node_id, depends_on):
     return {
         "type": ADD_DEPENDENCY,
-        "payload": {"node_id": node_id, "depends_on": depends_on}
+        "payload": {"node_id": node_id, "depends_on": depends_on},
     }
 
 
 # ── Basic acceptance ──────────────────────────────────────────────────────────
+
 
 class TestValidatorAcceptance:
     def test_accepts_valid_add_node(self):
@@ -80,6 +82,7 @@ class TestValidatorAcceptance:
 
 # ── Rejection cases ───────────────────────────────────────────────────────────
 
+
 class TestValidatorRejection:
     def test_rejects_empty_list(self):
         v, _ = make_validator()
@@ -98,15 +101,20 @@ class TestValidatorRejection:
 
     def test_rejects_node_missing_node_id(self):
         v, _ = make_validator()
-        events = [{"type": ADD_NODE, "payload": {"node_type": "task", "dependencies": []}}]
+        events = [
+            {"type": ADD_NODE, "payload": {"node_type": "task", "dependencies": []}}
+        ]
         result = v.validate_and_normalize(events, "planning")
         assert result == []
 
     def test_rejects_node_with_non_string_node_id(self):
         v, _ = make_validator()
-        events = [{"type": ADD_NODE, "payload": {
-            "node_id": 42, "node_type": "task", "dependencies": []
-        }}]
+        events = [
+            {
+                "type": ADD_NODE,
+                "payload": {"node_id": 42, "node_type": "task", "dependencies": []},
+            }
+        ]
         result = v.validate_and_normalize(events, "planning")
         assert result == []
 
@@ -122,8 +130,10 @@ class TestValidatorRejection:
         v = LLMOutputValidator(g)
         events = [node_event("existing")]
         result = v.validate_and_normalize(events, "planning")
-        assert not any(e["type"] == ADD_NODE and e["payload"]["node_id"] == "existing"
-                       for e in result)
+        assert not any(
+            e["type"] == ADD_NODE and e["payload"]["node_id"] == "existing"
+            for e in result
+        )
 
     def test_rejects_node_with_unresolvable_dep(self):
         v, _ = make_validator()
@@ -164,7 +174,8 @@ class TestValidatorRejection:
         events = [dep_event("the_goal", "the_goal")]
         result = v.validate_and_normalize(events, "planning")
         task_dep_events = [
-            e for e in result
+            e
+            for e in result
             if e["type"] == ADD_DEPENDENCY and e["payload"]["depends_on"] == "the_goal"
         ]
         assert task_dep_events == []
@@ -172,40 +183,70 @@ class TestValidatorRejection:
 
 # ── Metadata filtering ────────────────────────────────────────────────────────
 
+
 class TestValidatorMetadata:
     def test_strips_disallowed_metadata_keys(self):
         v, _ = make_validator()
-        events = [{"type": ADD_NODE, "payload": {
-            "node_id": "a", "node_type": "task", "dependencies": [],
-            "metadata": {"description": "ok", "forbidden_key": "strip me"},
-        }}]
+        events = [
+            {
+                "type": ADD_NODE,
+                "payload": {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {"description": "ok", "forbidden_key": "strip me"},
+                },
+            }
+        ]
         result = v.validate_and_normalize(events, "planning")
         assert "forbidden_key" not in result[0]["payload"]["metadata"]
 
     def test_keeps_allowed_metadata_keys(self):
         v, _ = make_validator()
-        allowed = ["description", "parallel_group", "required_input",
-                   "output", "reflection_notes", "skill", "tools"]
+        allowed = [
+            "description",
+            "parallel_group",
+            "required_input",
+            "output",
+            "reflection_notes",
+            "skill",
+            "tools",
+        ]
         meta = {k: "value" for k in allowed}
-        events = [{"type": ADD_NODE, "payload": {
-            "node_id": "a", "node_type": "task",
-            "dependencies": [], "metadata": meta,
-        }}]
+        events = [
+            {
+                "type": ADD_NODE,
+                "payload": {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": meta,
+                },
+            }
+        ]
         result = v.validate_and_normalize(events, "planning")
         for k in allowed:
             assert k in result[0]["payload"]["metadata"]
 
     def test_non_dict_metadata_reset_to_empty(self):
         v, _ = make_validator()
-        events = [{"type": ADD_NODE, "payload": {
-            "node_id": "a", "node_type": "task",
-            "dependencies": [], "metadata": "not a dict",
-        }}]
+        events = [
+            {
+                "type": ADD_NODE,
+                "payload": {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": "not a dict",
+                },
+            }
+        ]
         result = v.validate_and_normalize(events, "planning")
         assert isinstance(result[0]["payload"]["metadata"], dict)
 
 
 # ── Transitive dependency resolution ─────────────────────────────────────────
+
 
 class TestTransitiveDeps:
     def test_chain_resolved_in_single_batch(self):
@@ -227,5 +268,3 @@ class TestTransitiveDeps:
         ]
         result = v.validate_and_normalize(events, "planning")
         assert result == []
-
-

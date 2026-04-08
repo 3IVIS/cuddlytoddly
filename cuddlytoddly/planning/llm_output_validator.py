@@ -43,7 +43,11 @@ class LLMOutputValidator:
             return []
 
         existing_ids = set(self.graph.nodes.keys())
-        goal_ids = {nid for nid, node in self.graph.nodes.items() if getattr(node, "node_type", None) == "goal"}
+        goal_ids = {
+            nid
+            for nid, node in self.graph.nodes.items()
+            if getattr(node, "node_type", None) == "goal"
+        }
         proposed_nodes = {}
         proposed_edges = []
 
@@ -75,16 +79,28 @@ class LLMOutputValidator:
                 metadata = payload.get("metadata", {})
 
                 if not node_id or not isinstance(node_id, str):
-                    logger.warning("[VALIDATOR] ADD_NODE rejected — missing or non-string node_id: %r", payload)
+                    logger.warning(
+                        "[VALIDATOR] ADD_NODE rejected — missing or non-string node_id: %r",
+                        payload,
+                    )
                     continue
                 if not isinstance(dependencies, list):
-                    logger.warning("[VALIDATOR] ADD_NODE %s rejected — dependencies is not a list: %r", node_id, dependencies)
+                    logger.warning(
+                        "[VALIDATOR] ADD_NODE %s rejected — dependencies is not a list: %r",
+                        node_id,
+                        dependencies,
+                    )
                     continue
                 if node_id in dependencies:
-                    logger.warning("[VALIDATOR] ADD_NODE %s rejected — self-dependency", node_id)
+                    logger.warning(
+                        "[VALIDATOR] ADD_NODE %s rejected — self-dependency", node_id
+                    )
                     continue
                 if node_id in existing_ids:
-                    logger.warning("[VALIDATOR] ADD_NODE %s rejected — node already exists in graph", node_id)
+                    logger.warning(
+                        "[VALIDATOR] ADD_NODE %s rejected — node already exists in graph",
+                        node_id,
+                    )
                     # Salvage any dependency edges implied by this node's dependencies list.
                     # The node itself doesn't need re-creating, but the edges it declared
                     # may not exist yet (e.g. a goal<->task link the planner is re-asserting).
@@ -93,10 +109,15 @@ class LLMOutputValidator:
                             proposed_edges.append((node_id, dep))
                     continue
                 if not isinstance(metadata, dict):
-                    logger.warning("[VALIDATOR] ADD_NODE %s — metadata is not a dict, resetting to {}", node_id)
+                    logger.warning(
+                        "[VALIDATOR] ADD_NODE %s — metadata is not a dict, resetting to {}",
+                        node_id,
+                    )
                     metadata = {}
 
-                filtered_metadata = {k: v for k, v in metadata.items() if k in self.ALLOWED_METADATA_KEYS}
+                filtered_metadata = {
+                    k: v for k, v in metadata.items() if k in self.ALLOWED_METADATA_KEYS
+                }
                 stripped_keys = set(metadata.keys()) - self.ALLOWED_METADATA_KEYS
                 if stripped_keys:
                     logger.debug(
@@ -109,7 +130,7 @@ class LLMOutputValidator:
                     "node_id": node_id,
                     "node_type": node_type,
                     "dependencies": dependencies,
-                    "metadata": filtered_metadata
+                    "metadata": filtered_metadata,
                 }
 
             # -----------------------------
@@ -119,7 +140,10 @@ class LLMOutputValidator:
                 node_id = payload.get("node_id")
                 depends_on = payload.get("depends_on")
                 if not node_id or not depends_on:
-                    logger.warning("[VALIDATOR] ADD_DEPENDENCY rejected — missing node_id or depends_on: %r", payload)
+                    logger.warning(
+                        "[VALIDATOR] ADD_DEPENDENCY rejected — missing node_id or depends_on: %r",
+                        payload,
+                    )
                     continue
                 if not isinstance(node_id, str) or not isinstance(depends_on, str):
                     logger.warning(
@@ -128,14 +152,18 @@ class LLMOutputValidator:
                     )
                     continue
                 if node_id == depends_on:
-                    logger.warning("[VALIDATOR] ADD_DEPENDENCY rejected — self-dependency on %s", node_id)
+                    logger.warning(
+                        "[VALIDATOR] ADD_DEPENDENCY rejected — self-dependency on %s",
+                        node_id,
+                    )
                     continue
 
                 # Block a non-goal node from depending on a goal node.
                 # However, a goal depending on its final completing task is valid
                 # and must be allowed through.
                 dependent_is_goal = node_id in goal_ids or node_id in {
-                    nid for nid, nd in proposed_nodes.items()
+                    nid
+                    for nid, nd in proposed_nodes.items()
                     if nd.get("node_type") == "goal"
                 }
                 if depends_on in goal_ids and not dependent_is_goal:
@@ -149,7 +177,9 @@ class LLMOutputValidator:
                 proposed_edges.append((node_id, depends_on))
 
             else:
-                logger.warning("[VALIDATOR] Unknown event type %r — skipping", event_type)
+                logger.warning(
+                    "[VALIDATOR] Unknown event type %r — skipping", event_type
+                )
 
         # --------------------------------
         # 2️⃣ Transitive structural validation for nodes
@@ -195,7 +225,7 @@ class LLMOutputValidator:
                     "[VALIDATOR] ADD_DEPENDENCY (%s → %s) rejected — %s not in graph or accepted batch",
                     node_id,
                     depends_on,
-                    depends_on
+                    depends_on,
                 )
                 continue
             safe_edges.append((node_id, depends_on))
@@ -207,27 +237,31 @@ class LLMOutputValidator:
 
         # ADD_NODE events
         for node_id, node_data in accepted_nodes.items():
-            safe_events.append({
-                "type": ADD_NODE,
-                "payload": {
-                    "node_id": node_id,
-                    "node_type": node_data["node_type"],
-                    "dependencies": node_data["dependencies"],
-                    "origin": forced_origin,
-                    "metadata": node_data["metadata"]
+            safe_events.append(
+                {
+                    "type": ADD_NODE,
+                    "payload": {
+                        "node_id": node_id,
+                        "node_type": node_data["node_type"],
+                        "dependencies": node_data["dependencies"],
+                        "origin": forced_origin,
+                        "metadata": node_data["metadata"],
+                    },
                 }
-            })
+            )
 
         # ADD_DEPENDENCY events
         for node_id, depends_on in safe_edges:
-            safe_events.append({
-                "type": ADD_DEPENDENCY,
-                "payload": {
-                    "node_id": node_id,
-                    "depends_on": depends_on,
-                    "origin": forced_origin
+            safe_events.append(
+                {
+                    "type": ADD_DEPENDENCY,
+                    "payload": {
+                        "node_id": node_id,
+                        "depends_on": depends_on,
+                        "origin": forced_origin,
+                    },
                 }
-            })
+            )
 
         logger.info(
             "[VALIDATOR] Result: %d raw events → %d accepted (%d nodes, %d edges)",
@@ -238,4 +272,3 @@ class LLMOutputValidator:
         )
 
         return safe_events
-

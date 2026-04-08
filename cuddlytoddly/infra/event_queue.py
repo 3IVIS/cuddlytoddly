@@ -3,6 +3,7 @@ Event Queue
 
 Thread-safe queue for all mutations and interactions.
 """
+
 from queue import Queue
 
 
@@ -18,5 +19,3 @@ class EventQueue:
 
     def empty(self):
         return self._queue.empty()
-
-

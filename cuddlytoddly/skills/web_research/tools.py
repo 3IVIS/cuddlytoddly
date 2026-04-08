@@ -12,10 +12,18 @@ _MAX_FETCH_CHARS = 8_000
 # Placeholder values the clarification node uses for missing context.
 # Queries containing only these tokens after stripping noise cannot be
 # answered by any search engine and should not be attempted.
-_PLACEHOLDER_TOKENS = frozenset({
-    "unknown", "n/a", "not specified", "not provided",
-    "none", "unspecified", "tbd", "?",
-})
+_PLACEHOLDER_TOKENS = frozenset(
+    {
+        "unknown",
+        "n/a",
+        "not specified",
+        "not provided",
+        "none",
+        "unspecified",
+        "tbd",
+        "?",
+    }
+)
 
 
 def _sanitise_query(raw: str) -> tuple[str, list[str]]:
@@ -36,7 +44,7 @@ def _sanitise_query(raw: str) -> tuple[str, list[str]]:
         → ("software engineer salaries", [])
     """
     removed = []
-    tokens  = raw.split()
+    tokens = raw.split()
     cleaned = []
     for tok in tokens:
         # Strip punctuation from both ends before comparing
@@ -63,7 +71,7 @@ def _web_search(args: dict) -> str:
 
     Requires:  pip install duckduckgo-search
     """
-    raw_query   = args.get("query", "").strip()
+    raw_query = args.get("query", "").strip()
     max_results = int(args.get("max_results", 5))
 
     if not raw_query:
@@ -75,7 +83,8 @@ def _web_search(args: dict) -> str:
     if removed:
         logger.info(
             "[WEB_SEARCH] Stripped placeholder token(s) from query: %s → %r",
-            removed, query,
+            removed,
+            query,
         )
 
     # If nothing substantive remains, abort rather than search for noise
@@ -101,7 +110,7 @@ def _web_search(args: dict) -> str:
     last_error = None
     for attempt in range(3):
         if attempt > 0:
-            time.sleep(2 ** attempt)  # 2s, 4s backoff on retry
+            time.sleep(2**attempt)  # 2s, 4s backoff on retry
         try:
             results = []
             with DDGS() as ddgs:
@@ -114,7 +123,9 @@ def _web_search(args: dict) -> str:
             if results:
                 logger.info(
                     "[WEB_SEARCH] Query: %r → %d result(s) (attempt %d)",
-                    query, len(results), attempt + 1,
+                    query,
+                    len(results),
+                    attempt + 1,
                 )
                 return "\n\n---\n\n".join(results)
             logger.warning(
@@ -157,9 +168,11 @@ def _fetch_url(args: dict) -> str:
         else:
             try:
                 from bs4 import BeautifulSoup
+
                 soup = BeautifulSoup(resp.text, "html.parser")
-                for tag in soup(["script", "style", "nav", "footer",
-                                 "header", "aside", "form"]):
+                for tag in soup(
+                    ["script", "style", "nav", "footer", "header", "aside", "form"]
+                ):
                     tag.decompose()
                 text = soup.get_text(separator="\n")
             except ImportError:
@@ -170,7 +183,9 @@ def _fetch_url(args: dict) -> str:
         text = text.strip()
 
         if len(text) > _MAX_FETCH_CHARS:
-            text = text[:_MAX_FETCH_CHARS] + f"\n\n…[truncated — {len(text)} chars total]"
+            text = (
+                text[:_MAX_FETCH_CHARS] + f"\n\n…[truncated — {len(text)} chars total]"
+            )
 
         logger.info("[FETCH_URL] %s → %d chars", url, len(text))
         return text
@@ -190,7 +205,7 @@ TOOLS = {
             "Args: query (required), max_results (optional, default 5)."
         ),
         "input_schema": {
-            "query":       "string",
+            "query": "string",
             "max_results": "integer (optional, default 5)",
         },
         "fn": _web_search,
@@ -207,4 +222,3 @@ TOOLS = {
         "fn": _fetch_url,
     },
 }
-

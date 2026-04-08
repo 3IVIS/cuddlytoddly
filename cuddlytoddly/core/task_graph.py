@@ -30,7 +30,9 @@ class TaskGraph:
             self.children = set()
             self.node_type = node_type
 
-            self.status = "pending"  # pending / ready / running / done / failed / awaiting_input
+            self.status = (
+                "pending"  # pending / ready / running / done / failed / awaiting_input
+            )
             self.result = None
 
             self.origin = origin or "user"
@@ -55,16 +57,38 @@ class TaskGraph:
                 for item in items:
                     if isinstance(item, str):
                         # Infer type from extension
-                        t = "file" if any(item.endswith(ext) for ext in
-                                        {".md",".txt",".py",".json",".csv",".html",".yaml",".xml"}) \
+                        t = (
+                            "file"
+                            if any(
+                                item.endswith(ext)
+                                for ext in {
+                                    ".md",
+                                    ".txt",
+                                    ".py",
+                                    ".json",
+                                    ".csv",
+                                    ".html",
+                                    ".yaml",
+                                    ".xml",
+                                }
+                            )
                             else "document"
-                        result.append({"name": item, "type": t, "description": item.replace("_", " ")})
+                        )
+                        result.append(
+                            {
+                                "name": item,
+                                "type": t,
+                                "description": item.replace("_", " "),
+                            }
+                        )
                     else:
                         result.append(item)
                 return result
 
-            self.metadata["required_input"] = _coerce_io_list(self.metadata.get("required_input", []))
-            self.metadata["output"]         = _coerce_io_list(self.metadata.get("output", []))
+            self.metadata["required_input"] = _coerce_io_list(
+                self.metadata.get("required_input", [])
+            )
+            self.metadata["output"] = _coerce_io_list(self.metadata.get("output", []))
 
         def reset(self):
             self.status = "pending"
@@ -175,12 +199,17 @@ class TaskGraph:
 
     def recompute_readiness(self):
         for node in self.nodes.values():
-            if node.status in ("done", "running", "failed", "to_be_expanded", "awaiting_input"):
+            if node.status in (
+                "done",
+                "running",
+                "failed",
+                "to_be_expanded",
+                "awaiting_input",
+            ):
                 continue
             # awaiting_input deps are treated like failed — not satisfied
             if all(
-                dep in self.nodes
-                and self.nodes[dep].status == "done"
+                dep in self.nodes and self.nodes[dep].status == "done"
                 for dep in node.dependencies
             ):
                 node.status = "ready"
@@ -213,7 +242,7 @@ class TaskGraph:
             if n == node_id:
                 return True
             visited.add(n)
-            for dep in self.nodes[n].dependencies:   # ← was: children
+            for dep in self.nodes[n].dependencies:  # ← was: children
                 if dep not in visited and dfs(dep):
                     return True
             return False
@@ -247,7 +276,7 @@ class TaskGraph:
             stack.extend(node.dependencies)
 
         return branch_nodes
-    
+
     def detach_node(self, node_id):
         """Remove a single node without touching its children or descendants."""
         if node_id not in self.nodes:
@@ -268,13 +297,17 @@ class TaskGraph:
     def update_status(self, node_id, status):
         if node_id not in self.nodes:
             return
-        valid = ("pending", "ready", "running", "done", "failed", "to_be_expanded", "awaiting_input")
+        valid = (
+            "pending",
+            "ready",
+            "running",
+            "done",
+            "failed",
+            "to_be_expanded",
+            "awaiting_input",
+        )
         if status not in valid:
             logger.warning("Invalid status '%s' for node %s", status, node_id)
             return
         self.nodes[node_id].status = status
         self.execution_version += 1
-
-
-
-

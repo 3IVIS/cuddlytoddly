@@ -37,6 +37,7 @@ LLAMACPP_SYSTEM_PROMPT = (
 # Executor prompt
 # ---------------------------------------------------------------------------
 
+
 def build_executor_prompt(
     *,
     node_id: str,
@@ -66,7 +67,8 @@ def build_executor_prompt(
         f"- Turns remaining (including this one): {turns_remaining}. "
         "If you have already made multiple searches, synthesise what you have "
         "now rather than searching again.\n"
-        if turns_remaining > 0 else ""
+        if turns_remaining > 0
+        else ""
     )
     return f"""\
 [prompt_version={prompt_version}]
@@ -166,7 +168,9 @@ def build_executor_retry_notice(retry: int, failure: str, prev_result: str) -> s
     )
 
 
-def build_executor_file_reminder(expected_files: list[str], turns_remaining: int) -> str:
+def build_executor_file_reminder(
+    expected_files: list[str], turns_remaining: int
+) -> str:
     """Inline reminder injected when file outputs are declared but not yet written."""
     return (
         f"\nREMINDER: You must call write_file to create "
@@ -178,6 +182,7 @@ def build_executor_file_reminder(expected_files: list[str], turns_remaining: int
 # ---------------------------------------------------------------------------
 # Planner prompt
 # ---------------------------------------------------------------------------
+
 
 def build_planner_prompt(
     *,
@@ -371,7 +376,6 @@ IMPORTANT — response format rules:
 """
 
 
-
 def build_clarification_context_block(fields: list, clarification_prompt: str) -> str:
     """
     Render clarification fields into a prompt block for the planner.
@@ -393,10 +397,12 @@ def build_clarification_context_block(fields: list, clarification_prompt: str) -
     if not fields:
         return ""
 
-    known   = [f for f in fields if f.get("value") and f.get("value") != "unknown"]
+    known = [f for f in fields if f.get("value") and f.get("value") != "unknown"]
     unknown = [f for f in fields if not f.get("value") or f.get("value") == "unknown"]
 
-    lines = ["\nGoal context — treat this as given input, not as open questions to research."]
+    lines = [
+        "\nGoal context — treat this as given input, not as open questions to research."
+    ]
     lines.append(
         "CRITICAL: Do NOT create tasks to gather, research, or look up any of the "
         "information listed here, whether known or unknown.\n"
@@ -448,6 +454,7 @@ def build_planner_skills_block(skills_summary: str) -> str:
 # ---------------------------------------------------------------------------
 # Plan scrutinizer prompt
 # ---------------------------------------------------------------------------
+
 
 def build_plan_scrutinizer_prompt(
     *,
@@ -583,6 +590,7 @@ unchanged.
 # Ghost node resolution prompt
 # ---------------------------------------------------------------------------
 
+
 def build_ghost_node_resolution_prompt(
     *,
     ghost_node_id: str,
@@ -621,10 +629,7 @@ def build_ghost_node_resolution_prompt(
 
     # ── Format current dependency edges ───────────────────────────────────────
     # Edge (A, B) means "A depends on B" — B must complete before A.
-    edges_lines = [
-        f"  {src} waits for {dep}"
-        for src, dep in sorted(edges)
-    ]
+    edges_lines = [f"  {src} waits for {dep}" for src, dep in sorted(edges)]
     edges_text = "\n".join(edges_lines) or "  (none)"
 
     # ── Format valid candidates ───────────────────────────────────────────────
@@ -688,6 +693,7 @@ Respond only in JSON matching the schema.
 # ---------------------------------------------------------------------------
 # Quality-gate prompts
 # ---------------------------------------------------------------------------
+
 
 def build_verify_result_prompt(
     *,
@@ -800,9 +806,11 @@ Rules:
 Respond only in JSON matching the schema.
 """
 
+
 # ---------------------------------------------------------------------------
 # Executor pre-flight: awaiting-input check prompt
 # ---------------------------------------------------------------------------
+
 
 def build_awaiting_input_check_prompt(
     *,
@@ -846,25 +854,29 @@ def build_awaiting_input_check_prompt(
     """
     known_section = (
         f"Known context (provided by user):\n{known_fields_text}"
-        if known_fields_text else "  (no clarification context was provided)"
+        if known_fields_text
+        else "  (no clarification context was provided)"
     )
     unknown_section = (
         f"Unknown context (user has not yet filled in):\n{unknown_fields_text}"
-        if unknown_fields_text else "  (all clarification fields are filled)"
+        if unknown_fields_text
+        else "  (all clarification fields are filled)"
     )
     tools_section = (
         f"Available tools:\n{tools_text}"
-        if tools_text else "  NO TOOLS — task must be completed from general knowledge only."
+        if tools_text
+        else "  NO TOOLS — task must be completed from general knowledge only."
     )
     failure_section = (
         f"\nPREVIOUS ATTEMPT FAILED:\n"
         f"The last time this task ran with a broadened description, the quality "
         f"gate rejected the result with this reason:\n"
-        f"  \"{previous_failure}\"\n"
+        f'  "{previous_failure}"\n'
         f"Your new broadened_description MUST be designed to avoid this failure. "
         f"Think carefully about what type of output the quality gate would accept "
         f"given the above reason, and write the broadened description accordingly.\n"
-        if previous_failure else ""
+        if previous_failure
+        else ""
     )
 
     return f"""You are deciding whether a task can be executed right now.
@@ -1044,6 +1056,7 @@ Respond only in JSON matching the schema.
 # Broadened description fallback prompt
 # ---------------------------------------------------------------------------
 
+
 def build_broadened_description_prompt(
     *,
     node_id: str,
@@ -1069,7 +1082,8 @@ def build_broadened_description_prompt(
     missing_text = ", ".join(missing_keys) if missing_keys else "(none listed)"
     known_section = (
         f"Currently known context:\n{known_fields_text}"
-        if known_fields_text else "  (no context is currently available)"
+        if known_fields_text
+        else "  (no context is currently available)"
     )
     return f"""A task needs to be rephrased so it can execute without certain unavailable inputs.
 
@@ -1100,6 +1114,7 @@ Respond only in JSON matching the schema.
 # ---------------------------------------------------------------------------
 # Clarification generation prompt
 # ---------------------------------------------------------------------------
+
 
 def build_clarification_prompt(goal_text: str, skills_summary: str = "") -> str:
     """

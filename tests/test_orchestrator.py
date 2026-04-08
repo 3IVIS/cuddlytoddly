@@ -1,4 +1,5 @@
 """Tests for cuddlytoddly.engine.llm_orchestrator.Orchestrator."""
+
 from unittest.mock import MagicMock
 
 from conftest import FakeLLM, mark_done
@@ -10,8 +11,10 @@ from cuddlytoddly.infra.event_queue import EventQueue
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def make_orchestrator(graph=None, planner=None, executor=None,
-                      quality_gate=None, max_workers=1):
+
+def make_orchestrator(
+    graph=None, planner=None, executor=None, quality_gate=None, max_workers=1
+):
     g = graph or TaskGraph()
     mock_planner = planner or MagicMock()
     mock_planner.propose.return_value = []
@@ -37,6 +40,7 @@ def make_orchestrator(graph=None, planner=None, executor=None,
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 
+
 class TestOrchestratorLifecycle:
     def test_start_creates_background_thread(self):
         orch, *_ = make_orchestrator()
@@ -61,6 +65,7 @@ class TestOrchestratorLifecycle:
 
 # ── LLM pause / resume ────────────────────────────────────────────────────────
 
+
 class TestLLMPauseResume:
     def test_llm_stopped_false_initially(self):
         orch, *_ = make_orchestrator()
@@ -84,6 +89,7 @@ class TestLLMPauseResume:
 
 
 # ── User-facing graph mutations ───────────────────────────────────────────────
+
 
 class TestOrchestratorGraphMutations:
     def test_add_goal(self):
@@ -163,6 +169,7 @@ class TestOrchestratorGraphMutations:
 
 # ── get_status ────────────────────────────────────────────────────────────────
 
+
 class TestOrchestratorGetStatus:
     def test_get_status_counts_nodes(self):
         orch, g, *_ = make_orchestrator()
@@ -189,6 +196,7 @@ class TestOrchestratorGetStatus:
 
 # ── get_snapshot ──────────────────────────────────────────────────────────────
 
+
 class TestOrchestratorSnapshot:
     def test_get_snapshot_returns_nodes(self):
         orch, g, *_ = make_orchestrator()
@@ -206,22 +214,28 @@ class TestOrchestratorSnapshot:
 
 # ── Event queue drain ─────────────────────────────────────────────────────────
 
+
 class TestEventQueueDrain:
     def test_queued_add_node_event_processed(self):
         orch, g, *_ = make_orchestrator()
-        orch.event_queue.put(Event(ADD_NODE, {
-            "node_id": "queued_node",
-            "node_type": "task",
-            "dependencies": [],
-            "metadata": {"description": "queued"},
-        }))
+        orch.event_queue.put(
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "queued_node",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {"description": "queued"},
+                },
+            )
+        )
         orch._drain_event_queue()
         assert "queued_node" in g.nodes
 
     def test_reset_subtree_resets_node_and_downstream(self):
         """After RESET_SUBTREE on a:
-         - a (no deps) → becomes ready
-         - b (dep on a, now not done) → becomes pending
+        - a (no deps) → becomes ready
+        - b (dep on a, now not done) → becomes pending
         """
         orch, g, *_ = make_orchestrator()
         orch.add_task("a")
@@ -230,11 +244,12 @@ class TestEventQueueDrain:
         g.nodes["b"].status = "done"
         orch.event_queue.put(Event(RESET_SUBTREE, {"node_id": "a"}))
         orch._drain_event_queue()
-        assert g.nodes["a"].status == "ready"    # no deps → ready after reset
+        assert g.nodes["a"].status == "ready"  # no deps → ready after reset
         assert g.nodes["b"].status == "pending"  # dep on non-done a → pending
 
 
 # ── Goal auto-completion ──────────────────────────────────────────────────────
+
 
 class TestGoalCompletion:
     def test_goal_marked_done_when_all_deps_done(self):
@@ -272,6 +287,7 @@ class TestGoalCompletion:
 
 # ── Token counts ──────────────────────────────────────────────────────────────
 
+
 class TestTokenCounts:
     def test_token_counts_property(self):
         orch, *_ = make_orchestrator()
@@ -289,6 +305,7 @@ class TestTokenCounts:
 
 
 # ── Integration: execution pass ───────────────────────────────────────────────
+
 
 class TestExecutionPass:
     def test_ready_task_launched(self):
@@ -317,5 +334,3 @@ class TestExecutionPass:
         orch._running_futures["running_task"] = MagicMock()
         launched = orch._execution_pass()
         assert launched == 0
-
-

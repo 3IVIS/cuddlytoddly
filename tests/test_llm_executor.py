@@ -1,4 +1,5 @@
 """Tests for cuddlytoddly.planning.llm_executor.LLMExecutor."""
+
 import json
 from unittest.mock import MagicMock
 
@@ -9,13 +10,18 @@ from cuddlytoddly.planning.llm_executor import LLMExecutor
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def make_node(node_id="task_1", description="do something", output=None, deps=None):
     g = TaskGraph()
-    add_node(g, node_id, metadata={
-        "description": description,
-        "output": output or [],
-        "required_input": [],
-    })
+    add_node(
+        g,
+        node_id,
+        metadata={
+            "description": description,
+            "output": output or [],
+            "required_input": [],
+        },
+    )
     if deps:
         for dep_id, result in deps.items():
             add_node(g, dep_id, metadata={"description": dep_id, "output": []})
@@ -36,18 +42,22 @@ def tool_response(name, args):
 def make_tool_registry(tools_dict):
     """Build a minimal ToolRegistry from a dict of name → callable."""
     from cuddlytoddly.skills.skill_loader import Tool, ToolRegistry
+
     registry = ToolRegistry()
     for name, fn in tools_dict.items():
-        registry.register(Tool(
-            name=name,
-            description=f"Tool {name}",
-            input_schema={"input": "string"},
-            fn=fn,
-        ))
+        registry.register(
+            Tool(
+                name=name,
+                description=f"Tool {name}",
+                input_schema={"input": "string"},
+                fn=fn,
+            )
+        )
     return registry
 
 
 # ── Basic execution ───────────────────────────────────────────────────────────
+
 
 class TestExecutorBasic:
     def test_done_on_first_turn(self):
@@ -68,6 +78,7 @@ class TestExecutorBasic:
     def test_returns_none_after_max_turns(self):
         """LLM keeps requesting tool calls and never sets done=True."""
         call_count = [0]
+
         def responses(prompt, schema=None):
             call_count[0] += 1
             return tool_response("my_tool", {"input": "x"})
@@ -97,6 +108,7 @@ class TestExecutorBasic:
 
 # ── Tool calls ────────────────────────────────────────────────────────────────
 
+
 class TestExecutorToolCalls:
     def test_tool_called_then_done(self):
         call_log = []
@@ -112,9 +124,9 @@ class TestExecutorToolCalls:
             return r
 
         llm = FakeLLM(responses)
-        registry = make_tool_registry({
-            "my_tool": lambda args: (call_log.append(args), "tool output")[1]
-        })
+        registry = make_tool_registry(
+            {"my_tool": lambda args: (call_log.append(args), "tool output")[1]}
+        )
         executor = LLMExecutor(llm_client=llm, tool_registry=registry, max_turns=5)
         node, snapshot = make_node()
         result = executor.execute(node, snapshot)
@@ -166,23 +178,31 @@ class TestExecutorToolCalls:
 
 # ── File output enforcement ───────────────────────────────────────────────────
 
+
 class TestExecutorFileOutput:
     def _file_output_node(self, filename="report.md"):
         g = TaskGraph()
-        add_node(g, "task_1", metadata={
-            "description": "write a report",
-            "output": [{"name": filename, "type": "file",
-                         "description": "the report"}],
-            "required_input": [],
-        })
+        add_node(
+            g,
+            "task_1",
+            metadata={
+                "description": "write a report",
+                "output": [
+                    {"name": filename, "type": "file", "description": "the report"}
+                ],
+                "required_input": [],
+            },
+        )
         return g.nodes["task_1"], g.get_snapshot()
 
     def test_done_without_write_file_triggers_correction(self):
         """If done=True without write_file being called, inject correction turn."""
         written = []
         turns = [
-            done_response("report content"),              # turn 1: done without writing
-            tool_response("write_file", {"path": "report.md", "content": "actual content"}),
+            done_response("report content"),  # turn 1: done without writing
+            tool_response(
+                "write_file", {"path": "report.md", "content": "actual content"}
+            ),
             done_response("file_written: report.md\nsummary: content"),
         ]
         idx = [0]
@@ -193,9 +213,9 @@ class TestExecutorFileOutput:
             return r
 
         llm = FakeLLM(responses)
-        registry = make_tool_registry({
-            "write_file": lambda args: (written.append(args), "written")[1]
-        })
+        registry = make_tool_registry(
+            {"write_file": lambda args: (written.append(args), "written")[1]}
+        )
         executor = LLMExecutor(llm_client=llm, tool_registry=registry, max_turns=5)
         node, snapshot = self._file_output_node()
         result = executor.execute(node, snapshot)
@@ -216,9 +236,9 @@ class TestExecutorFileOutput:
             return r
 
         llm = FakeLLM(responses)
-        registry = make_tool_registry({
-            "write_file": lambda args: f"Written {len(args['content'])} chars"
-        })
+        registry = make_tool_registry(
+            {"write_file": lambda args: f"Written {len(args['content'])} chars"}
+        )
         executor = LLMExecutor(llm_client=llm, tool_registry=registry, max_turns=5)
         node, snapshot = self._file_output_node()
         result = executor.execute(node, snapshot)
@@ -227,6 +247,7 @@ class TestExecutorFileOutput:
 
 
 # ── Input resolution ──────────────────────────────────────────────────────────
+
 
 class TestExecutorInputResolution:
     def test_upstream_result_included_in_prompt(self):
@@ -259,6 +280,7 @@ class TestExecutorInputResolution:
 
 
 # ── Reporter integration ──────────────────────────────────────────────────────
+
 
 class TestExecutorReporter:
     def test_reporter_on_tool_start_called(self):
@@ -300,5 +322,3 @@ class TestExecutorReporter:
         node, snapshot = make_node()
         executor.execute(node, snapshot, reporter=reporter)
         reporter.on_llm_error.assert_called()
-
-

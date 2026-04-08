@@ -1,9 +1,11 @@
 """Tests for cuddlytoddly.core.id_generator."""
+
 import json
 
 from cuddlytoddly.core.id_generator import StableIDGenerator, base62_encode
 
 # ── base62_encode ──────────────────────────────────────────────────────────────
+
 
 class TestBase62Encode:
     def test_zero(self):
@@ -28,6 +30,7 @@ class TestBase62Encode:
 
 
 # ── StableIDGenerator ─────────────────────────────────────────────────────────
+
 
 class TestStableIDGenerator:
     def test_deterministic_id(self, tmp_path):
@@ -94,5 +97,3 @@ class TestStableIDGenerator:
         result = gen.get_id("test")
         assert isinstance(result, str)
         assert len(result) > 0
-
-

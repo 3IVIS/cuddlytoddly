@@ -10,6 +10,7 @@ Tests for the bug fixes and the broadened-execution feature:
   Issue 5 — max_retries cap + exponential backoff on verification failure
   Issue 6 — tool error strings (no exception raised) are flagged as error=True
 """
+
 import json
 import time
 from concurrent.futures import Future
@@ -26,8 +27,10 @@ from cuddlytoddly.planning.llm_executor import LLMExecutor
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
-def make_orchestrator(graph=None, executor_result="mock result",
-                      gate_satisfied=True, max_retries=5):
+
+def make_orchestrator(
+    graph=None, executor_result="mock result", gate_satisfied=True, max_retries=5
+):
     g = graph or TaskGraph()
     mock_planner = MagicMock()
     mock_planner.propose.return_value = []
@@ -46,20 +49,23 @@ def make_orchestrator(graph=None, executor_result="mock result",
         max_workers=1,
         max_retries=max_retries,
     )
-    orch._llm_clients = []   # prevent llm_stopped from blocking execution
+    orch._llm_clients = []  # prevent llm_stopped from blocking execution
     return orch, g, mock_executor, mock_gate
 
 
 def make_tool_registry(tools_dict):
     from cuddlytoddly.skills.skill_loader import Tool, ToolRegistry
+
     registry = ToolRegistry()
     for name, fn in tools_dict.items():
-        registry.register(Tool(
-            name=name,
-            description=f"Tool {name}",
-            input_schema={"input": "string"},
-            fn=fn,
-        ))
+        registry.register(
+            Tool(
+                name=name,
+                description=f"Tool {name}",
+                input_schema={"input": "string"},
+                fn=fn,
+            )
+        )
     return registry
 
 
@@ -67,6 +73,7 @@ def make_reporter(parent_id, graph):
     import threading
 
     from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
+
     lock = threading.RLock()
     apply_events = []
 
@@ -96,6 +103,7 @@ def unsatisfied():
 
 # ── broadened execution: preflight, broadened description, metadata write ───────
 
+
 class TestAwaitingInput:
     """
     Tests for the unified awaiting_input mechanism that replaced user_input
@@ -120,29 +128,40 @@ class TestAwaitingInput:
     def _make_exec_node(self, description, unknown_keys=(), known_keys=()):
         """Build a node + resolved_inputs list simulating a clarification dep."""
         g = TaskGraph()
-        add_node(g, "task_1", metadata={
-            "description": description,
-            "output": [{"name": "out", "type": "document", "description": "output"}],
-        })
-        add_node(g, "clar_1", node_type="clarification", metadata={"description": "context"})
+        add_node(
+            g,
+            "task_1",
+            metadata={
+                "description": description,
+                "output": [
+                    {"name": "out", "type": "document", "description": "output"}
+                ],
+            },
+        )
+        add_node(
+            g, "clar_1", node_type="clarification", metadata={"description": "context"}
+        )
         g.nodes["task_1"].dependencies.add("clar_1")
 
         unknown = [{"key": k, "label": k} for k in unknown_keys]
-        known   = [{"key": k, "label": k, "value": "some value"} for k in known_keys]
+        known = [{"key": k, "label": k, "value": "some value"} for k in known_keys]
 
-        resolved = [{
-            "node_id":         "clar_1",
-            "description":     "context",
-            "declared_output": [],
-            "result":          "context text",
-            "_unknown_fields": unknown,
-            "_known_fields":   known,
-        }]
+        resolved = [
+            {
+                "node_id": "clar_1",
+                "description": "context",
+                "declared_output": [],
+                "result": "context text",
+                "_unknown_fields": unknown,
+                "_known_fields": known,
+            }
+        ]
         return g.nodes["task_1"], resolved
 
     def test_preflight_skipped_when_no_unknown_fields(self):
         """When all clarification fields are filled, no LLM call is made."""
         from cuddlytoddly.planning.llm_executor import LLMExecutor
+
         llm = MagicMock()
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         node, resolved = self._make_exec_node(
@@ -156,12 +175,17 @@ class TestAwaitingInput:
     def test_preflight_makes_llm_call_when_unknown_fields_exist(self):
         """When unknown fields exist, the LLM is consulted."""
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
-        llm = FakeLLM(json.dumps({
-            "blocked": True,
-            "reason": "needs personal achievements",
-            "missing_fields": ["current_salary"],
-            "new_fields": [],
-        }))
+
+        llm = FakeLLM(
+            json.dumps(
+                {
+                    "blocked": True,
+                    "reason": "needs personal achievements",
+                    "missing_fields": ["current_salary"],
+                    "new_fields": [],
+                }
+            )
+        )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         node, resolved = self._make_exec_node(
             "List personal achievements relevant to the job",
@@ -176,12 +200,17 @@ class TestAwaitingInput:
     def test_preflight_returns_none_when_llm_says_not_blocked(self):
         """When the LLM says blocked=false, preflight returns None."""
         from cuddlytoddly.planning.llm_executor import LLMExecutor
-        llm = FakeLLM(json.dumps({
-            "blocked": False,
-            "reason": "can use web search",
-            "missing_fields": [],
-            "new_fields": [],
-        }))
+
+        llm = FakeLLM(
+            json.dumps(
+                {
+                    "blocked": False,
+                    "reason": "can use web search",
+                    "missing_fields": [],
+                    "new_fields": [],
+                }
+            )
+        )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         node, resolved = self._make_exec_node(
             "Research current market salary rates",
@@ -193,6 +222,7 @@ class TestAwaitingInput:
     def test_preflight_fails_open_on_llm_error(self):
         """If the LLM call fails, preflight returns None (fail open)."""
         from cuddlytoddly.planning.llm_executor import LLMExecutor
+
         llm = MagicMock()
         llm.is_stopped = False
         llm.ask = MagicMock(side_effect=RuntimeError("LLM unavailable"))
@@ -207,14 +237,23 @@ class TestAwaitingInput:
     def test_preflight_new_fields_passed_through(self):
         """new_fields from LLM response are propagated into the signal."""
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
-        new_field = {"key": "company_name", "label": "Company name",
-                     "value": "unknown", "rationale": "needed"}
-        llm = FakeLLM(json.dumps({
-            "blocked": True,
-            "reason": "needs company name",
-            "missing_fields": [],
-            "new_fields": [new_field],
-        }))
+
+        new_field = {
+            "key": "company_name",
+            "label": "Company name",
+            "value": "unknown",
+            "rationale": "needed",
+        }
+        llm = FakeLLM(
+            json.dumps(
+                {
+                    "blocked": True,
+                    "reason": "needs company name",
+                    "missing_fields": [],
+                    "new_fields": [new_field],
+                }
+            )
+        )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         node, resolved = self._make_exec_node(
             "Gather information on the company's financial situation",
@@ -226,28 +265,39 @@ class TestAwaitingInput:
 
     # ── Phase 1: deterministic required-input gap detection ───────────────────
 
-    def _make_exec_node_with_required_input(self, description, required_inputs,
-                                            unknown_keys=(), known_keys=()):
+    def _make_exec_node_with_required_input(
+        self, description, required_inputs, unknown_keys=(), known_keys=()
+    ):
         """Build a node with declared required_input and a clarification dep."""
         g = TaskGraph()
-        add_node(g, "task_1", metadata={
-            "description": description,
-            "output": [{"name": "out", "type": "document", "description": "output"}],
-            "required_input": required_inputs,
-        })
-        add_node(g, "clar_1", node_type="clarification", metadata={"description": "ctx"})
+        add_node(
+            g,
+            "task_1",
+            metadata={
+                "description": description,
+                "output": [
+                    {"name": "out", "type": "document", "description": "output"}
+                ],
+                "required_input": required_inputs,
+            },
+        )
+        add_node(
+            g, "clar_1", node_type="clarification", metadata={"description": "ctx"}
+        )
         g.nodes["task_1"].dependencies.add("clar_1")
 
         unknown = [{"key": k, "label": k} for k in unknown_keys]
-        known   = [{"key": k, "label": k, "value": "some value"} for k in known_keys]
-        resolved = [{
-            "node_id":         "clar_1",
-            "description":     "ctx",
-            "declared_output": [],
-            "result":          "ctx",
-            "_unknown_fields": unknown,
-            "_known_fields":   known,
-        }]
+        known = [{"key": k, "label": k, "value": "some value"} for k in known_keys]
+        resolved = [
+            {
+                "node_id": "clar_1",
+                "description": "ctx",
+                "declared_output": [],
+                "result": "ctx",
+                "_unknown_fields": unknown,
+                "_known_fields": known,
+            }
+        ]
         return g.nodes["task_1"], resolved
 
     def test_phase1_adds_uncovered_required_input_as_new_field(self):
@@ -255,20 +305,30 @@ class TestAwaitingInput:
         detected and merged into new_fields via Phase 1 gap detection.
         The LLM is still called to generate the broadened description."""
         from cuddlytoddly.planning.llm_executor import LLMExecutor
-        llm = FakeLLM(json.dumps({
-            "blocked": True,
-            "reason": "needs company culture info",
-            "missing_fields": ["current_salary"],
-            "new_fields": [],
-            "broadened_description": "Determine general negotiation strategy frameworks.",
-            "broadened_for_missing": ["company_culture", "current_salary"],
-        }))
+
+        llm = FakeLLM(
+            json.dumps(
+                {
+                    "blocked": True,
+                    "reason": "needs company culture info",
+                    "missing_fields": ["current_salary"],
+                    "new_fields": [],
+                    "broadened_description": "Determine general negotiation strategy frameworks.",
+                    "broadened_for_missing": ["company_culture", "current_salary"],
+                }
+            )
+        )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         # company_culture is required but not in the clarification node
         node, resolved = self._make_exec_node_with_required_input(
             "Determine negotiation strategy based on company culture",
-            required_inputs=[{"name": "company_culture", "type": "text",
-                               "description": "Company culture info"}],
+            required_inputs=[
+                {
+                    "name": "company_culture",
+                    "type": "text",
+                    "description": "Company culture info",
+                }
+            ],
             unknown_keys=["current_salary"],  # unrelated field
         )
         result = executor._preflight_awaiting_input(node, resolved)
@@ -284,20 +344,30 @@ class TestAwaitingInput:
         in the form at all, Phase 1 detects the gap and the LLM is called to
         generate the broadened description."""
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
-        llm = FakeLLM(json.dumps({
-            "blocked": True,
-            "reason": "needs company culture",
-            "missing_fields": [],
-            "new_fields": [],
-            "broadened_description": "Determine a general negotiation strategy.",
-            "broadened_for_missing": ["company_culture"],
-        }))
+
+        llm = FakeLLM(
+            json.dumps(
+                {
+                    "blocked": True,
+                    "reason": "needs company culture",
+                    "missing_fields": [],
+                    "new_fields": [],
+                    "broadened_description": "Determine a general negotiation strategy.",
+                    "broadened_for_missing": ["company_culture"],
+                }
+            )
+        )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         node, resolved = self._make_exec_node_with_required_input(
             "Determine negotiation strategy",
-            required_inputs=[{"name": "company_culture", "type": "text",
-                               "description": "Culture info"}],
-            unknown_keys=[],       # nothing unknown — all fields filled
+            required_inputs=[
+                {
+                    "name": "company_culture",
+                    "type": "text",
+                    "description": "Culture info",
+                }
+            ],
+            unknown_keys=[],  # nothing unknown — all fields filled
             known_keys=["salary"],  # company_culture still not present
         )
         result = executor._preflight_awaiting_input(node, resolved)
@@ -309,18 +379,28 @@ class TestAwaitingInput:
         """When required_input is already covered by an existing clarification
         field, Phase 1 detects no gap and proceeds to Phase 2 (LLM call)."""
         from cuddlytoddly.planning.llm_executor import LLMExecutor
-        llm = FakeLLM(json.dumps({
-            "blocked": False,
-            "reason": "can proceed",
-            "missing_fields": [],
-            "new_fields": [],
-        }))
+
+        llm = FakeLLM(
+            json.dumps(
+                {
+                    "blocked": False,
+                    "reason": "can proceed",
+                    "missing_fields": [],
+                    "new_fields": [],
+                }
+            )
+        )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         # performance_reviews is required AND is in the clarification node as unknown
         node, resolved = self._make_exec_node_with_required_input(
             "Identify key achievements",
-            required_inputs=[{"name": "performance_reviews", "type": "document",
-                               "description": "Past performance reviews"}],
+            required_inputs=[
+                {
+                    "name": "performance_reviews",
+                    "type": "document",
+                    "description": "Past performance reviews",
+                }
+            ],
             unknown_keys=["performance_reviews"],
         )
         result = executor._preflight_awaiting_input(node, resolved)
@@ -332,25 +412,39 @@ class TestAwaitingInput:
         """When Phase 1 detects a gap AND Phase 2 also adds new_fields,
         the final signal contains both — deduplicated."""
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
-        llm_new_field = {"key": "job_level", "label": "Job level",
-                         "value": "unknown", "rationale": "needed"}
-        llm = FakeLLM(json.dumps({
-            "blocked": True,
-            "reason": "needs more context",
-            "missing_fields": ["current_salary"],
-            "new_fields": [llm_new_field],
-        }))
+
+        llm_new_field = {
+            "key": "job_level",
+            "label": "Job level",
+            "value": "unknown",
+            "rationale": "needed",
+        }
+        llm = FakeLLM(
+            json.dumps(
+                {
+                    "blocked": True,
+                    "reason": "needs more context",
+                    "missing_fields": ["current_salary"],
+                    "new_fields": [llm_new_field],
+                }
+            )
+        )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         node, resolved = self._make_exec_node_with_required_input(
             "Research strategy",
-            required_inputs=[{"name": "company_culture", "type": "text",
-                               "description": "Culture info"}],
+            required_inputs=[
+                {
+                    "name": "company_culture",
+                    "type": "text",
+                    "description": "Culture info",
+                }
+            ],
             unknown_keys=["current_salary"],
         )
         result = executor._preflight_awaiting_input(node, resolved)
         assert isinstance(result, AwaitingInputSignal)
         new_keys = [f["key"] for f in result.new_fields]
-        assert "job_level" in new_keys        # from LLM
+        assert "job_level" in new_keys  # from LLM
         assert "company_culture" in new_keys  # from Phase 1 auto-detection
         assert "current_salary" in result.missing_fields
         assert "company_culture" in result.missing_fields
@@ -364,32 +458,50 @@ class TestAwaitingInput:
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
 
         g = TaskGraph()
-        add_node(g, "personal_task", metadata={
-            "description": "List personal achievements relevant to the job",
-            "output": [{"name": "out", "type": "list", "description": "achievements"}],
-        })
+        add_node(
+            g,
+            "personal_task",
+            metadata={
+                "description": "List personal achievements relevant to the job",
+                "output": [
+                    {"name": "out", "type": "list", "description": "achievements"}
+                ],
+            },
+        )
         add_node(g, "clar", node_type="clarification", metadata={"description": "ctx"})
         g.nodes["personal_task"].dependencies.add("clar")
-        g.nodes["clar"].result = json.dumps([
-            {"key": "current_salary", "value": "unknown", "label": "salary", "rationale": "r"},
-        ])
+        g.nodes["clar"].result = json.dumps(
+            [
+                {
+                    "key": "current_salary",
+                    "value": "unknown",
+                    "label": "salary",
+                    "rationale": "r",
+                },
+            ]
+        )
         g.nodes["clar"].status = "done"
 
         # First call: preflight response (blocked, with broadened description)
         # Second call: executor turn response (done=true with result)
         call_count = [0]
+
         def multi_response(prompt, schema=None):
             call_count[0] += 1
             if call_count[0] == 1:
-                return json.dumps({
-                    "blocked": True,
-                    "reason": "needs personal history",
-                    "missing_fields": ["current_salary"],
-                    "new_fields": [],
-                    "broadened_description": "Produce a template for articulating professional achievements.",
-                    "broadened_for_missing": ["current_salary"],
-                })
-            return json.dumps({"done": True, "result": "Here is a template for achievements."})
+                return json.dumps(
+                    {
+                        "blocked": True,
+                        "reason": "needs personal history",
+                        "missing_fields": ["current_salary"],
+                        "new_fields": [],
+                        "broadened_description": "Produce a template for articulating professional achievements.",
+                        "broadened_for_missing": ["current_salary"],
+                    }
+                )
+            return json.dumps(
+                {"done": True, "result": "Here is a template for achievements."}
+            )
 
         llm = FakeLLM(multi_response)
         reporter = ExecutionStepReporter(
@@ -399,8 +511,9 @@ class TestAwaitingInput:
             graph=g,
         )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
-        result = executor.execute(g.nodes["personal_task"], g.get_snapshot(),
-                                  reporter=reporter)
+        result = executor.execute(
+            g.nodes["personal_task"], g.get_snapshot(), reporter=reporter
+        )
 
         # Result must be a string, never a signal
         assert isinstance(result, str), f"expected str, got {type(result)}"
@@ -424,10 +537,15 @@ class TestAwaitingInput:
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal
 
         orch, g, _, mock_gate = make_orchestrator(gate_satisfied=True)
-        add_node(g, "t", node_type="task", metadata={
-            "description": "List personal achievements",
-            "output": [{"name": "o", "type": "list", "description": "d"}],
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "List personal achievements",
+                "output": [{"name": "o", "type": "list", "description": "d"}],
+            },
+        )
         g.nodes["t"].status = "running"
 
         # Simulate: executor ran with broadened description, stored signal on reporter
@@ -455,7 +573,9 @@ class TestAwaitingInput:
         assert g.nodes["t"].metadata.get("broadened_description") == (
             "Produce a template for articulating achievements."
         )
-        assert g.nodes["t"].metadata.get("broadened_for_missing") == ["key_achievements"]
+        assert g.nodes["t"].metadata.get("broadened_for_missing") == [
+            "key_achievements"
+        ]
         # Quality gate was still called
         mock_gate.verify_result.assert_called_once()
 
@@ -467,19 +587,42 @@ class TestAwaitingInput:
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal
 
         g = TaskGraph()
-        add_node(g, "clar", node_type="clarification", metadata={
-            "description": "ctx",
-            "fields": [{"key": "job_title", "label": "Job title",
-                        "value": "unknown", "rationale": "r"}],
-        })
-        g.nodes["clar"].result = json.dumps([
-            {"key": "job_title", "label": "Job title", "value": "unknown", "rationale": "r"},
-        ])
+        add_node(
+            g,
+            "clar",
+            node_type="clarification",
+            metadata={
+                "description": "ctx",
+                "fields": [
+                    {
+                        "key": "job_title",
+                        "label": "Job title",
+                        "value": "unknown",
+                        "rationale": "r",
+                    }
+                ],
+            },
+        )
+        g.nodes["clar"].result = json.dumps(
+            [
+                {
+                    "key": "job_title",
+                    "label": "Job title",
+                    "value": "unknown",
+                    "rationale": "r",
+                },
+            ]
+        )
         g.nodes["clar"].status = "done"
-        add_node(g, "t", node_type="task", metadata={
-            "description": "Gather company financial info",
-            "output": [{"name": "o", "type": "document", "description": "d"}],
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "Gather company financial info",
+                "output": [{"name": "o", "type": "document", "description": "d"}],
+            },
+        )
         g.nodes["t"].dependencies.add("clar")
         g.nodes["clar"].children.add("t")
         g.nodes["t"].status = "running"
@@ -495,8 +638,14 @@ class TestAwaitingInput:
         signal = AwaitingInputSignal(
             reason="needs company name",
             missing_fields=[],
-            new_fields=[{"key": "company_name", "label": "Company name",
-                         "value": "unknown", "rationale": "needed for research"}],
+            new_fields=[
+                {
+                    "key": "company_name",
+                    "label": "Company name",
+                    "value": "unknown",
+                    "rationale": "needed for research",
+                }
+            ],
             clarification_node_id="clar",
             broadened_description="Research general company budget factors.",
             broadened_for_missing=["company_name"],
@@ -516,17 +665,28 @@ class TestAwaitingInput:
         """_resume_unblocked_pass resumes a node whose missing_field is now set."""
         g = TaskGraph()
         add_node(g, "clar", node_type="clarification", metadata={"description": "ctx"})
-        g.nodes["clar"].result = json.dumps([
-            {"key": "key_achievements", "label": "Achievements",
-             "value": "Led team of 5, shipped product X", "rationale": "r"},
-        ])
+        g.nodes["clar"].result = json.dumps(
+            [
+                {
+                    "key": "key_achievements",
+                    "label": "Achievements",
+                    "value": "Led team of 5, shipped product X",
+                    "rationale": "r",
+                },
+            ]
+        )
         g.nodes["clar"].status = "done"
 
-        add_node(g, "t", node_type="task", metadata={
-            "description": "list achievements",
-            "output": [],
-            "missing_fields": ["key_achievements"],
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "list achievements",
+                "output": [],
+                "missing_fields": ["key_achievements"],
+            },
+        )
         g.nodes["t"].dependencies.add("clar")
         g.nodes["clar"].children.add("t")
         g.nodes["t"].status = "awaiting_input"
@@ -541,17 +701,28 @@ class TestAwaitingInput:
         """_resume_unblocked_pass must not resume if the field is still unknown."""
         g = TaskGraph()
         add_node(g, "clar", node_type="clarification", metadata={"description": "ctx"})
-        g.nodes["clar"].result = json.dumps([
-            {"key": "key_achievements", "label": "Achievements",
-             "value": "unknown", "rationale": "r"},
-        ])
+        g.nodes["clar"].result = json.dumps(
+            [
+                {
+                    "key": "key_achievements",
+                    "label": "Achievements",
+                    "value": "unknown",
+                    "rationale": "r",
+                },
+            ]
+        )
         g.nodes["clar"].status = "done"
 
-        add_node(g, "t", node_type="task", metadata={
-            "description": "list achievements",
-            "output": [],
-            "missing_fields": ["key_achievements"],
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "list achievements",
+                "output": [],
+                "missing_fields": ["key_achievements"],
+            },
+        )
         g.nodes["t"].dependencies.add("clar")
         g.nodes["clar"].children.add("t")
         g.nodes["t"].status = "awaiting_input"
@@ -565,10 +736,16 @@ class TestAwaitingInput:
     def test_resume_node_public_api(self):
         """orchestrator.resume_node() transitions awaiting_input → pending."""
         g = TaskGraph()
-        add_node(g, "t", node_type="task", metadata={
-            "description": "t", "output": [],
-            "missing_fields": ["key_achievements"],
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "t",
+                "output": [],
+                "missing_fields": ["key_achievements"],
+            },
+        )
         g.nodes["t"].status = "awaiting_input"
 
         orch, _, _, _ = make_orchestrator(graph=g)
@@ -592,19 +769,34 @@ class TestAwaitingInput:
         """Path B: a node with missing_fields=[] resumes when any clar field is filled."""
         g = TaskGraph()
         add_node(g, "clar", node_type="clarification", metadata={"description": "ctx"})
-        g.nodes["clar"].result = json.dumps([
-            {"key": "job_title", "label": "Job title",
-             "value": "Software Engineer", "rationale": "r"},
-            {"key": "current_salary", "label": "Current salary",
-             "value": "unknown", "rationale": "r"},
-        ])
+        g.nodes["clar"].result = json.dumps(
+            [
+                {
+                    "key": "job_title",
+                    "label": "Job title",
+                    "value": "Software Engineer",
+                    "rationale": "r",
+                },
+                {
+                    "key": "current_salary",
+                    "label": "Current salary",
+                    "value": "unknown",
+                    "rationale": "r",
+                },
+            ]
+        )
         g.nodes["clar"].status = "done"
 
-        add_node(g, "t", node_type="task", metadata={
-            "description": "Research salary ranges",
-            "output": [],
-            "missing_fields": [],  # empty — Path B
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "Research salary ranges",
+                "output": [],
+                "missing_fields": [],  # empty — Path B
+            },
+        )
         g.nodes["t"].dependencies.add("clar")
         g.nodes["clar"].children.add("t")
         g.nodes["t"].status = "awaiting_input"
@@ -619,19 +811,34 @@ class TestAwaitingInput:
         """Path B: a node with missing_fields=[] stays blocked when all fields unknown."""
         g = TaskGraph()
         add_node(g, "clar", node_type="clarification", metadata={"description": "ctx"})
-        g.nodes["clar"].result = json.dumps([
-            {"key": "job_title", "label": "Job title",
-             "value": "unknown", "rationale": "r"},
-            {"key": "current_salary", "label": "Current salary",
-             "value": "unknown", "rationale": "r"},
-        ])
+        g.nodes["clar"].result = json.dumps(
+            [
+                {
+                    "key": "job_title",
+                    "label": "Job title",
+                    "value": "unknown",
+                    "rationale": "r",
+                },
+                {
+                    "key": "current_salary",
+                    "label": "Current salary",
+                    "value": "unknown",
+                    "rationale": "r",
+                },
+            ]
+        )
         g.nodes["clar"].status = "done"
 
-        add_node(g, "t", node_type="task", metadata={
-            "description": "Research salary ranges",
-            "output": [],
-            "missing_fields": [],  # empty — Path B
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "Research salary ranges",
+                "output": [],
+                "missing_fields": [],  # empty — Path B
+            },
+        )
         g.nodes["t"].dependencies.add("clar")
         g.nodes["clar"].children.add("t")
         g.nodes["t"].status = "awaiting_input"
@@ -647,11 +854,17 @@ class TestAwaitingInput:
     def test_regular_task_still_calls_verify_result(self):
         """Sanity: ordinary task nodes still go through verification."""
         orch, g, _, mock_gate = make_orchestrator(gate_satisfied=True)
-        add_node(g, "regular_task", node_type="task", metadata={
-            "description": "Do research",
-            "output": [{"name": "report", "type": "document",
-                        "description": "the report"}],
-        })
+        add_node(
+            g,
+            "regular_task",
+            node_type="task",
+            metadata={
+                "description": "Do research",
+                "output": [
+                    {"name": "report", "type": "document", "description": "the report"}
+                ],
+            },
+        )
         g.nodes["regular_task"].status = "running"
 
         f = Future()
@@ -662,6 +875,7 @@ class TestAwaitingInput:
 
 
 # ── Issue 4 (revised): tool results context folded into verifier prompt ─────
+
 
 class TestToolResultsContext:
     """
@@ -681,11 +895,16 @@ class TestToolResultsContext:
         status_str is "ok" or "error".
         """
         g = TaskGraph()
-        add_node(g, node_id, metadata={
-            "description": "research task",
-            "output": [{"name": "report", "type": "document",
-                        "description": "the report"}],
-        })
+        add_node(
+            g,
+            node_id,
+            metadata={
+                "description": "research task",
+                "output": [
+                    {"name": "report", "type": "document", "description": "the report"}
+                ],
+            },
+        )
         for i, attempt_list in enumerate(attempts_per_step):
             step_id = f"{node_id}__step_web_search_{i}"
             attempts = []
@@ -694,49 +913,69 @@ class TestToolResultsContext:
                     result_str, status = item
                 else:
                     result_str, status = item, "ok"
-                attempts.append({"turn": j, "args": {}, "result": result_str,
-                                  "status": status})
-            add_node(g, step_id, node_type="execution_step", metadata={
-                "step_type": "tool_call",
-                "tool_name": "web_search",
-                "attempts": attempts,
-            })
+                attempts.append(
+                    {"turn": j, "args": {}, "result": result_str, "status": status}
+                )
+            add_node(
+                g,
+                step_id,
+                node_type="execution_step",
+                metadata={
+                    "step_type": "tool_call",
+                    "tool_name": "web_search",
+                    "attempts": attempts,
+                },
+            )
         return g.nodes[node_id], g.get_snapshot()
 
     # ── _build_tool_results_context unit tests ────────────────────────────────
 
     def test_all_errors_produces_warning_context(self):
         gate = self._make_gate()
-        node, snap = self._make_node_with_steps("t", [
-            [("ERROR: decode error", "error")],
-            [("ERROR: no results",   "error")],
-        ])
+        node, snap = self._make_node_with_steps(
+            "t",
+            [
+                [("ERROR: decode error", "error")],
+                [("ERROR: no results", "error")],
+            ],
+        )
         ctx = gate._build_tool_results_context(node, snap)
         assert "All" in ctx and "error" in ctx.lower()
 
     def test_mixed_results_produces_partial_context(self):
         gate = self._make_gate()
-        node, snap = self._make_node_with_steps("t", [
-            [("ERROR: timeout", "error")],
-            [("Title: Salary\nURL: glassdoor.com", "ok")],
-        ])
+        node, snap = self._make_node_with_steps(
+            "t",
+            [
+                [("ERROR: timeout", "error")],
+                [("Title: Salary\nURL: glassdoor.com", "ok")],
+            ],
+        )
         ctx = gate._build_tool_results_context(node, snap)
         assert "1 of 2" in ctx
 
     def test_no_tool_calls_returns_empty_string(self):
         gate = self._make_gate()
         g = TaskGraph()
-        add_node(g, "t", metadata={"description": "t", "output": [
-            {"name": "report", "type": "document", "description": "r"}
-        ]})
+        add_node(
+            g,
+            "t",
+            metadata={
+                "description": "t",
+                "output": [{"name": "report", "type": "document", "description": "r"}],
+            },
+        )
         ctx = gate._build_tool_results_context(g.nodes["t"], g.get_snapshot())
         assert ctx == ""
 
     def test_all_success_produces_success_context(self):
         gate = self._make_gate()
-        node, snap = self._make_node_with_steps("t", [
-            [("Title: Salary Survey\nURL: glassdoor.com", "ok")],
-        ])
+        node, snap = self._make_node_with_steps(
+            "t",
+            [
+                [("Title: Salary Survey\nURL: glassdoor.com", "ok")],
+            ],
+        )
         ctx = gate._build_tool_results_context(node, snap)
         assert "successfully" in ctx.lower()
 
@@ -745,6 +984,7 @@ class TestToolResultsContext:
     def test_verify_result_passes_tool_context_in_prompt(self):
         """Tool execution summary is included in the verifier prompt."""
         prompts_seen = []
+
         def capture_ask(prompt, schema=None):
             prompts_seen.append(prompt)
             return json.dumps({"satisfied": False, "reason": "fabricated"})
@@ -753,9 +993,12 @@ class TestToolResultsContext:
         llm.is_stopped = False
         llm.ask = capture_ask
         gate = QualityGate(llm_client=llm)
-        node, snap = self._make_node_with_steps("t", [
-            [("ERROR: decode error", "error")],
-        ])
+        node, snap = self._make_node_with_steps(
+            "t",
+            [
+                [("ERROR: decode error", "error")],
+            ],
+        )
         gate.verify_result(node, "Salary is $60k-$90k.", snap)
         assert prompts_seen, "LLM verifier must be called"
         assert "TOOL EXECUTION SUMMARY" in prompts_seen[0]
@@ -765,16 +1008,22 @@ class TestToolResultsContext:
         """The LLM verifier always runs — tool context informs its judgment."""
         llm = FakeLLM(json.dumps({"satisfied": True, "reason": "good data"}))
         gate = QualityGate(llm_client=llm)
-        node, snap = self._make_node_with_steps("t", [
-            [("Title: Salary Survey\nURL: levels.fyi", "ok")],
-        ])
-        ok, _ = gate.verify_result(node, "Based on levels.fyi the median is $130k.", snap)
+        node, snap = self._make_node_with_steps(
+            "t",
+            [
+                [("Title: Salary Survey\nURL: levels.fyi", "ok")],
+            ],
+        )
+        ok, _ = gate.verify_result(
+            node, "Based on levels.fyi the median is $130k.", snap
+        )
         assert ok is True
         assert len(llm.calls) == 1
 
     def test_verify_result_no_tool_context_when_no_steps(self):
         """When a node made no tool calls, the prompt has no tool context section."""
         prompts_seen = []
+
         def capture_ask(prompt, schema=None):
             prompts_seen.append(prompt)
             return json.dumps({"satisfied": True, "reason": "fine"})
@@ -784,11 +1033,17 @@ class TestToolResultsContext:
         llm.ask = capture_ask
         gate = QualityGate(llm_client=llm)
         g = TaskGraph()
-        add_node(g, "t", metadata={
-            "description": "write a summary",
-            "output": [{"name": "summary", "type": "document", "description": "s"}],
-        })
-        gate.verify_result(g.nodes["t"], "Here is the full summary content.", g.get_snapshot())
+        add_node(
+            g,
+            "t",
+            metadata={
+                "description": "write a summary",
+                "output": [{"name": "summary", "type": "document", "description": "s"}],
+            },
+        )
+        gate.verify_result(
+            g.nodes["t"], "Here is the full summary content.", g.get_snapshot()
+        )
         assert prompts_seen
         # The section header "TOOL EXECUTION SUMMARY:" only appears when tool
         # context data is present. The instruction text refers to it without the
@@ -797,6 +1052,7 @@ class TestToolResultsContext:
 
 
 # ── Fix: schema enforcement + fallback LLM call + broadening context ──────────
+
 
 class TestBroadenedExecutionFixes:
     """
@@ -811,18 +1067,27 @@ class TestBroadenedExecutionFixes:
 
     def _make_exec_node(self, description, unknown_keys=()):
         g = TaskGraph()
-        add_node(g, "t", metadata={
-            "description": description,
-            "output": [{"name": "out", "type": "list", "description": "output"}],
-        })
+        add_node(
+            g,
+            "t",
+            metadata={
+                "description": description,
+                "output": [{"name": "out", "type": "list", "description": "output"}],
+            },
+        )
         add_node(g, "clar", node_type="clarification", metadata={"description": "ctx"})
         g.nodes["t"].dependencies.add("clar")
         unknown = [{"key": k, "label": k} for k in unknown_keys]
-        resolved = [{
-            "node_id": "clar", "description": "ctx",
-            "declared_output": [], "result": "ctx",
-            "_unknown_fields": unknown, "_known_fields": [],
-        }]
+        resolved = [
+            {
+                "node_id": "clar",
+                "description": "ctx",
+                "declared_output": [],
+                "result": "ctx",
+                "_unknown_fields": unknown,
+                "_known_fields": [],
+            }
+        ]
         return g.nodes["t"], resolved, g
 
     # ── Fix 1: schema requires broadened_description ──────────────────────────
@@ -830,14 +1095,19 @@ class TestBroadenedExecutionFixes:
     def test_preflight_signal_carries_broadened_description(self):
         """When the LLM returns a broadened_description it is propagated."""
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
-        llm = FakeLLM(json.dumps({
-            "blocked": True,
-            "reason": "needs personal history",
-            "missing_fields": ["current_salary"],
-            "new_fields": [],
-            "broadened_description": "Produce a template to help articulate achievements.",
-            "broadened_for_missing": ["current_salary"],
-        }))
+
+        llm = FakeLLM(
+            json.dumps(
+                {
+                    "blocked": True,
+                    "reason": "needs personal history",
+                    "missing_fields": ["current_salary"],
+                    "new_fields": [],
+                    "broadened_description": "Produce a template to help articulate achievements.",
+                    "broadened_for_missing": ["current_salary"],
+                }
+            )
+        )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         node, resolved, _ = self._make_exec_node(
             "List personal achievements", unknown_keys=["current_salary"]
@@ -860,23 +1130,28 @@ class TestBroadenedExecutionFixes:
         from cuddlytoddly.planning.llm_executor import LLMExecutor
 
         call_count = [0]
+
         def multi_response(prompt, schema=None):
             call_count[0] += 1
             if call_count[0] == 1:
                 # Preflight: blocked but no broadened_description
-                return json.dumps({
-                    "blocked": True,
-                    "reason": "needs personal history",
-                    "missing_fields": ["current_salary"],
-                    "new_fields": [],
-                    "broadened_description": "",   # empty — triggers fallback
-                    "broadened_for_missing": ["current_salary"],
-                })
+                return json.dumps(
+                    {
+                        "blocked": True,
+                        "reason": "needs personal history",
+                        "missing_fields": ["current_salary"],
+                        "new_fields": [],
+                        "broadened_description": "",  # empty — triggers fallback
+                        "broadened_for_missing": ["current_salary"],
+                    }
+                )
             if call_count[0] == 2:
                 # Fallback broadening call
-                return json.dumps({
-                    "broadened_description": "Produce a guided achievement template.",
-                })
+                return json.dumps(
+                    {
+                        "broadened_description": "Produce a guided achievement template.",
+                    }
+                )
             # Execution turn
             return json.dumps({"done": True, "result": "Here is the template."})
 
@@ -885,10 +1160,16 @@ class TestBroadenedExecutionFixes:
             "List personal achievements", unknown_keys=["current_salary"]
         )
         # Set up the clar node result so _resolve_inputs finds the unknown fields
-        g.nodes["clar"].result = json.dumps([
-            {"key": "current_salary", "label": "salary",
-             "value": "unknown", "rationale": "r"},
-        ])
+        g.nodes["clar"].result = json.dumps(
+            [
+                {
+                    "key": "current_salary",
+                    "label": "salary",
+                    "value": "unknown",
+                    "rationale": "r",
+                },
+            ]
+        )
         g.nodes["clar"].status = "done"
         reporter = ExecutionStepReporter(
             parent_node_id="t",
@@ -900,7 +1181,9 @@ class TestBroadenedExecutionFixes:
         result = executor.execute(node, g.get_snapshot(), reporter=reporter)
 
         assert isinstance(result, str), "execute() must return a string"
-        assert call_count[0] >= 3, "should have made preflight + fallback + execution calls"
+        assert call_count[0] >= 3, (
+            "should have made preflight + fallback + execution calls"
+        )
         assert reporter.pending_broadening is not None
         assert reporter.pending_broadening.broadened_description == (
             "Produce a guided achievement template."
@@ -912,14 +1195,20 @@ class TestBroadenedExecutionFixes:
         from cuddlytoddly.planning.llm_executor import LLMExecutor
 
         call_count = [0]
+
         def multi_response(prompt, schema=None):
             call_count[0] += 1
             if call_count[0] == 1:
-                return json.dumps({
-                    "blocked": True, "reason": "needs personal history",
-                    "missing_fields": ["salary"], "new_fields": [],
-                    "broadened_description": "", "broadened_for_missing": ["salary"],
-                })
+                return json.dumps(
+                    {
+                        "blocked": True,
+                        "reason": "needs personal history",
+                        "missing_fields": ["salary"],
+                        "new_fields": [],
+                        "broadened_description": "",
+                        "broadened_for_missing": ["salary"],
+                    }
+                )
             # Fallback call also returns empty
             return json.dumps({"broadened_description": ""})
 
@@ -940,6 +1229,7 @@ class TestBroadenedExecutionFixes:
         """When a node has broadened_description in metadata, the verifier prompt
         includes a BROADENED EXECUTION NOTICE section."""
         prompts_seen = []
+
         def capture_ask(prompt, schema=None):
             prompts_seen.append(prompt)
             return json.dumps({"satisfied": False, "reason": "invented specifics"})
@@ -950,13 +1240,19 @@ class TestBroadenedExecutionFixes:
         gate = QualityGate(llm_client=llm)
 
         g = TaskGraph()
-        add_node(g, "t", metadata={
-            "description": "Identify personal achievements",
-            "output": [{"name": "achievements", "type": "list", "description": "a"}],
-            "broadened_description": "Produce a template for articulating achievements.",
-            "broadened_for_missing": ["current_salary", "performance_reviews"],
-            "broadened_reason": "needs personal history",
-        })
+        add_node(
+            g,
+            "t",
+            metadata={
+                "description": "Identify personal achievements",
+                "output": [
+                    {"name": "achievements", "type": "list", "description": "a"}
+                ],
+                "broadened_description": "Produce a template for articulating achievements.",
+                "broadened_for_missing": ["current_salary", "performance_reviews"],
+                "broadened_reason": "needs personal history",
+            },
+        )
 
         ok, reason = gate.verify_result(
             g.nodes["t"],
@@ -972,6 +1268,7 @@ class TestBroadenedExecutionFixes:
     def test_verifier_no_broadening_section_for_normal_nodes(self):
         """Nodes that ran with their original description get no broadening section."""
         prompts_seen = []
+
         def capture_ask(prompt, schema=None):
             prompts_seen.append(prompt)
             return json.dumps({"satisfied": True, "reason": "fine"})
@@ -982,13 +1279,19 @@ class TestBroadenedExecutionFixes:
         gate = QualityGate(llm_client=llm)
 
         g = TaskGraph()
-        add_node(g, "t", metadata={
-            "description": "Research salary ranges",
-            "output": [{"name": "report", "type": "document", "description": "r"}],
-            # no broadened_description in metadata
-        })
+        add_node(
+            g,
+            "t",
+            metadata={
+                "description": "Research salary ranges",
+                "output": [{"name": "report", "type": "document", "description": "r"}],
+                # no broadened_description in metadata
+            },
+        )
 
-        gate.verify_result(g.nodes["t"], "Salaries range from $80k-$120k.", g.get_snapshot())
+        gate.verify_result(
+            g.nodes["t"], "Salaries range from $80k-$120k.", g.get_snapshot()
+        )
         assert prompts_seen
         # The section header "BROADENED EXECUTION NOTICE:" followed by a newline
         # only appears when broadening context data is present.
@@ -997,8 +1300,8 @@ class TestBroadenedExecutionFixes:
 
 # ── Issue 5: max_retries cap + exponential backoff ────────────────────────────
 
-class TestMaxRetriesAndBackoff:
 
+class TestMaxRetriesAndBackoff:
     def _make_future(self, result):
         f = Future()
         f.set_result(result)
@@ -1013,14 +1316,16 @@ class TestMaxRetriesAndBackoff:
             orch._on_node_done(node_id, self._make_future("template output"))
 
     def test_node_permanently_failed_after_max_retries(self):
-        orch, g, _, mock_gate = make_orchestrator(
-            gate_satisfied=False, max_retries=3
+        orch, g, _, mock_gate = make_orchestrator(gate_satisfied=False, max_retries=3)
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "task",
+                "output": [{"name": "report", "type": "document", "description": "r"}],
+            },
         )
-        add_node(g, "t", node_type="task", metadata={
-            "description": "task", "output": [
-                {"name": "report", "type": "document", "description": "r"}
-            ]
-        })
         g.nodes["t"].status = "running"
 
         # Drive 3 failures (0-indexed: attempts 0, 1, 2 all fail)
@@ -1037,10 +1342,15 @@ class TestMaxRetriesAndBackoff:
     def test_node_resets_below_max_retries(self):
         """Before the cap is hit the node should be reset to pending/ready."""
         orch, g, _, _ = make_orchestrator(gate_satisfied=False, max_retries=5)
-        add_node(g, "t", node_type="task", metadata={
-            "description": "task",
-            "output": [{"name": "r", "type": "document", "description": "r"}]
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "task",
+                "output": [{"name": "r", "type": "document", "description": "r"}],
+            },
+        )
         g.nodes["t"].status = "running"
         orch._on_node_done("t", self._make_future("bad output"))
 
@@ -1050,10 +1360,15 @@ class TestMaxRetriesAndBackoff:
     def test_retry_after_is_set_on_failure(self):
         """Each verification failure must stamp retry_after in metadata."""
         orch, g, _, _ = make_orchestrator(gate_satisfied=False, max_retries=5)
-        add_node(g, "t", node_type="task", metadata={
-            "description": "task",
-            "output": [{"name": "r", "type": "document", "description": "r"}]
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "task",
+                "output": [{"name": "r", "type": "document", "description": "r"}],
+            },
+        )
         g.nodes["t"].status = "running"
         before = time.time()
         orch._on_node_done("t", self._make_future("bad output"))
@@ -1062,15 +1377,22 @@ class TestMaxRetriesAndBackoff:
         retry_after = g.nodes["t"].metadata.get("retry_after", 0)
         assert retry_after > before, "retry_after should be in the future"
         # First retry: backoff = 2**0 = 1s (retry_count was 0 before this call)
-        assert retry_after <= after + 2.0, "backoff should not exceed ~1s for first retry"
+        assert retry_after <= after + 2.0, (
+            "backoff should not exceed ~1s for first retry"
+        )
 
     def test_backoff_increases_with_each_failure(self):
         """retry_after should grow across successive failures."""
         orch, g, _, _ = make_orchestrator(gate_satisfied=False, max_retries=10)
-        add_node(g, "t", node_type="task", metadata={
-            "description": "task",
-            "output": [{"name": "r", "type": "document", "description": "r"}]
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "task",
+                "output": [{"name": "r", "type": "document", "description": "r"}],
+            },
+        )
 
         backoffs = []
         for _ in range(4):
@@ -1083,7 +1405,7 @@ class TestMaxRetriesAndBackoff:
         # Each successive backoff should be larger than the previous
         for i in range(1, len(backoffs)):
             assert backoffs[i] > backoffs[i - 1], (
-                f"backoff[{i}]={backoffs[i]:.2f} not > backoff[{i-1}]={backoffs[i-1]:.2f}"
+                f"backoff[{i}]={backoffs[i]:.2f} not > backoff[{i - 1}]={backoffs[i - 1]:.2f}"
             )
 
     def test_execution_pass_skips_node_in_backoff_window(self):
@@ -1110,10 +1432,15 @@ class TestMaxRetriesAndBackoff:
     def test_max_retries_zero_fails_immediately(self):
         """max_retries=0 means the first failure is permanent."""
         orch, g, _, _ = make_orchestrator(gate_satisfied=False, max_retries=0)
-        add_node(g, "t", node_type="task", metadata={
-            "description": "task",
-            "output": [{"name": "r", "type": "document", "description": "r"}]
-        })
+        add_node(
+            g,
+            "t",
+            node_type="task",
+            metadata={
+                "description": "task",
+                "output": [{"name": "r", "type": "document", "description": "r"}],
+            },
+        )
         g.nodes["t"].status = "running"
         orch._on_node_done("t", self._make_future("output"))
 
@@ -1123,15 +1450,18 @@ class TestMaxRetriesAndBackoff:
 
 # ── Issue 6: tool error strings flagged correctly ─────────────────────────────
 
-class TestToolErrorStringDetection:
 
+class TestToolErrorStringDetection:
     def test_error_string_sets_error_flag_on_reporter(self):
         """When a tool returns 'ERROR: ...' without raising, the step node
         in the graph must receive status='error' (i.e. MARK_FAILED)."""
         g = TaskGraph()
-        add_node(g, "parent", node_type="task", metadata={
-            "description": "research", "output": []
-        })
+        add_node(
+            g,
+            "parent",
+            node_type="task",
+            metadata={"description": "research", "output": []},
+        )
         g.nodes["parent"].status = "running"
         reporter = make_reporter("parent", g)
 
@@ -1145,6 +1475,7 @@ class TestToolErrorStringDetection:
             done_response("done"),
         ]
         idx = [0]
+
         def responses(prompt, schema=None):
             r = turns[idx[0]]
             idx[0] = min(idx[0] + 1, len(turns) - 1)
@@ -1167,14 +1498,19 @@ class TestToolErrorStringDetection:
     def test_non_error_string_keeps_ok_status(self):
         """A tool that returns a normal result must still get status='ok'."""
         g = TaskGraph()
-        add_node(g, "parent", node_type="task", metadata={
-            "description": "research", "output": []
-        })
+        add_node(
+            g,
+            "parent",
+            node_type="task",
+            metadata={"description": "research", "output": []},
+        )
         g.nodes["parent"].status = "running"
         reporter = make_reporter("parent", g)
 
         def good_tool(args):
-            return "Title: Glassdoor salary survey\nURL: glassdoor.com\nSnippet: $120k avg"
+            return (
+                "Title: Glassdoor salary survey\nURL: glassdoor.com\nSnippet: $120k avg"
+            )
 
         registry = make_tool_registry({"web_search": good_tool})
 
@@ -1183,6 +1519,7 @@ class TestToolErrorStringDetection:
             done_response("The median is $120k."),
         ]
         idx = [0]
+
         def responses(prompt, schema=None):
             r = turns[idx[0]]
             idx[0] = min(idx[0] + 1, len(turns) - 1)
@@ -1201,9 +1538,12 @@ class TestToolErrorStringDetection:
     def test_exception_still_sets_error_flag(self):
         """The original path (tool raises) must still mark status='error'."""
         g = TaskGraph()
-        add_node(g, "parent", node_type="task", metadata={
-            "description": "research", "output": []
-        })
+        add_node(
+            g,
+            "parent",
+            node_type="task",
+            metadata={"description": "research", "output": []},
+        )
         g.nodes["parent"].status = "running"
         reporter = make_reporter("parent", g)
 
@@ -1217,6 +1557,7 @@ class TestToolErrorStringDetection:
             done_response("fallback"),
         ]
         idx = [0]
+
         def responses(prompt, schema=None):
             r = turns[idx[0]]
             idx[0] = min(idx[0] + 1, len(turns) - 1)
@@ -1234,23 +1575,39 @@ class TestToolErrorStringDetection:
         → _build_tool_results_context sees only errors → verifier prompt includes
         the failure context → LLM verifier rejects fabricated output."""
         g = TaskGraph()
-        add_node(g, "salary_node", node_type="task", metadata={
-            "description": "Research salary",
-            "output": [{"name": "report", "type": "document", "description": "salary report"}],
-        })
+        add_node(
+            g,
+            "salary_node",
+            node_type="task",
+            metadata={
+                "description": "Research salary",
+                "output": [
+                    {
+                        "name": "report",
+                        "type": "document",
+                        "description": "salary report",
+                    }
+                ],
+            },
+        )
         step_id = "salary_node__step_web_search"
-        add_node(g, step_id, node_type="execution_step", metadata={
-            "step_type": "tool_call",
-            "tool_name": "web_search",
-            "attempts": [
-                {
-                    "turn": 0,
-                    "args": {"query": "salary"},
-                    "result": "ERROR: web search failed — Body collection error",
-                    "status": "error",  # set correctly by fix 6
-                }
-            ],
-        })
+        add_node(
+            g,
+            step_id,
+            node_type="execution_step",
+            metadata={
+                "step_type": "tool_call",
+                "tool_name": "web_search",
+                "attempts": [
+                    {
+                        "turn": 0,
+                        "args": {"query": "salary"},
+                        "result": "ERROR: web search failed — Body collection error",
+                        "status": "error",  # set correctly by fix 6
+                    }
+                ],
+            },
+        )
 
         # The LLM verifier is called with tool context — it decides not satisfied
         llm = FakeLLM(json.dumps({"satisfied": False, "reason": "all searches failed"}))
@@ -1267,4 +1624,3 @@ class TestToolErrorStringDetection:
         assert len(llm.calls) == 1, "LLM verifier must be called"
         # Tool context appears in the prompt
         assert "TOOL EXECUTION SUMMARY" in llm.calls[0]
-

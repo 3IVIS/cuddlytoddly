@@ -28,7 +28,7 @@ class PlanConstraintChecker:
 
     def __init__(self, graph, llm_client):
         self.graph = graph
-        self.llm   = llm_client
+        self.llm = llm_client
 
     def check_and_repair(
         self,
@@ -56,7 +56,9 @@ class PlanConstraintChecker:
         events = self._dedup_edges(events)
         events = self._remove_cycles(events)
         events = self._check_required_input(events, known_dep_id=known_dep_id)
-        events = self._resolve_ghost_nodes(events, active_goal_id, known_dep_id=known_dep_id)
+        events = self._resolve_ghost_nodes(
+            events, active_goal_id, known_dep_id=known_dep_id
+        )
         return events
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -74,7 +76,7 @@ class PlanConstraintChecker:
                     (depends_on must complete before node_id can start)
         """
         new_nodes: dict = {}
-        edges: set      = set()
+        edges: set = set()
         for evt in events:
             t = evt.get("type")
             p = evt.get("payload", {})
@@ -94,7 +96,7 @@ class PlanConstraintChecker:
     # ── Check 7: Deduplicate ADD_DEPENDENCY edges ─────────────────────────────
 
     def _dedup_edges(self, events: list) -> list:
-        seen   = set()
+        seen = set()
         result = []
         for evt in events:
             if evt.get("type") == ADD_DEPENDENCY:
@@ -121,7 +123,7 @@ class PlanConstraintChecker:
 
             # Adjacency for new nodes only (edges point toward prerequisites)
             adj: dict[str, set] = {nid: set() for nid in new_nodes}
-            for (src, dep) in edges:
+            for src, dep in edges:
                 if src in adj:
                     adj[src].add(dep)
 
@@ -134,14 +136,16 @@ class PlanConstraintChecker:
 
             # Drop cycle nodes and every edge that touches them
             events = [
-                evt for evt in events
+                evt
+                for evt in events
                 if not (
                     evt.get("type") == ADD_NODE
                     and evt["payload"]["node_id"] in cycle_nodes
-                ) and not (
+                )
+                and not (
                     evt.get("type") == ADD_DEPENDENCY
                     and (
-                        evt["payload"]["node_id"]    in cycle_nodes
+                        evt["payload"]["node_id"] in cycle_nodes
                         or evt["payload"]["depends_on"] in cycle_nodes
                     )
                 )
@@ -162,8 +166,8 @@ class PlanConstraintChecker:
         their own.
         """
         WHITE, GRAY, BLACK = 0, 1, 2
-        color      = {nid: WHITE for nid in new_ids}
-        stack_path: list = []   # current DFS path; shared via closure
+        color = {nid: WHITE for nid in new_ids}
+        stack_path: list = []  # current DFS path; shared via closure
 
         def dfs(node: str) -> set:
             color[node] = GRAY
@@ -187,12 +191,14 @@ class PlanConstraintChecker:
             if color.get(nid) == WHITE:
                 result = dfs(nid)
                 if result:
-                    return result & new_ids   # intersect: only return NEW nodes
+                    return result & new_ids  # intersect: only return NEW nodes
         return set()
 
     # ── Check 6: required_input consistency ───────────────────────────────────
 
-    def _check_required_input(self, events: list, known_dep_id: str | None = None) -> list:
+    def _check_required_input(
+        self, events: list, known_dep_id: str | None = None
+    ) -> list:
         """
         6b — strip required_input from any task node that has no dependencies:
              those items are orphaned (no upstream producer can satisfy them).
@@ -207,7 +213,7 @@ class PlanConstraintChecker:
 
         # Full incoming-dependency set per new node
         all_deps: dict[str, set] = {nid: set() for nid in new_nodes}
-        for (src, dep) in edges:
+        for src, dep in edges:
             if src in all_deps:
                 all_deps[src].add(dep)
 
@@ -217,11 +223,11 @@ class PlanConstraintChecker:
         result = []
         for evt in events:
             if evt.get("type") == ADD_NODE:
-                nid      = evt["payload"]["node_id"]
+                nid = evt["payload"]["node_id"]
                 metadata = evt["payload"].get("metadata", {})
-                deps     = all_deps.get(nid, set())
-                req_in   = metadata.get("required_input", [])
-                ntype    = evt["payload"].get("node_type", "task")
+                deps = all_deps.get(nid, set())
+                req_in = metadata.get("required_input", [])
+                ntype = evt["payload"].get("node_type", "task")
 
                 # A root task has no dependencies on other new nodes.
                 # If known_dep_id is provided it will be wired as a dependency
@@ -235,7 +241,8 @@ class PlanConstraintChecker:
                         logger.debug(
                             "[CHECKER] Node %s has required_input and no batch deps "
                             "— will depend on %s, skipping 6b strip",
-                            nid, known_dep_id,
+                            nid,
+                            known_dep_id,
                         )
                     else:
                         # 6b: genuinely orphaned required_input — strip it
@@ -284,12 +291,12 @@ class PlanConstraintChecker:
         known_dep_id is provided.
         """
         new_nodes, edges = self._parse_events(events)
-        existing_ids     = set(self.graph.nodes.keys())
-        new_node_ids     = set(new_nodes.keys())
+        existing_ids = set(self.graph.nodes.keys())
+        new_node_ids = set(new_nodes.keys())
 
         # Build dependents map for new nodes only
         dependents: dict[str, set] = {nid: set() for nid in new_nodes}
-        for (src, dep) in edges:
+        for src, dep in edges:
             if dep in dependents:
                 dependents[dep].add(src)
 
@@ -303,7 +310,8 @@ class PlanConstraintChecker:
                     root_task_ids.add(nid)
 
         ghost_ids = [
-            nid for nid, deps in dependents.items()
+            nid
+            for nid, deps in dependents.items()
             if not deps and nid not in root_task_ids
         ]
         if not ghost_ids:
@@ -326,7 +334,7 @@ class PlanConstraintChecker:
             # Ancestors of the ghost node must be excluded from candidates to
             # prevent introducing a cycle (if X is an ancestor of ghost, adding
             # ADD_DEPENDENCY(X, depends_on=ghost) would mean ghost→...→X→ghost).
-            ancestors       = self._get_ancestors(ghost_id, edges, self.graph.nodes)
+            ancestors = self._get_ancestors(ghost_id, edges, self.graph.nodes)
             valid_candidates = (
                 (set(new_nodes.keys()) | existing_ids | {active_goal_id})
                 - {ghost_id}
@@ -344,35 +352,41 @@ class PlanConstraintChecker:
             )
 
             try:
-                raw          = self.llm.ask(prompt, schema=GHOST_NODE_RESOLUTION_SCHEMA)
-                resp         = json.loads(raw)
+                raw = self.llm.ask(prompt, schema=GHOST_NODE_RESOLUTION_SCHEMA)
+                resp = json.loads(raw)
                 dependent_id = (resp.get("dependent_node_id") or "").strip()
-                reasoning    = resp.get("reasoning", "")
+                reasoning = resp.get("reasoning", "")
 
                 if dependent_id and dependent_id in valid_candidates:
                     logger.info(
                         "[CHECKER] Ghost %s → connected to dependent %s (%s)",
-                        ghost_id, dependent_id, reasoning,
+                        ghost_id,
+                        dependent_id,
+                        reasoning,
                     )
-                    extra_edges.append({
-                        "type": ADD_DEPENDENCY,
-                        "payload": {
-                            "node_id":    dependent_id,
-                            "depends_on": ghost_id,
-                            "origin":     "planning",
-                        },
-                    })
+                    extra_edges.append(
+                        {
+                            "type": ADD_DEPENDENCY,
+                            "payload": {
+                                "node_id": dependent_id,
+                                "depends_on": ghost_id,
+                                "origin": "planning",
+                            },
+                        }
+                    )
                 else:
                     logger.warning(
                         "[CHECKER] LLM returned invalid dependent_id %r for ghost "
                         "node %s — no edge added",
-                        dependent_id, ghost_id,
+                        dependent_id,
+                        ghost_id,
                     )
 
             except Exception as exc:
                 logger.warning(
                     "[CHECKER] Ghost resolution LLM call failed for %s: %s",
-                    ghost_id, exc,
+                    ghost_id,
+                    exc,
                 )
 
         return events + extra_edges
@@ -387,10 +401,10 @@ class PlanConstraintChecker:
         no cycle-creating dependent is offered to the LLM.
         """
         ancestors: set = set()
-        queue          = [node_id]
+        queue = [node_id]
         while queue:
             n = queue.pop()
-            for (src, dep) in edges:
+            for src, dep in edges:
                 if src == n and dep not in ancestors:
                     ancestors.add(dep)
                     queue.append(dep)
@@ -400,4 +414,3 @@ class PlanConstraintChecker:
                         ancestors.add(dep)
                         queue.append(dep)
         return ancestors
-

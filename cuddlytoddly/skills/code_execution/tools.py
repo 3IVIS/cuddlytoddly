@@ -6,6 +6,7 @@ from cuddlytoddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
 
+
 def _run_python(args):
     code = args["code"]
 
@@ -14,8 +15,9 @@ def _run_python(args):
 
     # Strip markdown fences
     import re
-    code = re.sub(r'^```(?:python)?\s*', '', code.strip())
-    code = re.sub(r'\s*```$', '', code.strip())
+
+    code = re.sub(r"^```(?:python)?\s*", "", code.strip())
+    code = re.sub(r"\s*```$", "", code.strip())
 
     logger.info("[RUN_PYTHON] Executing: %.500s", code)
 
@@ -27,6 +29,7 @@ def _run_python(args):
 
     import contextlib
     import io
+
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         exec(code, {"__builtins__": __builtins__})
@@ -54,15 +57,13 @@ TOOLS = {
             "Use \\n for line breaks and 4 spaces for indentation. "
             "Do NOT compress multi-line code onto one line with semicolons — "
             "compound statements (for, if, while, def) require proper newlines."
-        ),        
+        ),
         "input_schema": {"code": "string"},
         "fn": _run_python,
     },
     "run_shell": {
-        "description":  "Run a shell command and return stdout",
+        "description": "Run a shell command and return stdout",
         "input_schema": {"command": "string"},
         "fn": _run_shell,
     },
 }
-
-

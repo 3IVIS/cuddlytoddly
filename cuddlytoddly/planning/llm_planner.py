@@ -52,18 +52,18 @@ class LLMPlanner:
         max_tasks_per_goal: int = 8,
         scrutinize_plan: bool = False,
     ):
-        self.llm                 = llm_client
-        self.graph               = graph
-        self.refiner             = refiner
-        self.skills_summary      = skills_summary
-        self.min_tasks_per_goal  = min_tasks_per_goal
-        self.max_tasks_per_goal  = max_tasks_per_goal
-        self.scrutinize_plan     = scrutinize_plan
-        self.constraint_checker  = PlanConstraintChecker(graph, llm_client)
+        self.llm = llm_client
+        self.graph = graph
+        self.refiner = refiner
+        self.skills_summary = skills_summary
+        self.min_tasks_per_goal = min_tasks_per_goal
+        self.max_tasks_per_goal = max_tasks_per_goal
+        self.scrutinize_plan = scrutinize_plan
+        self.constraint_checker = PlanConstraintChecker(graph, llm_client)
 
     def propose(self, context):
-        snapshot      = context.snapshot
-        goals         = context.goals
+        snapshot = context.snapshot
+        goals = context.goals
         # skip_scrutiny is set to True by the orchestrator on partial replans
         # (goal already had children) so the expensive scrutiny pass is not
         # repeated for what is effectively a plan extension.
@@ -73,8 +73,8 @@ class LLMPlanner:
             return []
 
         active_goal = goals[0]
-        goal_text   = active_goal.metadata.get("description", active_goal.id)
-        clarif_id   = _clarification_node_id(active_goal.id)
+        goal_text = active_goal.metadata.get("description", active_goal.id)
+        clarif_id = _clarification_node_id(active_goal.id)
 
         # ── Clarification node ────────────────────────────────────────────────
         # Call 1: generate clarification fields on first plan only.
@@ -82,7 +82,7 @@ class LLMPlanner:
         # already exists — reuse it so user edits are not overwritten.
         clarif_events: list = []
         clarif_fields: list = []
-        clarif_prompt: str  = ""
+        clarif_prompt: str = ""
 
         existing_clarif = self.graph.nodes.get(clarif_id)
         if existing_clarif is not None:
@@ -93,13 +93,15 @@ class LLMPlanner:
             clarif_prompt = existing_clarif.metadata.get("clarification_prompt", "")
             logger.info("[PLANNER] Reusing existing clarification node %s", clarif_id)
         else:
-            clarif_prompt, clarif_fields, clarif_events = \
+            clarif_prompt, clarif_fields, clarif_events = (
                 self._generate_clarification_node(goal_text, active_goal.id, clarif_id)
+            )
 
         # ── Call 2: planning ──────────────────────────────────────────────────
         graph_view = self._serialize_snapshot(snapshot)
-        prompt     = self._build_prompt(
-            graph_view, goals,
+        prompt = self._build_prompt(
+            graph_view,
+            goals,
             clarif_fields=clarif_fields,
             clarif_prompt=clarif_prompt,
         )
@@ -116,32 +118,37 @@ class LLMPlanner:
             return clarif_events
 
         goal_result = parsed.get("a_goal_result", "").strip()
-        raw_events  = parsed.get("events", [])
+        raw_events = parsed.get("events", [])
 
         # ── Merge extra clarification fields the planner identified ───────────
         extra_fields = parsed.get("additional_clarification_fields", [])
         if extra_fields and isinstance(extra_fields, list):
             added = [
-                f for f in extra_fields
-                if isinstance(f, dict) and f.get("key")
+                f
+                for f in extra_fields
+                if isinstance(f, dict)
+                and f.get("key")
                 and not any(cf["key"] == f["key"] for cf in clarif_fields)
             ]
             if added:
                 clarif_fields = clarif_fields + added
-                clarif_events.append({
-                    "type": SET_RESULT,
-                    "payload": {
-                        "node_id": clarif_id,
-                        "result":  json.dumps(clarif_fields, ensure_ascii=False),
-                    },
-                })
+                clarif_events.append(
+                    {
+                        "type": SET_RESULT,
+                        "payload": {
+                            "node_id": clarif_id,
+                            "result": json.dumps(clarif_fields, ensure_ascii=False),
+                        },
+                    }
+                )
                 logger.info(
-                    "[PLANNER] Planner added %d extra clarification field(s)", len(added)
+                    "[PLANNER] Planner added %d extra clarification field(s)",
+                    len(added),
                 )
 
         # ── Validate and constrain plan events ────────────────────────────────
-        raw_events  = self._normalize_events(raw_events)
-        validator   = LLMOutputValidator(self.graph)
+        raw_events = self._normalize_events(raw_events)
+        validator = LLMOutputValidator(self.graph)
         safe_events = validator.validate_and_normalize(
             raw_events, forced_origin="planning"
         )
@@ -150,7 +157,8 @@ class LLMPlanner:
         # Without this: root tasks look dependency-free → 6b strips their
         # required_input; if nothing else depends on them they look like ghosts.
         safe_events = self.constraint_checker.check_and_repair(
-            safe_events, active_goal.id,
+            safe_events,
+            active_goal.id,
             known_dep_id=clarif_id,
         )
 
@@ -160,24 +168,24 @@ class LLMPlanner:
         # events have already been applied when the reducer processes these edges.
         # add_dependency() silently no-ops if either node doesn't exist yet.
         new_node_ids = {
-            evt["payload"]["node_id"]
-            for evt in safe_events
-            if evt["type"] == ADD_NODE
+            evt["payload"]["node_id"] for evt in safe_events if evt["type"] == ADD_NODE
         }
         wiring_events = []
         for evt in safe_events:
             if evt["type"] == ADD_NODE:
                 node_id = evt["payload"]["node_id"]
-                deps    = set(evt["payload"].get("dependencies", []))
+                deps = set(evt["payload"].get("dependencies", []))
                 if not (deps & new_node_ids):
-                    wiring_events.append({
-                        "type": ADD_DEPENDENCY,
-                        "payload": {
-                            "node_id":    node_id,
-                            "depends_on": clarif_id,
-                            "origin":     "planning",
-                        },
-                    })
+                    wiring_events.append(
+                        {
+                            "type": ADD_DEPENDENCY,
+                            "payload": {
+                                "node_id": node_id,
+                                "depends_on": clarif_id,
+                                "origin": "planning",
+                            },
+                        }
+                    )
 
         # ── Annotate nodes with parent_goal ───────────────────────────────────
         for evt in safe_events:
@@ -186,13 +194,15 @@ class LLMPlanner:
                 metadata["parent_goal"] = active_goal.id
 
         if goal_result:
-            safe_events.append({
-                "type": SET_RESULT,
-                "payload": {
-                    "node_id": active_goal.id,
-                    "result":  goal_result,
-                },
-            })
+            safe_events.append(
+                {
+                    "type": SET_RESULT,
+                    "payload": {
+                        "node_id": active_goal.id,
+                        "result": goal_result,
+                    },
+                }
+            )
 
         # clarif_events first: clarification node must exist before safe_events
         # reference it.  wiring_events last: task ADD_NODE events must have
@@ -216,16 +226,19 @@ class LLMPlanner:
         """
         # Pass skills_summary so the LLM knows which information tools can
         # fetch at runtime and avoids surfacing those as user-facing questions.
-        prompt = build_clarification_prompt(goal_text, skills_summary=self.skills_summary)
+        prompt = build_clarification_prompt(
+            goal_text, skills_summary=self.skills_summary
+        )
         logger.info("[PLANNER] Generating clarification node for goal %s", goal_id)
 
         try:
-            raw    = self.llm.ask(prompt, schema=CLARIFICATION_GENERATION_SCHEMA)
+            raw = self.llm.ask(prompt, schema=CLARIFICATION_GENERATION_SCHEMA)
             parsed = json.loads(raw)
             fields = parsed.get("fields", [])
         except Exception as exc:
             logger.warning(
-                "[PLANNER] Clarification generation failed (%s) — using empty fields", exc
+                "[PLANNER] Clarification generation failed (%s) — using empty fields",
+                exc,
             )
             fields = []
 
@@ -233,18 +246,18 @@ class LLMPlanner:
             {
                 "type": ADD_NODE,
                 "payload": {
-                    "node_id":      clarif_id,
-                    "node_type":    "clarification",
+                    "node_id": clarif_id,
+                    "node_type": "clarification",
                     "dependencies": [],
-                    "origin":       "planning",
+                    "origin": "planning",
                     "metadata": {
                         "description": (
                             "Goal context — review any unknowns and fill them in, "
                             "then click Confirm to update the plan."
                         ),
-                        "fields":               fields,
+                        "fields": fields,
                         "clarification_prompt": prompt,
-                        "parent_goal":          goal_id,
+                        "parent_goal": goal_id,
                     },
                 },
             },
@@ -256,14 +269,15 @@ class LLMPlanner:
                 "type": "MARK_DONE",
                 "payload": {
                     "node_id": clarif_id,
-                    "result":  json.dumps(fields, ensure_ascii=False),
+                    "result": json.dumps(fields, ensure_ascii=False),
                 },
             },
         ]
 
         logger.info(
             "[PLANNER] Clarification node %s generated with %d field(s)",
-            clarif_id, len(fields),
+            clarif_id,
+            len(fields),
         )
         return prompt, fields, events
 
@@ -305,18 +319,16 @@ class LLMPlanner:
     def _serialize_snapshot(self, snapshot):
         return [
             {
-                "node_id":      n.id,
-                "status":       n.status,
+                "node_id": n.id,
+                "status": n.status,
                 "dependencies": sorted(n.dependencies),
-                "node_type":    getattr(n, "node_type", "task"),
+                "node_type": getattr(n, "node_type", "task"),
                 "metadata": {
                     k: (
                         v
                         if k == "description"
                         else (
-                            v[:120] + "…"
-                            if isinstance(v, str) and len(v) > 120
-                            else v
+                            v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v
                         )
                     )
                     for k, v in n.metadata.items()
@@ -343,16 +355,17 @@ class LLMPlanner:
                         if dep_id in n.get("dependencies", []):
                             relevant_ids.add(n["node_id"])
 
-        pruned_view  = [n for n in graph_view if n["node_id"] in relevant_ids]
+        pruned_view = [n for n in graph_view if n["node_id"] in relevant_ids]
         existing_ids = {n["node_id"] for n in graph_view}
 
         goals_repr = [
             {
-                "node_id":   g.id,
+                "node_id": g.id,
                 "node_type": g.node_type,
-                "status":    g.status,
-                "metadata":  {
-                    k: v for k, v in g.metadata.items()
+                "status": g.status,
+                "metadata": {
+                    k: v
+                    for k, v in g.metadata.items()
                     if k not in _VOLATILE_METADATA_KEYS
                 },
             }
@@ -365,7 +378,7 @@ class LLMPlanner:
             + "\n"
         )
 
-        skills_block        = build_planner_skills_block(self.skills_summary)
+        skills_block = build_planner_skills_block(self.skills_summary)
         clarification_block = build_clarification_context_block(
             clarif_fields or [], clarif_prompt
         )
@@ -405,10 +418,12 @@ class LLMPlanner:
                 continue
 
             if event_type == ADD_DEPENDENCY and "from" in item and "to" in item:
-                normalized.append({
-                    "type": ADD_DEPENDENCY,
-                    "payload": {"node_id": item["to"], "depends_on": item["from"]},
-                })
+                normalized.append(
+                    {
+                        "type": ADD_DEPENDENCY,
+                        "payload": {"node_id": item["to"], "depends_on": item["from"]},
+                    }
+                )
                 continue
 
             if (
@@ -417,44 +432,54 @@ class LLMPlanner:
                 and "to" not in item
                 and "type" not in item
             ):
-                node_id  = item["node_id"]
+                node_id = item["node_id"]
                 metadata = {}
                 for key in (
-                    "description", "parallel_group", "required_input",
-                    "output", "reflection_notes", "skill", "tools"
+                    "description",
+                    "parallel_group",
+                    "required_input",
+                    "output",
+                    "reflection_notes",
+                    "skill",
+                    "tools",
                 ):
                     if key in item:
                         metadata[key] = item[key]
-                normalized.append({
-                    "type": ADD_NODE,
-                    "payload": {
-                        "node_id":      node_id,
-                        "node_type":    item.get("node_type", "task"),
-                        "dependencies": item.get("dependencies", []),
-                        "metadata":     metadata,
-                    },
-                })
+                normalized.append(
+                    {
+                        "type": ADD_NODE,
+                        "payload": {
+                            "node_id": node_id,
+                            "node_type": item.get("node_type", "task"),
+                            "dependencies": item.get("dependencies", []),
+                            "metadata": metadata,
+                        },
+                    }
+                )
                 continue
 
             if "from" in item and "to" in item and "type" not in item:
-                normalized.append({
-                    "type": ADD_DEPENDENCY,
-                    "payload": {"node_id": item["to"], "depends_on": item["from"]},
-                })
+                normalized.append(
+                    {
+                        "type": ADD_DEPENDENCY,
+                        "payload": {"node_id": item["to"], "depends_on": item["from"]},
+                    }
+                )
                 continue
 
             if "node_id" in item and "depends_on" in item and "type" not in item:
-                normalized.append({
-                    "type": ADD_DEPENDENCY,
-                    "payload": {
-                        "node_id":    item["node_id"],
-                        "depends_on": item["depends_on"],
-                    },
-                })
+                normalized.append(
+                    {
+                        "type": ADD_DEPENDENCY,
+                        "payload": {
+                            "node_id": item["node_id"],
+                            "depends_on": item["depends_on"],
+                        },
+                    }
+                )
                 continue
 
             logger.warning("[PLANNER] Unrecognized event shape: %r", item)
             normalized.append(item)
 
         return normalized
-

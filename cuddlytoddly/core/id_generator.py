@@ -7,21 +7,22 @@ from typing import Dict
 
 BASE62_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
+
 def base62_encode(num: int, length: int = 6) -> str:
     chars = []
     base = len(BASE62_ALPHABET)
 
     if num == 0:
-        chars.append('0')
+        chars.append("0")
 
     while num > 0:
         num, rem = divmod(num, base)
         chars.append(BASE62_ALPHABET[rem])
 
     while len(chars) < length:
-        chars.append('0')
+        chars.append("0")
 
-    return ''.join(reversed(chars))[:length]
+    return "".join(reversed(chars))[:length]
 
 
 class StableIDGenerator:
@@ -42,7 +43,7 @@ class StableIDGenerator:
 
     def _save_mapping(self):
         if self.mapping_file is None:
-            return          # in-memory mode — nothing to persist
+            return  # in-memory mode — nothing to persist
         with self.mapping_file.open("w") as f:
             json.dump(self.mapping, f, indent=2)
 
@@ -76,5 +77,3 @@ class StableIDGenerator:
         self._save_mapping()
 
         return short_id
-
-

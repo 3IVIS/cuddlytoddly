@@ -45,6 +45,7 @@ class AwaitingInputSignal:
                            description was generated — used to decide whether to
                            reuse or regenerate on the next execution.
     """
+
     reason: str
     missing_fields: list = _dc_field(default_factory=list)
     new_fields: list = _dc_field(default_factory=list)
@@ -77,10 +78,21 @@ class LLMExecutor:
     """
 
     # File extensions that trigger "write_file" enforcement
-    FILE_EXTENSIONS = frozenset({
-        ".md", ".txt", ".py", ".json", ".csv", ".html",
-        ".yaml", ".yml", ".xml", ".pdf", ".log",
-    })
+    FILE_EXTENSIONS = frozenset(
+        {
+            ".md",
+            ".txt",
+            ".py",
+            ".json",
+            ".csv",
+            ".html",
+            ".yaml",
+            ".yml",
+            ".xml",
+            ".pdf",
+            ".log",
+        }
+    )
 
     def __init__(
         self,
@@ -92,13 +104,13 @@ class LLMExecutor:
         max_tool_result_chars: int = 2000,
         max_history_entries: int = 3,
     ):
-        self.llm                    = llm_client
-        self.tools                  = tool_registry
-        self.max_turns              = max_turns
+        self.llm = llm_client
+        self.tools = tool_registry
+        self.max_turns = max_turns
         self.max_inline_result_chars = max_inline_result_chars
-        self.max_total_input_chars  = max_total_input_chars
-        self.max_tool_result_chars  = max_tool_result_chars
-        self.max_history_entries    = max_history_entries
+        self.max_total_input_chars = max_total_input_chars
+        self.max_tool_result_chars = max_tool_result_chars
+        self.max_history_entries = max_history_entries
 
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -113,8 +125,16 @@ class LLMExecutor:
         Used by _resolve_inputs to annotate the executor prompt, and passed
         to the quality gate so it can flag fabricated values for unknown fields.
         """
-        _PLACEHOLDERS = {"unknown", "n/a", "not specified", "not provided",
-                         "none", "unspecified", "tbd", ""}
+        _PLACEHOLDERS = {
+            "unknown",
+            "n/a",
+            "not specified",
+            "not provided",
+            "none",
+            "unspecified",
+            "tbd",
+            "",
+        }
         try:
             fields = json.loads(result_json)
         except Exception:
@@ -126,9 +146,17 @@ class LLMExecutor:
                 continue
             val = str(f.get("value", "")).strip().lower()
             if val in _PLACEHOLDERS:
-                unknown.append({"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))})
+                unknown.append(
+                    {"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))}
+                )
             else:
-                known.append({"key": f.get("key", ""), "label": f.get("label", f.get("key", "")), "value": f.get("value", "")})
+                known.append(
+                    {
+                        "key": f.get("key", ""),
+                        "label": f.get("label", f.get("key", "")),
+                        "value": f.get("value", ""),
+                    }
+                )
         return known, unknown
 
     def _resolve_inputs(self, node, snapshot):
@@ -141,7 +169,7 @@ class LLMExecutor:
                 if isinstance(o, dict):
                     result.append(f"{o['name']} ({o['type']}): {o['description']}")
                 else:
-                    result.append(str(o))   # backward compat
+                    result.append(str(o))  # backward compat
             return result
 
         resolved = []
@@ -167,22 +195,28 @@ class LLMExecutor:
                     )
                     for f in unknown:
                         lines.append(f"    {f['label']}: not provided")
-                resolved.append({
-                    "node_id":         dep_id,
-                    "description":     dep.metadata.get("description", dep_id),
-                    "declared_output": [],
-                    "result":          "\n".join(lines),
-                    "_unknown_fields": unknown,  # used by quality gate and preflight
-                    "_known_fields":   known,    # used by preflight check
-                })
+                resolved.append(
+                    {
+                        "node_id": dep_id,
+                        "description": dep.metadata.get("description", dep_id),
+                        "declared_output": [],
+                        "result": "\n".join(lines),
+                        "_unknown_fields": unknown,  # used by quality gate and preflight
+                        "_known_fields": known,  # used by preflight check
+                    }
+                )
                 continue
 
-            resolved.append({
-                "node_id":         dep_id,
-                "description":     dep.metadata.get("description", dep_id),
-                "declared_output": _format_output_list(dep.metadata.get("output", [])),
-                "result":          dep.result,
-            })
+            resolved.append(
+                {
+                    "node_id": dep_id,
+                    "description": dep.metadata.get("description", dep_id),
+                    "declared_output": _format_output_list(
+                        dep.metadata.get("output", [])
+                    ),
+                    "result": dep.result,
+                }
+            )
 
         # Distribute the char budget evenly across all upstream results
         if resolved:
@@ -191,8 +225,7 @@ class LLMExecutor:
                 r = entry["result"]
                 if len(r) > budget_per_dep:
                     entry["result"] = (
-                        r[:budget_per_dep]
-                        + f"\n…[truncated, {len(r)} chars total]"
+                        r[:budget_per_dep] + f"\n…[truncated, {len(r)} chars total]"
                     )
 
         return resolved
@@ -207,14 +240,21 @@ class LLMExecutor:
             )
         lines = []
         for name, tool in self.tools.tools.items():
-            desc   = getattr(tool, "description", "no description")
+            desc = getattr(tool, "description", "no description")
             schema = getattr(tool, "input_schema", {})
             lines.append(f"- {name}: {desc}. Args: {json.dumps(schema)}")
         return "\n".join(lines)
 
-    def _build_prompt(self, node, resolved_inputs, history,
-                      extra_reminder="", turns_remaining=0,
-                      description_override="", output_override=None):
+    def _build_prompt(
+        self,
+        node,
+        resolved_inputs,
+        history,
+        extra_reminder="",
+        turns_remaining=0,
+        description_override="",
+        output_override=None,
+    ):
 
         def _fmt_output(o):
             if isinstance(o, dict):
@@ -226,9 +266,8 @@ class LLMExecutor:
 
         def _is_file(o):
             if isinstance(o, dict):
-                return (
-                    o.get("type") == "file"
-                    or any(_output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
+                return o.get("type") == "file" or any(
+                    _output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS
                 )
             return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
 
@@ -247,12 +286,12 @@ class LLMExecutor:
         # ── Retry notice ──────────────────────────────────────────────────────
         retry = node.metadata.get("retry_count", 0)
         if retry > 0:
-            failure    = node.metadata.get("verification_failure", "unknown")[:200]
+            failure = node.metadata.get("verification_failure", "unknown")[:200]
             prev_result = node.result or "(none)"
             if len(prev_result) > 200:
                 prev_result = prev_result[:200] + "…"
         else:
-            failure    = ""
+            failure = ""
             prev_result = ""
         retry_notice = build_executor_retry_notice(retry, failure, prev_result)
 
@@ -280,7 +319,7 @@ class LLMExecutor:
             if output_override is not None
             else node.metadata.get("output", [])
         )
-        expected_files   = [_output_name(o) for o in declared_outputs if _is_file(o)]
+        expected_files = [_output_name(o) for o in declared_outputs if _is_file(o)]
 
         if expected_files:
             output_instruction = build_executor_file_output_instruction(expected_files)
@@ -291,7 +330,8 @@ class LLMExecutor:
 
         outputs_text = (
             "\n".join(_fmt_output(o) for o in declared_outputs)
-            if declared_outputs else "  (not specified)"
+            if declared_outputs
+            else "  (not specified)"
         )
         outputs_block = build_executor_outputs_block(outputs_text)
 
@@ -300,13 +340,17 @@ class LLMExecutor:
             "retry=%d chars, outputs=%d chars, inputs=%d chars, "
             "tools=%d chars, history=%d chars",
             node.id,
-            len(retry_notice), len(outputs_text),
-            len(inputs_text), len(tools_text), len(history_text),
+            len(retry_notice),
+            len(outputs_text),
+            len(inputs_text),
+            len(tools_text),
+            len(history_text),
         )
 
         return build_executor_prompt(
             node_id=node.id,
-            description=description_override or node.metadata.get("description", node.id),
+            description=description_override
+            or node.metadata.get("description", node.id),
             retry_notice=retry_notice,
             extra_reminder=extra_reminder,
             outputs_block=outputs_block,
@@ -354,13 +398,14 @@ class LLMExecutor:
             known_fields_text=known_fields_text,
         )
         try:
-            raw    = self.llm.ask(prompt, schema=BROADENED_DESCRIPTION_SCHEMA)
+            raw = self.llm.ask(prompt, schema=BROADENED_DESCRIPTION_SCHEMA)
             parsed = json.loads(raw)
             return parsed.get("broadened_description", "").strip()
         except Exception as e:
             logger.warning(
                 "[EXECUTOR] Broadened description fallback call failed for %s: %s",
-                node.id, e,
+                node.id,
+                e,
             )
             return ""
 
@@ -397,9 +442,9 @@ class LLMExecutor:
           patched with every field the task structurally requires.
         """
         # Collect clarification context from resolved inputs
-        unknown_fields = []   # list of {key, label}
-        known_fields   = []   # list of {key, label, value}
-        clar_node_id   = ""
+        unknown_fields = []  # list of {key, label}
+        known_fields = []  # list of {key, label, value}
+        clar_node_id = ""
 
         for entry in resolved_inputs:
             if "_unknown_fields" not in entry:
@@ -409,23 +454,24 @@ class LLMExecutor:
             known_fields.extend(entry.get("_known_fields", []))
 
         # ── Phase 1: deterministic required-input gap detection ───────────────
-        all_clar_keys   = {f.get("key") for f in known_fields + unknown_fields}
+        all_clar_keys = {f.get("key") for f in known_fields + unknown_fields}
         required_inputs = node.metadata.get("required_input", [])
 
         def _make_new_field(r: dict) -> dict:
-            name  = r.get("name", "")
+            name = r.get("name", "")
             label = name.replace("_", " ").title()
             return {
-                "key":      name,
-                "label":    label,
-                "value":    "unknown",
+                "key": name,
+                "label": label,
+                "value": "unknown",
                 "rationale": (
                     f"Required by task '{node.id}': {r.get('description', label)}"
                 ),
             }
 
         auto_new_fields = [
-            _make_new_field(r) for r in required_inputs
+            _make_new_field(r)
+            for r in required_inputs
             if r.get("name") and r.get("name") not in all_clar_keys
         ]
 
@@ -433,14 +479,17 @@ class LLMExecutor:
             logger.info(
                 "[EXECUTOR] Node %s has required inputs not covered by any "
                 "clarification field — will add: %s",
-                node.id, [f["key"] for f in auto_new_fields],
+                node.id,
+                [f["key"] for f in auto_new_fields],
             )
 
         # Compute the full current missing-key set (unknown fields + structural gaps)
-        current_missing_keys = sorted(set(
-            [f.get("key") for f in unknown_fields]
-            + [f["key"] for f in auto_new_fields]
-        ))
+        current_missing_keys = sorted(
+            set(
+                [f.get("key") for f in unknown_fields]
+                + [f["key"] for f in auto_new_fields]
+            )
+        )
 
         # If nothing is missing at all, proceed with the original description
         if not current_missing_keys:
@@ -451,16 +500,19 @@ class LLMExecutor:
         # broadened description produced an output the verifier rejected, so
         # regenerating with the failure reason as context has a better chance of
         # succeeding than rerunning the exact same description again.
-        previous_failure  = node.metadata.get("verification_failure", "")
-        stored_broadened  = node.metadata.get("broadened_description", "")
+        previous_failure = node.metadata.get("verification_failure", "")
+        stored_broadened = node.metadata.get("broadened_description", "")
         stored_for_missing = sorted(node.metadata.get("broadened_for_missing", []))
-        if (stored_broadened
-                and stored_for_missing == current_missing_keys
-                and not previous_failure):
+        if (
+            stored_broadened
+            and stored_for_missing == current_missing_keys
+            and not previous_failure
+        ):
             logger.info(
                 "[EXECUTOR] Node %s: reusing stored broadened description "
                 "(missing set unchanged: %s)",
-                node.id, current_missing_keys,
+                node.id,
+                current_missing_keys,
             )
             return AwaitingInputSignal(
                 reason="Reusing stored broadened description — missing fields unchanged.",
@@ -476,7 +528,8 @@ class LLMExecutor:
             logger.info(
                 "[EXECUTOR] Node %s: previous broadened execution failed verification "
                 "('%s...') — regenerating broadened description with failure context",
-                node.id, previous_failure[:80],
+                node.id,
+                previous_failure[:80],
             )
 
         # ── Phase 2: LLM judgment + broadened description generation ─────────
@@ -486,15 +539,19 @@ class LLMExecutor:
         def _fmt_fields(fields):
             # Format as "key (label): value" so the LLM can see the exact key
             # string it must use in missing_fields — not just the human label.
-            return "\n".join(
-                f"  - {f.get('key', '?')} ({f.get('label', f.get('key', '?'))}): "
-                f"{f.get('value', 'unknown')}"
-                for f in fields
-            ) if fields else "  (none)"
+            return (
+                "\n".join(
+                    f"  - {f.get('key', '?')} ({f.get('label', f.get('key', '?'))}): "
+                    f"{f.get('value', 'unknown')}"
+                    for f in fields
+                )
+                if fields
+                else "  (none)"
+            )
 
-        known_fields_text   = _fmt_fields(known_fields)
+        known_fields_text = _fmt_fields(known_fields)
         unknown_fields_text = _fmt_fields(unknown_fields)
-        tools_text          = self._tool_schema_summary()
+        tools_text = self._tool_schema_summary()
 
         if required_inputs:
             required_input_text = "\n".join(
@@ -516,12 +573,13 @@ class LLMExecutor:
         )
 
         try:
-            raw    = self.llm.ask(prompt, schema=AWAITING_INPUT_CHECK_SCHEMA)
+            raw = self.llm.ask(prompt, schema=AWAITING_INPUT_CHECK_SCHEMA)
             parsed = json.loads(raw)
         except Exception as e:
             logger.warning(
                 "[EXECUTOR] Preflight LLM check failed for %s: %s — proceeding",
-                node.id, e,
+                node.id,
+                e,
             )
             return None  # fail open: attempt execution anyway
 
@@ -529,22 +587,23 @@ class LLMExecutor:
             return None  # all inputs available — use original description
 
         # Merge auto_new_fields into whatever the LLM returned, deduplicating
-        llm_new_fields  = parsed.get("new_fields", [])
-        llm_new_keys    = {f.get("key") for f in llm_new_fields}
-        merged_new      = llm_new_fields + [
+        llm_new_fields = parsed.get("new_fields", [])
+        llm_new_keys = {f.get("key") for f in llm_new_fields}
+        merged_new = llm_new_fields + [
             f for f in auto_new_fields if f["key"] not in llm_new_keys
         ]
 
-        llm_missing    = parsed.get("missing_fields", [])
-        auto_missing   = [f["key"] for f in auto_new_fields
-                          if f["key"] not in llm_missing]
+        llm_missing = parsed.get("missing_fields", [])
+        auto_missing = [
+            f["key"] for f in auto_new_fields if f["key"] not in llm_missing
+        ]
         merged_missing = llm_missing + auto_missing
 
         # broadened_for_missing is the full set of absent keys — used on the
         # next execution to decide whether to reuse or regenerate.
-        broadened_for_missing = sorted(set(
-            merged_missing + [f.get("key") for f in merged_new]
-        ))
+        broadened_for_missing = sorted(
+            set(merged_missing + [f.get("key") for f in merged_new])
+        )
 
         broadened_description = parsed.get("broadened_description", "")
         if not broadened_description:
@@ -587,7 +646,8 @@ class LLMExecutor:
                 logger.info(
                     "[EXECUTOR] Node %s: running with broadened description "
                     "(missing: %s)",
-                    node.id, signal.broadened_for_missing,
+                    node.id,
+                    signal.broadened_for_missing,
                 )
             else:
                 # The primary preflight call returned blocked=true but an empty
@@ -644,9 +704,8 @@ class LLMExecutor:
 
         def _is_file(o):
             if isinstance(o, dict):
-                return (
-                    o.get("type") == "file"
-                    or any(_output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
+                return o.get("type") == "file" or any(
+                    _output_name(o).endswith(ext) for ext in self.FILE_EXTENSIONS
                 )
             return any(str(o).endswith(ext) for ext in self.FILE_EXTENSIONS)
 
@@ -656,20 +715,26 @@ class LLMExecutor:
 
         for turn in range(self.max_turns):
             turns_remaining = self.max_turns - turn
-            extra_reminder  = ""
+            extra_reminder = ""
 
             # ── File-write reminder ───────────────────────────────────────────
             if expected_files and "write_file" not in {h["name"] for h in history}:
-                extra_reminder += build_executor_file_reminder(expected_files, turns_remaining)
+                extra_reminder += build_executor_file_reminder(
+                    expected_files, turns_remaining
+                )
 
             if reporter:
                 reporter.on_llm_turn(turn)
 
-            prompt = self._build_prompt(node, resolved_inputs, history,
-                                        extra_reminder=extra_reminder,
-                                        turns_remaining=turns_remaining,
-                                        description_override=effective_description,
-                                        output_override=effective_outputs)
+            prompt = self._build_prompt(
+                node,
+                resolved_inputs,
+                history,
+                extra_reminder=extra_reminder,
+                turns_remaining=turns_remaining,
+                description_override=effective_description,
+                output_override=effective_outputs,
+            )
 
             try:
                 raw = self.llm.ask(prompt, schema=EXECUTION_TURN_SCHEMA)
@@ -691,35 +756,41 @@ class LLMExecutor:
                 return None
 
             if response.get("done"):
-                result           = response.get("result", "")
-                tool_names_used  = {h["name"] for h in history}
+                result = response.get("result", "")
+                tool_names_used = {h["name"] for h in history}
 
                 if expected_files and "write_file" not in tool_names_used:
                     logger.warning(
                         "[EXECUTOR] Node %s set done=true but write_file not in history "
-                        "— injecting correction turn", node.id
+                        "— injecting correction turn",
+                        node.id,
                     )
-                    history.append({
-                        "name":   "write_file",
-                        "args":   {"path": expected_files[0], "content": ""},
-                        "result": (
-                            f"ERROR: write_file was called with empty content. "
-                            f"You must call write_file again with the full content of "
-                            f"{expected_files[0]}. Use the actual report content you "
-                            f"generated — do not set done=true until the file is written "
-                            f"with real content."
-                        ),
-                    })
+                    history.append(
+                        {
+                            "name": "write_file",
+                            "args": {"path": expected_files[0], "content": ""},
+                            "result": (
+                                f"ERROR: write_file was called with empty content. "
+                                f"You must call write_file again with the full content of "
+                                f"{expected_files[0]}. Use the actual report content you "
+                                f"generated — do not set done=true until the file is written "
+                                f"with real content."
+                            ),
+                        }
+                    )
                     continue
 
-                logger.info("[EXECUTOR] Node %s completed. Result: %.120s", node.id, result)
+                logger.info(
+                    "[EXECUTOR] Node %s completed. Result: %.120s", node.id, result
+                )
                 return result
 
             tool_call = response.get("tool_call")
             if not tool_call:
                 logger.warning(
                     "[EXECUTOR] Node %s: done=false but no tool_call on turn %d",
-                    node.id, turn + 1,
+                    node.id,
+                    turn + 1,
                 )
                 if reporter:
                     reporter.on_llm_error(turn, "done=false but no tool_call provided")
@@ -729,23 +800,30 @@ class LLMExecutor:
             tool_args = tool_call.get("args", {})
 
             if not self.tools or tool_name not in self.tools.tools:
-                logger.warning("[EXECUTOR] Node %s requested unknown tool '%s'",
-                               node.id, tool_name)
+                logger.warning(
+                    "[EXECUTOR] Node %s requested unknown tool '%s'", node.id, tool_name
+                )
                 if reporter:
                     step_id = reporter.on_tool_start(tool_name, tool_args)
-                    reporter.on_tool_done(step_id, tool_name, tool_args,
-                                         f"ERROR: tool '{tool_name}' not found",
-                                         error=True)
-                history.append({
-                    "name":   tool_name,
-                    "args":   tool_args,
-                    "result": (
-                        f"ERROR: tool '{tool_name}' not found. "
-                        "No tools are available — you must complete this task "
-                        "using your own knowledge. Set done=true with a result "
-                        "based on what you know; do not call any tool."
-                    ),
-                })
+                    reporter.on_tool_done(
+                        step_id,
+                        tool_name,
+                        tool_args,
+                        f"ERROR: tool '{tool_name}' not found",
+                        error=True,
+                    )
+                history.append(
+                    {
+                        "name": tool_name,
+                        "args": tool_args,
+                        "result": (
+                            f"ERROR: tool '{tool_name}' not found. "
+                            "No tools are available — you must complete this task "
+                            "using your own knowledge. Set done=true with a result "
+                            "based on what you know; do not call any tool."
+                        ),
+                    }
+                )
                 # Exit if the LLM is stuck calling unavailable tools.
                 # A counter is used rather than string-matching the error
                 # message — more robust and not tied to error text format.
@@ -754,7 +832,8 @@ class LLMExecutor:
                     logger.error(
                         "[EXECUTOR] Node %s: %d consecutive tool-not-found errors — "
                         "aborting early, no tools registered for this task",
-                        node.id, tool_not_found_count,
+                        node.id,
+                        tool_not_found_count,
                     )
                     return None
                 continue
@@ -780,31 +859,35 @@ class LLMExecutor:
                 error = True
                 logger.warning(
                     "[EXECUTOR] Tool '%s' returned an error string: %.120s",
-                    tool_name, tool_result_str,
+                    tool_name,
+                    tool_result_str,
                 )
 
             if reporter and step_id:
-                reporter.on_tool_done(step_id, tool_name, tool_args,
-                                      tool_result_str, error=error)
+                reporter.on_tool_done(
+                    step_id, tool_name, tool_args, tool_result_str, error=error
+                )
 
             if len(tool_result_str) > self.max_tool_result_chars:
                 tool_result_str = (
-                    tool_result_str[:self.max_tool_result_chars]
+                    tool_result_str[: self.max_tool_result_chars]
                     + f"\n…[truncated — {len(tool_result_str)} chars total]"
                 )
 
-            history.append({
-                "name":   tool_name,
-                "args":   tool_args,
-                "result": tool_result_str,
-            })
+            history.append(
+                {
+                    "name": tool_name,
+                    "args": tool_args,
+                    "result": tool_result_str,
+                }
+            )
 
             if len(history) > self.max_history_entries:
-                history = history[-self.max_history_entries:]
+                history = history[-self.max_history_entries :]
 
-        logger.error("[EXECUTOR] Node %s did not complete within %d turns",
-                     node.id, self.max_turns)
+        logger.error(
+            "[EXECUTOR] Node %s did not complete within %d turns",
+            node.id,
+            self.max_turns,
+        )
         return None
-
-
-

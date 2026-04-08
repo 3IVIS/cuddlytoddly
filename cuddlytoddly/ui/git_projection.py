@@ -25,12 +25,12 @@ def truncate_label(label, node_id=None, max_len=20):
         suffix = "#" + hashlib.sha256(label.encode()).hexdigest()[:6]
         return suffix
 
+
 def init_repo(path):
     if os.path.exists(path):
         shutil.rmtree(path)
     os.makedirs(path)
     return git.Repo.init(path)
-
 
 
 def graph_to_dag(snapshot):
@@ -40,6 +40,7 @@ def graph_to_dag(snapshot):
             if dep in dag:
                 dag[dep].append(node_id)  # children added in snapshot insertion order
     return dag
+
 
 def topological_sort(dag):
     indegree = defaultdict(int)
@@ -60,6 +61,7 @@ def topological_sort(dag):
 
     return order
 
+
 def commit_nodes_from_graph(snapshot):
     global node_to_commit
     node_to_commit.clear()
@@ -79,22 +81,26 @@ def commit_nodes_from_graph(snapshot):
         node = snapshot[node_id]
         parents = [
             node_to_commit[dep]
-            for dep in sorted(node.dependencies)  # sort for deterministic commit parent ordering
+            for dep in sorted(
+                node.dependencies
+            )  # sort for deterministic commit parent ordering
             if dep in node_to_commit
         ]
         file_path = repo_dir / f"{node_id}.txt"
         file_path.write_text(f"This is node {node_id}\nStatus: {node.status}\n")
         repo.index.add([str(file_path.relative_to(REPO_PATH))])
-        label = truncate_label(node.metadata.get("description") or node_id, node_id = node_id)
+        label = truncate_label(
+            node.metadata.get("description") or node_id, node_id=node_id
+        )
         try:
             parent_commits = [repo.commit(p) for p in parents]
             commit_obj = repo.index.commit(
-                f"{label} [{node.status}]",
-                parent_commits=parent_commits
+                f"{label} [{node.status}]", parent_commits=parent_commits
             )
             node_to_commit[node_id] = commit_obj.hexsha  # use commit_obj, NOT repo.head
         except Exception as e:
             logger.exception("FAILED to commit node '%s': %s", node_id, e)
+
 
 def compute_descendants(snapshot):
     reverse = defaultdict(set)
@@ -115,9 +121,10 @@ def compute_descendants(snapshot):
 
     return descendants
 
+
 def commit_node_incremental(node_id, node, snapshot):
     """
-    Incrementally commit a node. 
+    Incrementally commit a node.
     Crucially, it uses the LATEST parent hashes from node_to_commit.
     """
     repo_dir = Path(REPO_PATH)
@@ -132,41 +139,47 @@ def commit_node_incremental(node_id, node, snapshot):
     repo.index.add([str(file_path.relative_to(REPO_PATH))])
 
     # 2. Get the current Git hashes for parents from our tracking map
-    # We use node_to_commit.get because a parent might not have a commit yet 
+    # We use node_to_commit.get because a parent might not have a commit yet
     # (though topological sort usually prevents this).
     parents = [
-        node_to_commit[dep] for dep in sorted(node.dependencies) if dep in node_to_commit  # sort for determinism
+        node_to_commit[dep]
+        for dep in sorted(node.dependencies)
+        if dep in node_to_commit  # sort for determinism
     ]
-    
+
     # 3. Create the commit
     try:
         # Convert hex strings to actual Git Commit objects
         parent_commits = [repo.commit(p) for p in parents] if parents else []
-        label = truncate_label(node.metadata.get("description") or node_id, node_id = node_id)
-        
+        label = truncate_label(
+            node.metadata.get("description") or node_id, node_id=node_id
+        )
+
         # In Git, changing parents creates a new hash. index.commit does this for us.
         commit_obj = repo.index.commit(
-            f"{label} [{node.status}]", 
-            parent_commits=parent_commits
+            f"{label} [{node.status}]", parent_commits=parent_commits
         )
-        
+
         # 4. Update the global map and node metadata
         node_to_commit[node_id] = commit_obj.hexsha
         node.metadata["last_commit_status"] = node.status
         node.metadata["last_commit_parents"] = sorted(parents)
-        
-        return True # Success
+
+        return True  # Success
     except Exception as e:
         logger.exception("Failed to commit node '%s': %s", node_id, e)
         return False
+
 
 def get_leaf_node_ids(dag):
     """Nodes with no children — tips of the DAG."""
     return {node_id for node_id, children in dag.items() if not children}
 
+
 def sanitize_branch_name(node_id):
     """Replace characters invalid in Git branch names."""
-    return re.sub(r'[^a-zA-Z0-9._-]', '_', node_id)
+    return re.sub(r"[^a-zA-Z0-9._-]", "_", node_id)
+
 
 def update_tip_branches(snapshot):
     graph_to_dag(snapshot)
@@ -190,25 +203,29 @@ def update_tip_branches(snapshot):
 
     # Point master at root
     root_id = next(
-        (nid for nid in snapshot
-         if not snapshot[nid].dependencies and nid in node_to_commit),
-        None
+        (
+            nid
+            for nid in snapshot
+            if not snapshot[nid].dependencies and nid in node_to_commit
+        ),
+        None,
     )
     if root_id:
         try:
             repo.create_head("master", node_to_commit[root_id], force=True)
         except Exception as e:
             logger.debug("[GIT] Could not update master: %s", e)
-            
+
+
 def rebuild_repo_from_graph(graph, incremental=True):
     try:
         global repo
         snapshot = graph.get_snapshot()
         # Exclude hidden execution step nodes from git projection
         snapshot = {
-            nid: n for nid, n in snapshot.items()
-            if not (n.node_type == "execution_step"
-                    and n.metadata.get("hidden", False))
+            nid: n
+            for nid, n in snapshot.items()
+            if not (n.node_type == "execution_step" and n.metadata.get("hidden", False))
         }
         dag = graph_to_dag(snapshot)
 
@@ -248,7 +265,11 @@ def rebuild_repo_from_graph(graph, incremental=True):
 
             if missing_parent:
                 dirty.add(node_id)
-            if node_id not in node_to_commit or node.status != last_status or current_parents != last_parents:
+            if (
+                node_id not in node_to_commit
+                or node.status != last_status
+                or current_parents != last_parents
+            ):
                 dirty.add(node_id)
 
         # 2️⃣ Propagate dirty downward (dependencies)
@@ -308,6 +329,7 @@ def rebuild_repo_from_graph(graph, incremental=True):
         except Exception as e2:
             logger.error("[GIT] Full rebuild also failed: %s", e2)
 
+
 def delete_node(node_id, graph):
     """
     Soft-delete a node:
@@ -318,4 +340,3 @@ def delete_node(node_id, graph):
         node = graph.nodes[node_id]
         node.metadata["deleted"] = True
         commit_node_incremental(node_id, node, graph.get_snapshot())
-

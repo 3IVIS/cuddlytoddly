@@ -49,53 +49,55 @@ from cuddlytoddly.planning.schemas import (  # noqa: F401  (public re-exports)
 # Token counter
 # ---------------------------------------------------------------------------
 
+
 class TokenCounter:
     """
     Module-level singleton tracking tokens consumed across all LLM calls
     in this process.  Thread-safe; all attributes are read-only properties.
     """
+
     def __init__(self):
-        self._lock               = threading.Lock()
-        self._prompt_tokens      = 0
-        self._completion_tokens  = 0
-        self._calls              = 0
- 
+        self._lock = threading.Lock()
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
+        self._calls = 0
+
     def add(self, prompt: int, completion: int) -> None:
         with self._lock:
-            self._prompt_tokens     += prompt
+            self._prompt_tokens += prompt
             self._completion_tokens += completion
-            self._calls             += 1
- 
+            self._calls += 1
+
     def seed(self, prompt: int, completion: int, calls: int = 0) -> None:
         """
         Set a baseline derived from a previously-persisted run so that the
         toolbar shows the correct historical total immediately after loading.
- 
+
         This replaces whatever is currently in the counter; it must be called
         before any new LLM call is made (i.e. during startup, right after the
         graph is rebuilt from the event log).
         """
         with self._lock:
-            self._prompt_tokens     = prompt
+            self._prompt_tokens = prompt
             self._completion_tokens = completion
-            self._calls             = calls
- 
+            self._calls = calls
+
     @property
     def prompt_tokens(self) -> int:
         return self._prompt_tokens
- 
+
     @property
     def completion_tokens(self) -> int:
         return self._completion_tokens
- 
+
     @property
     def total_tokens(self) -> int:
         return self._prompt_tokens + self._completion_tokens
- 
+
     @property
     def calls(self) -> int:
         return self._calls
- 
+
     def reset(self) -> None:
         with self._lock:
             self._prompt_tokens = self._completion_tokens = self._calls = 0
@@ -111,11 +113,11 @@ logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROMPT_LOG_FILE = PROJECT_ROOT / "llm_prompts.txt"
-RESPONSE_FILE   = PROJECT_ROOT / "llm_responses.txt"
+RESPONSE_FILE = PROJECT_ROOT / "llm_responses.txt"
 
 # Default values — overridden by config when passed to FileBasedLLM.__init__
-_DEFAULT_POLL_INTERVAL        = 0.5
-_DEFAULT_TIMEOUT              = 300
+_DEFAULT_POLL_INTERVAL = 0.5
+_DEFAULT_TIMEOUT = 300
 _DEFAULT_PROGRESS_LOG_INTERVAL = 2
 
 id_gen = StableIDGenerator(id_length=6)
@@ -125,6 +127,7 @@ id_gen = StableIDGenerator(id_length=6)
 # Exception
 # ---------------------------------------------------------------------------
 
+
 class LLMStoppedError(RuntimeError):
     """Raised when an LLM call is attempted while the stop flag is set."""
 
@@ -132,6 +135,7 @@ class LLMStoppedError(RuntimeError):
 # ---------------------------------------------------------------------------
 # Abstract base class
 # ---------------------------------------------------------------------------
+
 
 class BaseLLM(ABC):
     """
@@ -181,6 +185,7 @@ class BaseLLM(ABC):
 # Backend 1 — FileBasedLLM  (development / testing)
 # ---------------------------------------------------------------------------
 
+
 class FileBasedLLM(BaseLLM):
     """
     Simulates an LLM using text files with unique IDs.
@@ -208,17 +213,19 @@ class FileBasedLLM(BaseLLM):
         cache_path: Path | str | None = None,
     ):
         super().__init__()
-        self.response_file         = Path(response_file)
-        self.prompt_log_file       = Path(prompt_log_file)
-        self.poll_interval         = poll_interval
-        self.timeout               = timeout
+        self.response_file = Path(response_file)
+        self.prompt_log_file = Path(prompt_log_file)
+        self.poll_interval = poll_interval
+        self.timeout = timeout
         self.progress_log_interval = progress_log_interval
         self._cache = LlamaCppCache(cache_path) if cache_path is not None else None
         logger.info("[LLM] Initialized FileBasedLLM")
         logger.info("[LLM] Prompt file path: %s", self.prompt_log_file.resolve())
         logger.info("[LLM] Response file path: %s", self.response_file.resolve())
-        logger.info("[LLM] Cache: %s",
-                    f"enabled ({len(self._cache)} entries)" if self._cache else "disabled")
+        logger.info(
+            "[LLM] Cache: %s",
+            f"enabled ({len(self._cache)} entries)" if self._cache else "disabled",
+        )
 
     def send_prompt(self, prompt: str) -> str:
         logger.info("[LLM] send_prompt() called")
@@ -231,9 +238,13 @@ class FileBasedLLM(BaseLLM):
             logger.debug("[LLM] Prompt file exists, checking for duplicate id")
             with self.prompt_log_file.open("r") as f:
                 for line in f:
-                    if line.startswith("id:") and line[len("id:"):].strip() == prompt_id:
+                    if (
+                        line.startswith("id:")
+                        and line[len("id:") :].strip() == prompt_id
+                    ):
                         logger.warning(
-                            "[LLM] Prompt id=%s already exists — skipping write", prompt_id
+                            "[LLM] Prompt id=%s already exists — skipping write",
+                            prompt_id,
                         )
                         return prompt_id
         else:
@@ -251,7 +262,7 @@ class FileBasedLLM(BaseLLM):
 
     def get_response(self, prompt_id: str) -> str:
         logger.info("[LLM] get_response() called for id=%s", prompt_id)
-        start_time         = time.time()
+        start_time = time.time()
         last_progress_time = start_time
 
         while True:
@@ -261,7 +272,7 @@ class FileBasedLLM(BaseLLM):
                 with self.response_file.open() as f:
                     lines = f.readlines()
 
-                current_id  = None
+                current_id = None
                 block_lines = []
                 for line in lines:
                     line = line.rstrip("\n")
@@ -272,7 +283,7 @@ class FileBasedLLM(BaseLLM):
                             )
                             logger.info("[LLM] Response matched id=%s", prompt_id)
                             return response_text
-                        current_id  = line[len("id:"):].strip()
+                        current_id = line[len("id:") :].strip()
                         block_lines = []
                     else:
                         block_lines.append(line)
@@ -289,7 +300,8 @@ class FileBasedLLM(BaseLLM):
                 elapsed = int(now - start_time)
                 logger.info(
                     "[LLM] Waiting for response (id=%s)... %ds elapsed",
-                    prompt_id, elapsed,
+                    prompt_id,
+                    elapsed,
                 )
                 last_progress_time = now
 
@@ -335,6 +347,7 @@ class FileBasedLLM(BaseLLM):
 # Prompt-response cache  (used by all three backends)
 # ---------------------------------------------------------------------------
 
+
 class LlamaCppCache:
     """
     Persistent, disk-backed cache for prompt → response pairs.
@@ -370,7 +383,8 @@ class LlamaCppCache:
                 raise ValueError("Cache root must be dict")
             logger.info(
                 "[CACHE] Loaded %d cached entries from %s",
-                len(self._store), self.cache_path,
+                len(self._store),
+                self.cache_path,
             )
         except Exception as e:
             logger.error("[CACHE] Corrupted cache file detected: %s", e)
@@ -418,6 +432,7 @@ class LlamaCppCache:
 # Backend 2 — LlamaCppLLM  (local model via llama-cpp-python + outlines)
 # ---------------------------------------------------------------------------
 
+
 class LlamaCppLLM(BaseLLM):
     """
     Runs a local GGUF model via llama-cpp-python.
@@ -445,34 +460,38 @@ class LlamaCppLLM(BaseLLM):
         cache_path: Path | str | None = PROJECT_ROOT / "llamacpp_cache.json",
     ):
         super().__init__()
-        self.model_path     = str(model_path)
-        self.n_ctx          = n_ctx
-        self.n_gpu_layers   = n_gpu_layers
-        self.temperature    = temperature
-        self.max_tokens     = max_tokens
+        self.model_path = str(model_path)
+        self.n_ctx = n_ctx
+        self.n_gpu_layers = n_gpu_layers
+        self.temperature = temperature
+        self.max_tokens = max_tokens
         self.default_schema = schema or EVENT_LIST_SCHEMA
 
         logger.info("[LLAMACPP] Initializing LlamaCppLLM")
         logger.info("[LLAMACPP] Model path: %s", self.model_path)
         logger.info(
             "[LLAMACPP] n_ctx=%d  n_gpu_layers=%d  temperature=%.2f  max_tokens=%d",
-            n_ctx, n_gpu_layers, temperature, max_tokens,
+            n_ctx,
+            n_gpu_layers,
+            temperature,
+            max_tokens,
         )
 
         if cache_path is not None:
             self._cache = LlamaCppCache(cache_path)
             logger.info(
                 "[LLAMACPP] Prompt cache enabled -- %s (%d entries loaded)",
-                Path(cache_path), len(self._cache),
+                Path(cache_path),
+                len(self._cache),
             )
         else:
             self._cache = None
             logger.info("[LLAMACPP] Prompt cache disabled")
 
-        self._llama          = None
+        self._llama = None
         self._outlines_model = None
         self._generators: dict = {}
-        self._load_lock      = threading.Lock()
+        self._load_lock = threading.Lock()
         self._inference_lock = threading.Lock()
 
     # ── Model loading ─────────────────────────────────────────────────────────
@@ -524,6 +543,7 @@ class LlamaCppLLM(BaseLLM):
 
     def _get_generator(self, schema: dict):
         import outlines
+
         fingerprint = json.dumps(schema, sort_keys=True)
         if fingerprint not in self._generators:
             self._load_outlines()
@@ -547,10 +567,12 @@ class LlamaCppLLM(BaseLLM):
             if self._llama.metadata.get("tokenizer.chat_template"):
                 messages = [
                     {"role": "system", "content": system},
-                    {"role": "user",   "content": prompt},
+                    {"role": "user", "content": prompt},
                 ]
                 result = self._llama.tokenizer_.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True,
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
                 )
                 logger.debug("[LLAMACPP] Chat template applied via llama.cpp tokenizer")
                 return result
@@ -575,17 +597,22 @@ class LlamaCppLLM(BaseLLM):
 
     def _run_watchdog(self):
         done = threading.Event()
+
         def _watch():
             start = time.time()
             while not done.wait(timeout=30):
-                logger.info("[LLAMACPP] Still generating... %.0fs elapsed",
-                            time.time() - start)
+                logger.info(
+                    "[LLAMACPP] Still generating... %.0fs elapsed", time.time() - start
+                )
+
         t = threading.Thread(target=_watch, daemon=True, name="llm-watchdog")
         t.start()
         return done
 
     def _run_unconstrained(self, prompt: str, safe_max: int) -> str:
-        logger.info("[LLAMACPP] Running unconstrained inference (max_tokens=%d)...", safe_max)
+        logger.info(
+            "[LLAMACPP] Running unconstrained inference (max_tokens=%d)...", safe_max
+        )
         result = self._llama(
             prompt,
             max_tokens=safe_max,
@@ -595,7 +622,9 @@ class LlamaCppLLM(BaseLLM):
         return result["choices"][0]["text"]
 
     def _run_constrained(self, prompt: str, schema: dict, safe_max: int) -> str:
-        logger.info("[LLAMACPP] Running constrained inference (max_tokens=%d)...", safe_max)
+        logger.info(
+            "[LLAMACPP] Running constrained inference (max_tokens=%d)...", safe_max
+        )
         generator = self._get_generator(schema)
         raw = generator(prompt, max_tokens=safe_max)
         if isinstance(raw, str):
@@ -603,7 +632,7 @@ class LlamaCppLLM(BaseLLM):
         return json.dumps(raw)
 
     def _run_model(self, prompt: str, constrained_schema=None) -> str:
-        formatted     = self._apply_chat_template(prompt)
+        formatted = self._apply_chat_template(prompt)
         prompt_tokens = len(self._llama.tokenize(formatted.encode("utf-8")))
 
         safe_max = self.n_ctx - prompt_tokens - 64
@@ -616,7 +645,7 @@ class LlamaCppLLM(BaseLLM):
 
         with self._inference_lock:
             done = self._run_watchdog()
-            t0   = time.time()
+            t0 = time.time()
             try:
                 if constrained_schema is None:
                     raw = self._run_unconstrained(formatted, safe_max)
@@ -628,8 +657,11 @@ class LlamaCppLLM(BaseLLM):
         completion_tokens = len(self._llama.tokenize(raw.encode("utf-8")))
         token_counter.add(prompt_tokens, completion_tokens)
 
-        logger.info("[LLAMACPP] Inference complete in %.1fs -- %d chars",
-                    time.time() - t0, len(raw))
+        logger.info(
+            "[LLAMACPP] Inference complete in %.1fs -- %d chars",
+            time.time() - t0,
+            len(raw),
+        )
         return raw
 
     # ── Truncation repair ─────────────────────────────────────────────────────
@@ -643,20 +675,25 @@ class LlamaCppLLM(BaseLLM):
             pos = text.rfind("}", 0, pos + 1)
             if pos == -1:
                 break
-            candidate = text[:pos + 1].rstrip().rstrip(",") + "]"
+            candidate = text[: pos + 1].rstrip().rstrip(",") + "]"
             try:
                 parsed = json.loads(candidate)
                 if isinstance(parsed, list) and len(parsed) > 0:
                     logger.warning(
                         "[LLAMACPP] Truncated output repaired: %d event(s) recovered "
-                        "(max_tokens=%d)", len(parsed), self.max_tokens,
+                        "(max_tokens=%d)",
+                        len(parsed),
+                        self.max_tokens,
                     )
                     return candidate
             except json.JSONDecodeError:
                 pass
             pos -= 1
-        logger.error("[LLAMACPP] Could not repair truncated output. "
-                     "Increase max_tokens (currently %d).", self.max_tokens)
+        logger.error(
+            "[LLAMACPP] Could not repair truncated output. "
+            "Increase max_tokens (currently %d).",
+            self.max_tokens,
+        )
         return None
 
     # ── Public interface ──────────────────────────────────────────────────────
@@ -666,10 +703,10 @@ class LlamaCppLLM(BaseLLM):
         logger.info("[LLAMACPP] ask() called")
 
         if schema is None:
-            cache_key          = prompt
+            cache_key = prompt
             constrained_schema = None
         else:
-            cache_key          = prompt + "\x00" + json.dumps(schema, sort_keys=True)
+            cache_key = prompt + "\x00" + json.dumps(schema, sort_keys=True)
             constrained_schema = schema
 
         if self._cache is not None:
@@ -690,14 +727,18 @@ class LlamaCppLLM(BaseLLM):
                     self._cache.set(cache_key, response_text)
                 return response_text
             except Exception as e:
-                logger.warning("[LLAMACPP] Invalid JSON on attempt %d: %s", attempt + 1, e)
+                logger.warning(
+                    "[LLAMACPP] Invalid JSON on attempt %d: %s", attempt + 1, e
+                )
                 if attempt == 0:
                     repaired = self._repair_truncated_json(response_text)
                     if repaired is not None:
                         if self._cache is not None:
                             self._cache.set(cache_key, repaired)
                         return repaired
-                    logger.warning("[LLAMACPP] Repair failed -- retrying full generation")
+                    logger.warning(
+                        "[LLAMACPP] Repair failed -- retrying full generation"
+                    )
 
         raise ValueError("Model repeatedly returned invalid JSON")
 
@@ -712,6 +753,7 @@ class LlamaCppLLM(BaseLLM):
 # ---------------------------------------------------------------------------
 # Backend 3 — ApiLLM  (OpenAI-compatible or Anthropic API)
 # ---------------------------------------------------------------------------
+
 
 class ApiLLM(BaseLLM):
     """
@@ -746,24 +788,27 @@ class ApiLLM(BaseLLM):
                 f"Unknown provider '{provider}'. Choose 'openai' or 'claude'."
             )
 
-        self.provider      = provider
-        self.api_key       = api_key
-        self.model         = model or self._DEFAULTS[provider]
-        self.base_url      = base_url
-        self.temperature   = temperature
-        self.max_tokens    = max_tokens
+        self.provider = provider
+        self.api_key = api_key
+        self.model = model or self._DEFAULTS[provider]
+        self.base_url = base_url
+        self.temperature = temperature
+        self.max_tokens = max_tokens
         # System prompt text defaults to prompts.py; callers can still override.
         self.system_prompt = system_prompt or LLM_SYSTEM_PROMPT
         self._cache = LlamaCppCache(cache_path) if cache_path is not None else None
 
-        logger.info("[API] Initialized ApiLLM  provider=%s  model=%s",
-                    self.provider, self.model)
+        logger.info(
+            "[API] Initialized ApiLLM  provider=%s  model=%s", self.provider, self.model
+        )
         if base_url:
             logger.info("[API] Using custom base_url: %s", base_url)
-        logger.info("[API] Cache: %s",
-                    f"enabled ({len(self._cache)} entries)" if self._cache else "disabled")
+        logger.info(
+            "[API] Cache: %s",
+            f"enabled ({len(self._cache)} entries)" if self._cache else "disabled",
+        )
 
-        self._client = None   # lazy-loaded
+        self._client = None  # lazy-loaded
 
     # ── Client loading ────────────────────────────────────────────────────────
 
@@ -838,7 +883,7 @@ class ApiLLM(BaseLLM):
 
         messages = [
             {"role": "system", "content": self.system_prompt},
-            {"role": "user",   "content": prompt_to_send},
+            {"role": "user", "content": prompt_to_send},
         ]
 
         kwargs: dict[str, Any] = dict(
@@ -849,13 +894,17 @@ class ApiLLM(BaseLLM):
             response_format={"type": "json_object"},
         )
 
-        logger.debug("[API] Sending OpenAI request  model=%s  schema=%s",
-                     self.model, "yes" if schema else "no")
+        logger.debug(
+            "[API] Sending OpenAI request  model=%s  schema=%s",
+            self.model,
+            "yes" if schema else "no",
+        )
         response = self._client.chat.completions.create(**kwargs)
 
         if response.usage:
-            token_counter.add(response.usage.prompt_tokens,
-                              response.usage.completion_tokens)
+            token_counter.add(
+                response.usage.prompt_tokens, response.usage.completion_tokens
+            )
         content = response.choices[0].message.content or ""
         logger.info("[API] OpenAI response received (%d chars)", len(content))
         logger.debug("[API] Raw response:\n%s", content)
@@ -869,27 +918,26 @@ class ApiLLM(BaseLLM):
             prefill = self._schema_prefill(schema)
         else:
             augmented_prompt = (
-                prompt
-                + "\n\nRespond with valid JSON only. "
+                prompt + "\n\nRespond with valid JSON only. "
                 "No explanation, no markdown, no code fences."
             )
             prefill = "{"
 
-        logger.debug("[API] Sending Anthropic request  model=%s  prefill=%r",
-                     self.model, prefill)
+        logger.debug(
+            "[API] Sending Anthropic request  model=%s  prefill=%r", self.model, prefill
+        )
         response = self._client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
             system=self.system_prompt,
             messages=[
-                {"role": "user",      "content": augmented_prompt},
+                {"role": "user", "content": augmented_prompt},
                 {"role": "assistant", "content": prefill},
             ],
             temperature=self.temperature,
         )
-        token_counter.add(response.usage.input_tokens,
-                          response.usage.output_tokens)
-        raw     = response.content[0].text
+        token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
+        raw = response.content[0].text
         content = prefill + raw
         logger.info("[API] Claude response received (%d chars)", len(content))
         logger.debug("[API] Raw response:\n%s", content)
@@ -899,13 +947,16 @@ class ApiLLM(BaseLLM):
 
     def ask(self, prompt: str, schema: dict | None = None) -> str:
         self._check_stop()
-        logger.info("[API] ask() called  provider=%s  model=%s", self.provider, self.model)
+        logger.info(
+            "[API] ask() called  provider=%s  model=%s", self.provider, self.model
+        )
         self._load()
         logger.debug("[API] Prompt (first 200 chars): %.200s", prompt)
 
         # Cache key matches LlamaCppLLM: prompt-only (no schema) or prompt+schema.
         cache_key = (
-            prompt if schema is None
+            prompt
+            if schema is None
             else prompt + "\x00" + json.dumps(schema, sort_keys=True)
         )
         if self._cache is not None:
@@ -937,8 +988,12 @@ class ApiLLM(BaseLLM):
                     self._cache.set(cache_key, raw)
                 return raw
             except Exception as e:
-                logger.warning("[API] Invalid JSON on attempt %d: %s  raw=%.200s",
-                               attempt + 1, e, raw)
+                logger.warning(
+                    "[API] Invalid JSON on attempt %d: %s  raw=%.200s",
+                    attempt + 1,
+                    e,
+                    raw,
+                )
                 if attempt == 0:
                     logger.warning("[API] Retrying due to JSON parse failure...")
                     continue
@@ -958,6 +1013,7 @@ class ApiLLM(BaseLLM):
 # ---------------------------------------------------------------------------
 # Factory — single entry point for the rest of the codebase
 # ---------------------------------------------------------------------------
+
 
 def create_llm_client(backend: str = "file", **kwargs) -> BaseLLM:
     backend = backend.lower()
@@ -982,4 +1038,3 @@ def create_llm_client(backend: str = "file", **kwargs) -> BaseLLM:
             f"Unknown backend '{backend}'. "
             "Valid options: 'file', 'llamacpp', 'openai', 'claude'."
         )
-

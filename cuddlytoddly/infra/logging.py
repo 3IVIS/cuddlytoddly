@@ -54,7 +54,7 @@ def _rotate_existing_log(path: Path) -> None:
     if not path.exists() or path.stat().st_size == 0:
         return
 
-    ts           = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_archive = Path(str(path) + f".{ts}")
 
     # Archive numbered size-rotation siblings first so their destination
@@ -104,7 +104,7 @@ class _DeduplicateFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         key = (record.levelno, record.name, record.getMessage())
         if key == self._last_key:
-            return False   # identical to previous — suppress
+            return False  # identical to previous — suppress
         self._last_key = key
         return True
 
@@ -112,13 +112,9 @@ class _DeduplicateFilter(logging.Filter):
 def setup_logging(
     log_level: int = logging.INFO,
     log_dir: Path | str | None = None,
-    debug_modules: tuple[str, ...] = (
-        "dag.engine",
-        "dag.planning",
-        "dag.skills"
-    ),
-    max_bytes: int = 5 * 1024 * 1024,   # 5 MB per file
-    backup_count: int = 3,               # keep .1 .2 .3 within a session
+    debug_modules: tuple[str, ...] = ("dag.engine", "dag.planning", "dag.skills"),
+    max_bytes: int = 5 * 1024 * 1024,  # 5 MB per file
+    backup_count: int = 3,  # keep .1 .2 .3 within a session
 ) -> logging.Logger:
     """
     Configure the application root logger.
@@ -216,4 +212,3 @@ def get_logger(name: str) -> logging.Logger:
     # instead of "dag.cuddlytoddly.engine.foo"
     stripped = re.sub(r"^cuddlytoddly\.", "", name)
     return logging.getLogger(f"dag.{stripped}")
-

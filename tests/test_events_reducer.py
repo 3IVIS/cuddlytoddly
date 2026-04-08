@@ -1,4 +1,5 @@
 """Tests for cuddlytoddly.core.events and cuddlytoddly.core.reducer."""
+
 from conftest import add_node, mark_done
 
 from cuddlytoddly.core.events import (
@@ -21,6 +22,7 @@ from cuddlytoddly.core.reducer import apply_event
 from cuddlytoddly.core.task_graph import TaskGraph
 
 # ── Event serialization ───────────────────────────────────────────────────────
+
 
 class TestEvent:
     def test_to_dict_round_trips(self):
@@ -46,26 +48,51 @@ class TestEvent:
 
 # ── apply_event: structural events ───────────────────────────────────────────
 
+
 class TestReducerStructural:
     def test_add_node(self):
         g = TaskGraph()
-        apply_event(g, Event(ADD_NODE, {
-            "node_id": "a", "node_type": "task",
-            "dependencies": [], "metadata": {"description": "A"},
-        }))
+        apply_event(
+            g,
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {"description": "A"},
+                },
+            ),
+        )
         assert "a" in g.nodes
         assert g.nodes["a"].node_type == "task"
 
     def test_add_node_idempotent_preserves_existing_description(self):
         g = TaskGraph()
-        apply_event(g, Event(ADD_NODE, {
-            "node_id": "a", "node_type": "task", "dependencies": [],
-            "metadata": {"description": "original"},
-        }))
-        apply_event(g, Event(ADD_NODE, {
-            "node_id": "a", "node_type": "task", "dependencies": [],
-            "metadata": {"description": "overwrite attempt"},
-        }))
+        apply_event(
+            g,
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {"description": "original"},
+                },
+            ),
+        )
+        apply_event(
+            g,
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {"description": "overwrite attempt"},
+                },
+            ),
+        )
         assert g.nodes["a"].metadata["description"] == "original"
 
     def test_remove_node(self):
@@ -97,23 +124,40 @@ class TestReducerStructural:
     def test_structural_event_bumps_structure_version(self):
         g = TaskGraph()
         v = g.structure_version
-        apply_event(g, Event(ADD_NODE, {
-            "node_id": "x", "node_type": "task",
-            "dependencies": [], "metadata": {},
-        }))
+        apply_event(
+            g,
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "x",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
+        )
         assert g.structure_version > v
 
     def test_insert_node_alias(self):
         """INSERT_NODE is an alias for ADD_NODE."""
         g = TaskGraph()
-        apply_event(g, Event("INSERT_NODE", {
-            "node_id": "x", "node_type": "task",
-            "dependencies": [], "metadata": {},
-        }))
+        apply_event(
+            g,
+            Event(
+                "INSERT_NODE",
+                {
+                    "node_id": "x",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
+        )
         assert "x" in g.nodes
 
 
 # ── apply_event: execution events ────────────────────────────────────────────
+
 
 class TestReducerExecution:
     def test_mark_running(self):
@@ -178,33 +222,42 @@ class TestReducerExecution:
 
 # ── apply_event: metadata ─────────────────────────────────────────────────────
 
+
 class TestReducerMetadata:
     def test_update_metadata_merges(self):
         g = TaskGraph()
         add_node(g, "a", metadata={"description": "old", "key": "val"})
-        apply_event(g, Event(UPDATE_METADATA, {
-            "node_id": "a", "metadata": {"key": "new_val"}
-        }))
+        apply_event(
+            g, Event(UPDATE_METADATA, {"node_id": "a", "metadata": {"key": "new_val"}})
+        )
         assert g.nodes["a"].metadata["key"] == "new_val"
         assert g.nodes["a"].metadata["description"] == "old"
 
     def test_update_metadata_preserves_existing_description(self):
         g = TaskGraph()
         add_node(g, "a", metadata={"description": "keep me"})
-        apply_event(g, Event(UPDATE_METADATA, {
-            "node_id": "a",
-            "metadata": {"description": "overwrite", "other": "x"}
-        }))
+        apply_event(
+            g,
+            Event(
+                UPDATE_METADATA,
+                {
+                    "node_id": "a",
+                    "metadata": {"description": "overwrite", "other": "x"},
+                },
+            ),
+        )
         assert g.nodes["a"].metadata["description"] == "keep me"
 
     def test_update_metadata_user_can_overwrite_description(self):
         g = TaskGraph()
         add_node(g, "a", metadata={"description": "old"})
-        apply_event(g, Event(UPDATE_METADATA, {
-            "node_id": "a",
-            "origin": "user",
-            "metadata": {"description": "new"}
-        }))
+        apply_event(
+            g,
+            Event(
+                UPDATE_METADATA,
+                {"node_id": "a", "origin": "user", "metadata": {"description": "new"}},
+            ),
+        )
         assert g.nodes["a"].metadata["description"] == "new"
 
     def test_update_metadata_missing_node_is_noop(self):
@@ -213,6 +266,7 @@ class TestReducerMetadata:
 
 
 # ── apply_event: detach / readiness recompute ─────────────────────────────────
+
 
 class TestReducerDetach:
     def test_detach_node(self):
@@ -234,25 +288,43 @@ class TestReducerDetach:
 
 # ── apply_event: event log integration ───────────────────────────────────────
 
+
 class TestReducerEventLog:
     def test_event_appended_to_log(self, tmp_path):
         from cuddlytoddly.infra.event_log import EventLog
+
         log = EventLog(str(tmp_path / "events.jsonl"))
         g = TaskGraph()
-        apply_event(g, Event(ADD_NODE, {
-            "node_id": "a", "node_type": "task",
-            "dependencies": [], "metadata": {},
-        }), event_log=log)
+        apply_event(
+            g,
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
+            event_log=log,
+        )
         events = list(log.replay())
         assert len(events) == 1
         assert events[0].type == ADD_NODE
 
     def test_none_event_log_does_not_crash(self):
         g = TaskGraph()
-        apply_event(g, Event(ADD_NODE, {
-            "node_id": "a", "node_type": "task",
-            "dependencies": [], "metadata": {},
-        }), event_log=None)
+        apply_event(
+            g,
+            Event(
+                ADD_NODE,
+                {
+                    "node_id": "a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            ),
+            event_log=None,
+        )
         assert "a" in g.nodes
-
-

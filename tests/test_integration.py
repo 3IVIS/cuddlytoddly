@@ -4,6 +4,7 @@ Integration tests: end-to-end flows through multiple components.
 These tests wire together real components (graph, reducer, event log,
 validator, planner stub) rather than individual units.
 """
+
 import threading
 import time
 from unittest.mock import MagicMock
@@ -21,18 +22,29 @@ from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
 
 # ── Crash-and-resume ──────────────────────────────────────────────────────────
 
+
 class TestCrashAndResume:
     def test_graph_fully_restored_from_event_log(self, tmp_path):
         """Write events to a log, then replay them into a fresh graph."""
         log = EventLog(str(tmp_path / "events.jsonl"))
         g = TaskGraph()
         for node_id, deps in [("a", []), ("b", ["a"]), ("c", ["b"])]:
-            apply_event(g, Event(ADD_NODE, {
-                "node_id": node_id, "node_type": "task",
-                "dependencies": deps, "metadata": {},
-            }), event_log=log)
-        apply_event(g, Event(MARK_DONE, {"node_id": "a", "result": "a done"}),
-                    event_log=log)
+            apply_event(
+                g,
+                Event(
+                    ADD_NODE,
+                    {
+                        "node_id": node_id,
+                        "node_type": "task",
+                        "dependencies": deps,
+                        "metadata": {},
+                    },
+                ),
+                event_log=log,
+            )
+        apply_event(
+            g, Event(MARK_DONE, {"node_id": "a", "result": "a done"}), event_log=log
+        )
 
         restored = rebuild_graph_from_log(log)
         assert set(restored.nodes.keys()) == {"a", "b", "c"}
@@ -44,14 +56,25 @@ class TestCrashAndResume:
         log = EventLog(str(tmp_path / "events.jsonl"))
         g = TaskGraph()
         for node_id in ["t1", "t2", "t3"]:
-            apply_event(g, Event(ADD_NODE, {
-                "node_id": node_id, "node_type": "task",
-                "dependencies": [], "metadata": {},
-            }), event_log=log)
-        apply_event(g, Event(MARK_DONE, {"node_id": "t1", "result": "done"}),
-                    event_log=log)
-        apply_event(g, Event(MARK_DONE, {"node_id": "t2", "result": "done"}),
-                    event_log=log)
+            apply_event(
+                g,
+                Event(
+                    ADD_NODE,
+                    {
+                        "node_id": node_id,
+                        "node_type": "task",
+                        "dependencies": [],
+                        "metadata": {},
+                    },
+                ),
+                event_log=log,
+            )
+        apply_event(
+            g, Event(MARK_DONE, {"node_id": "t1", "result": "done"}), event_log=log
+        )
+        apply_event(
+            g, Event(MARK_DONE, {"node_id": "t2", "result": "done"}), event_log=log
+        )
 
         restored = rebuild_graph_from_log(log)
         assert restored.nodes["t1"].status == "done"
@@ -62,15 +85,31 @@ class TestCrashAndResume:
         log = EventLog(str(tmp_path / "events.jsonl"))
         g = TaskGraph()
         for i in range(100):
-            apply_event(g, Event(ADD_NODE, {
-                "node_id": f"task_{i}", "node_type": "task",
-                "dependencies": [f"task_{i-1}"] if i > 0 else [],
-                "metadata": {"description": f"task {i}"},
-            }), event_log=log)
+            apply_event(
+                g,
+                Event(
+                    ADD_NODE,
+                    {
+                        "node_id": f"task_{i}",
+                        "node_type": "task",
+                        "dependencies": [f"task_{i - 1}"] if i > 0 else [],
+                        "metadata": {"description": f"task {i}"},
+                    },
+                ),
+                event_log=log,
+            )
         for i in range(50):
-            apply_event(g, Event(MARK_DONE, {
-                "node_id": f"task_{i}", "result": f"result {i}",
-            }), event_log=log)
+            apply_event(
+                g,
+                Event(
+                    MARK_DONE,
+                    {
+                        "node_id": f"task_{i}",
+                        "result": f"result {i}",
+                    },
+                ),
+                event_log=log,
+            )
 
         restored = rebuild_graph_from_log(log)
         assert len(restored.nodes) == 100
@@ -80,20 +119,30 @@ class TestCrashAndResume:
 
 # ── Validator → graph round-trip ──────────────────────────────────────────────
 
+
 class TestValidatorGraphRoundTrip:
     def test_validated_events_applied_to_graph(self):
         g = TaskGraph()
         validator = LLMOutputValidator(g)
         raw_events = [
-            {"type": ADD_NODE, "payload": {
-                "node_id": "task_a", "node_type": "task",
-                "dependencies": [], "metadata": {"description": "A"},
-            }},
-            {"type": ADD_NODE, "payload": {
-                "node_id": "task_b", "node_type": "task",
-                "dependencies": ["task_a"],
-                "metadata": {"description": "B"},
-            }},
+            {
+                "type": ADD_NODE,
+                "payload": {
+                    "node_id": "task_a",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {"description": "A"},
+                },
+            },
+            {
+                "type": ADD_NODE,
+                "payload": {
+                    "node_id": "task_b",
+                    "node_type": "task",
+                    "dependencies": ["task_a"],
+                    "metadata": {"description": "B"},
+                },
+            },
         ]
         safe_events = validator.validate_and_normalize(raw_events, "planning")
         for evt in safe_events:
@@ -106,14 +155,23 @@ class TestValidatorGraphRoundTrip:
         g = TaskGraph()
         validator = LLMOutputValidator(g)
         raw_events = [
-            {"type": ADD_NODE, "payload": {
-                "node_id": "good_task", "node_type": "task",
-                "dependencies": [], "metadata": {},
-            }},
-            {"type": ADD_NODE, "payload": {
-                # missing node_id — should be rejected
-                "node_type": "task", "dependencies": [],
-            }},
+            {
+                "type": ADD_NODE,
+                "payload": {
+                    "node_id": "good_task",
+                    "node_type": "task",
+                    "dependencies": [],
+                    "metadata": {},
+                },
+            },
+            {
+                "type": ADD_NODE,
+                "payload": {
+                    # missing node_id — should be rejected
+                    "node_type": "task",
+                    "dependencies": [],
+                },
+            },
         ]
         safe_events = validator.validate_and_normalize(raw_events, "planning")
         for evt in safe_events:
@@ -123,6 +181,7 @@ class TestValidatorGraphRoundTrip:
 
 
 # ── Orchestrator → execution flow ─────────────────────────────────────────────
+
 
 class TestOrchestratorExecutionFlow:
     def test_single_task_runs_and_completes(self):
@@ -138,8 +197,12 @@ class TestOrchestratorExecutionFlow:
         mock_planner.propose.return_value = []
 
         orch = Orchestrator(
-            graph=g, planner=mock_planner, executor=mock_executor,
-            quality_gate=mock_gate, event_queue=EventQueue(), max_workers=1,
+            graph=g,
+            planner=mock_planner,
+            executor=mock_executor,
+            quality_gate=mock_gate,
+            event_queue=EventQueue(),
+            max_workers=1,
         )
         orch.start()
 
@@ -159,11 +222,13 @@ class TestOrchestratorExecutionFlow:
         add_node(g, "retry_task")
 
         call_count = [0]
+
         def execute_fn(node, snapshot, reporter=None):
             call_count[0] += 1
             return "output"
 
         verify_call_count = [0]
+
         def verify_fn(node, result, snapshot):
             verify_call_count[0] += 1
             if verify_call_count[0] < 2:
@@ -179,8 +244,12 @@ class TestOrchestratorExecutionFlow:
         mock_planner.propose.return_value = []
 
         orch = Orchestrator(
-            graph=g, planner=mock_planner, executor=mock_executor,
-            quality_gate=mock_gate, event_queue=EventQueue(), max_workers=1,
+            graph=g,
+            planner=mock_planner,
+            executor=mock_executor,
+            quality_gate=mock_gate,
+            event_queue=EventQueue(),
+            max_workers=1,
         )
         orch.start()
 
@@ -218,14 +287,18 @@ class TestOrchestratorExecutionFlow:
         mock_planner.propose.return_value = []
 
         orch = Orchestrator(
-            graph=g, planner=mock_planner, executor=mock_executor,
-            quality_gate=mock_gate, event_queue=EventQueue(), max_workers=2,
+            graph=g,
+            planner=mock_planner,
+            executor=mock_executor,
+            quality_gate=mock_gate,
+            event_queue=EventQueue(),
+            max_workers=2,
         )
         orch.start()
 
         deadline = time.time() + 8.0
         while time.time() < deadline:
-            if (g.nodes.get("task_b") and g.nodes["task_b"].status == "done"):
+            if g.nodes.get("task_b") and g.nodes["task_b"].status == "done":
                 break
             time.sleep(0.05)
 
@@ -235,11 +308,16 @@ class TestOrchestratorExecutionFlow:
 
 # ── Full planning + execution stub ────────────────────────────────────────────
 
+
 class TestPlannerExecutorStub:
     def test_planner_expands_goal_then_executor_runs_tasks(self):
         g = TaskGraph()
-        add_node(g, "my_goal", node_type="goal",
-                 metadata={"description": "achieve greatness", "expanded": False})
+        add_node(
+            g,
+            "my_goal",
+            node_type="goal",
+            metadata={"description": "achieve greatness", "expanded": False},
+        )
 
         def planner_propose(context):
             return [
@@ -251,7 +329,7 @@ class TestPlannerExecutorStub:
                         "dependencies": [],
                         "origin": "planning",
                         "metadata": {"description": "auto task"},
-                    }
+                    },
                 }
             ]
 
@@ -265,8 +343,12 @@ class TestPlannerExecutorStub:
         mock_gate.check_dependencies.return_value = None
 
         orch = Orchestrator(
-            graph=g, planner=mock_planner, executor=mock_executor,
-            quality_gate=mock_gate, event_queue=EventQueue(), max_workers=1,
+            graph=g,
+            planner=mock_planner,
+            executor=mock_executor,
+            quality_gate=mock_gate,
+            event_queue=EventQueue(),
+            max_workers=1,
         )
         # MagicMock attributes are truthy — clear the client list so
         # llm_stopped returns False and the orchestrator isn't immediately paused.
@@ -275,12 +357,13 @@ class TestPlannerExecutorStub:
 
         deadline = time.time() + 8.0
         while time.time() < deadline:
-            if "generated_task" in g.nodes and g.nodes["generated_task"].status == "done":
+            if (
+                "generated_task" in g.nodes
+                and g.nodes["generated_task"].status == "done"
+            ):
                 break
             time.sleep(0.05)
 
         orch.stop()
         assert "generated_task" in g.nodes
         assert g.nodes["generated_task"].status == "done"
-
-

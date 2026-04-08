@@ -28,15 +28,21 @@ logger = get_logger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-DATA_DIR    = Path(user_data_dir("cuddlytoddly", "3IVIS"))
+DATA_DIR = Path(user_data_dir("cuddlytoddly", "3IVIS"))
 CONFIG_PATH = DATA_DIR / "config.toml"
 
 # ── Approximate download sizes for known model size classes ───────────────────
 
 _MODEL_SIZES: dict[str, str] = {
-    "70B": "~40 GB", "72B": "~43 GB", "65B": "~35 GB",
-    "34B": "~19 GB", "13B": "~7 GB",  "8B":  "~5 GB",
-    "7B":  "~4 GB",  "3B":  "~2 GB",  "1B":  "~1 GB",
+    "70B": "~40 GB",
+    "72B": "~43 GB",
+    "65B": "~35 GB",
+    "34B": "~19 GB",
+    "13B": "~7 GB",
+    "8B": "~5 GB",
+    "7B": "~4 GB",
+    "3B": "~2 GB",
+    "1B": "~1 GB",
 }
 
 # ── Default config template ───────────────────────────────────────────────────
@@ -185,6 +191,7 @@ _VALID_BACKENDS = {"llamacpp", "claude", "openai"}
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+
 def load_config() -> dict:
     """
     Load ``DATA_DIR/config.toml``, creating it with smart defaults if absent.
@@ -204,8 +211,9 @@ def load_config() -> dict:
         content = _DEFAULT_CONFIG_TEMPLATE.replace('"{backend}"', f'"{backend}"')
         CONFIG_PATH.write_text(content, encoding="utf-8")
         _print_first_run_notice(backend)
-        logger.info("[CONFIG] Created default config at %s (backend=%s)",
-                    CONFIG_PATH, backend)
+        logger.info(
+            "[CONFIG] Created default config at %s (backend=%s)", CONFIG_PATH, backend
+        )
     else:
         logger.info("[CONFIG] Loading %s", CONFIG_PATH)
 
@@ -249,8 +257,7 @@ def resolve_model_path(cfg: dict) -> str:
     candidates.append(llama_cache / filename)
 
     hf_hub = (
-        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-        / "hub"
+        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
     )
     if hf_hub.exists():
         candidates.extend(
@@ -266,7 +273,7 @@ def resolve_model_path(cfg: dict) -> str:
             return str(candidate)
 
     size_hint = _model_size_hint(filename)
-    size_note  = f"  (approx. {size_hint} download)\n" if size_hint else ""
+    size_note = f"  (approx. {size_hint} download)\n" if size_hint else ""
 
     raise FileNotFoundError(
         f"\nModel '{filename}' not found in any standard location.\n"
@@ -278,7 +285,7 @@ def resolve_model_path(cfg: dict) -> str:
         f"Option 2 — point to an existing file:\n"
         f"  export CUDDLYTODDLY_MODEL_PATH=/path/to/{filename}\n\n"
         f"Option 3 — change the filename in the config:\n"
-        f"  {CONFIG_PATH}  →  [llamacpp] model_filename = \"your-model.gguf\"\n"
+        f'  {CONFIG_PATH}  →  [llamacpp] model_filename = "your-model.gguf"\n'
     )
 
 
@@ -294,115 +301,133 @@ def preflight_check(cfg: dict) -> list[dict]:
     Checks are fast: no model loading, no API calls.
     """
     issues: list[dict] = []
-    backend   = cfg.get("llm", {}).get("backend", "")
+    backend = cfg.get("llm", {}).get("backend", "")
     llama_cfg = cfg.get("llamacpp", {})
 
     # ── Cross-backend: API key present but wrong backend ──────────────────────
     if backend == "llamacpp":
         if os.environ.get("ANTHROPIC_API_KEY"):
-            issues.append({
-                "level":   "warning",
-                "message": "ANTHROPIC_API_KEY is set but the backend is 'llamacpp'.",
-                "fix":     f'To use Claude, set backend = "claude" in {CONFIG_PATH}',
-            })
+            issues.append(
+                {
+                    "level": "warning",
+                    "message": "ANTHROPIC_API_KEY is set but the backend is 'llamacpp'.",
+                    "fix": f'To use Claude, set backend = "claude" in {CONFIG_PATH}',
+                }
+            )
         elif os.environ.get("OPENAI_API_KEY"):
-            issues.append({
-                "level":   "warning",
-                "message": "OPENAI_API_KEY is set but the backend is 'llamacpp'.",
-                "fix":     f'To use OpenAI, set backend = "openai" in {CONFIG_PATH}',
-            })
+            issues.append(
+                {
+                    "level": "warning",
+                    "message": "OPENAI_API_KEY is set but the backend is 'llamacpp'.",
+                    "fix": f'To use OpenAI, set backend = "openai" in {CONFIG_PATH}',
+                }
+            )
 
     # ── llamacpp checks ───────────────────────────────────────────────────────
     if backend == "llamacpp":
         llama_installed = False
         try:
             import llama_cpp  # noqa: F401
+
             llama_installed = True
         except ImportError:
-            issues.append({
-                "level":   "error",
-                "message": "llama-cpp-python is not installed.",
-                "fix":     "pip install cuddlytoddly[local]  "
-                           "(add GPU build flags for acceleration — see docs)",
-            })
+            issues.append(
+                {
+                    "level": "error",
+                    "message": "llama-cpp-python is not installed.",
+                    "fix": "pip install cuddlytoddly[local]  "
+                    "(add GPU build flags for acceleration — see docs)",
+                }
+            )
 
         if llama_installed:
             n_gpu = llama_cfg.get("n_gpu_layers", -1)
             if n_gpu != 0 and not _llama_has_gpu_support():
-                filename  = llama_cfg.get("model_filename", "")
+                filename = llama_cfg.get("model_filename", "")
                 size_hint = _model_size_hint(filename)
                 size_note = f" ({size_hint})" if size_hint else ""
-                issues.append({
-                    "level":   "warning",
-                    "message": (
-                        f"llama-cpp-python has no GPU support — "
-                        f"'{filename}'{size_note} will run on CPU and be very slow."
-                    ),
-                    "fix": (
-                        "macOS:  CMAKE_ARGS=\"-DGGML_METAL=on\" "
-                        "pip install llama-cpp-python --force-reinstall --no-cache-dir  |  "
-                        "NVIDIA:  CMAKE_ARGS=\"-DGGML_CUDA=on\" ..."
-                    ),
-                })
+                issues.append(
+                    {
+                        "level": "warning",
+                        "message": (
+                            f"llama-cpp-python has no GPU support — "
+                            f"'{filename}'{size_note} will run on CPU and be very slow."
+                        ),
+                        "fix": (
+                            'macOS:  CMAKE_ARGS="-DGGML_METAL=on" '
+                            "pip install llama-cpp-python --force-reinstall --no-cache-dir  |  "
+                            'NVIDIA:  CMAKE_ARGS="-DGGML_CUDA=on" ...'
+                        ),
+                    }
+                )
 
         try:
             resolve_model_path(cfg)
         except FileNotFoundError:
-            filename  = llama_cfg.get("model_filename", "model.gguf")
-            own_dir   = DATA_DIR / "models"
+            filename = llama_cfg.get("model_filename", "model.gguf")
+            own_dir = DATA_DIR / "models"
             size_hint = _model_size_hint(filename)
             size_note = f" ({size_hint} download)" if size_hint else ""
-            issues.append({
-                "level":   "error",
-                "message": f"Model file '{filename}' not found{size_note}.",
-                "fix": (
-                    f"huggingface-cli download bartowski/Llama-3.3-70B-Instruct-GGUF"
-                    f" {filename} --local-dir {own_dir}"
-                ),
-            })
+            issues.append(
+                {
+                    "level": "error",
+                    "message": f"Model file '{filename}' not found{size_note}.",
+                    "fix": (
+                        f"huggingface-cli download bartowski/Llama-3.3-70B-Instruct-GGUF"
+                        f" {filename} --local-dir {own_dir}"
+                    ),
+                }
+            )
 
     # ── claude checks ─────────────────────────────────────────────────────────
     elif backend == "claude":
         try:
             import anthropic  # noqa: F401
         except ImportError:
-            issues.append({
-                "level":   "error",
-                "message": "anthropic package is not installed.",
-                "fix":     "pip install cuddlytoddly[claude]",
-            })
+            issues.append(
+                {
+                    "level": "error",
+                    "message": "anthropic package is not installed.",
+                    "fix": "pip install cuddlytoddly[claude]",
+                }
+            )
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            issues.append({
-                "level":   "error",
-                "message": "ANTHROPIC_API_KEY environment variable is not set.",
-                "fix":     "export ANTHROPIC_API_KEY=sk-ant-...",
-            })
+            issues.append(
+                {
+                    "level": "error",
+                    "message": "ANTHROPIC_API_KEY environment variable is not set.",
+                    "fix": "export ANTHROPIC_API_KEY=sk-ant-...",
+                }
+            )
 
     # ── openai checks ─────────────────────────────────────────────────────────
     elif backend == "openai":
         try:
             import openai  # noqa: F401
         except ImportError:
-            issues.append({
-                "level":   "error",
-                "message": "openai package is not installed.",
-                "fix":     "pip install cuddlytoddly[openai]",
-            })
+            issues.append(
+                {
+                    "level": "error",
+                    "message": "openai package is not installed.",
+                    "fix": "pip install cuddlytoddly[openai]",
+                }
+            )
 
         has_key = bool(
-            os.environ.get("OPENAI_API_KEY")
-            or cfg.get("openai", {}).get("api_key")
+            os.environ.get("OPENAI_API_KEY") or cfg.get("openai", {}).get("api_key")
         )
         if not has_key:
-            issues.append({
-                "level":   "error",
-                "message": "No OpenAI API key found.",
-                "fix": (
-                    "export OPENAI_API_KEY=sk-...  "
-                    f"(or set api_key under [openai] in {CONFIG_PATH})"
-                ),
-            })
+            issues.append(
+                {
+                    "level": "error",
+                    "message": "No OpenAI API key found.",
+                    "fix": (
+                        "export OPENAI_API_KEY=sk-...  "
+                        f"(or set api_key under [openai] in {CONFIG_PATH})"
+                    ),
+                }
+            )
 
     return issues
 
@@ -412,14 +437,15 @@ def preflight_check(cfg: dict) -> list[dict]:
 # sensible defaults (so configs written before these sections were added
 # continue to work without requiring a manual edit).
 
+
 def get_executor_cfg(cfg: dict) -> dict:
     """Return the [executor] section with defaults filled in."""
     c = cfg.get("executor", {})
     return {
         "max_inline_result_chars": c.get("max_inline_result_chars", 3000),
-        "max_total_input_chars":   c.get("max_total_input_chars",   3000),
-        "max_tool_result_chars":   c.get("max_tool_result_chars",   2000),
-        "max_history_entries":     c.get("max_history_entries",     3),
+        "max_total_input_chars": c.get("max_total_input_chars", 3000),
+        "max_tool_result_chars": c.get("max_tool_result_chars", 2000),
+        "max_history_entries": c.get("max_history_entries", 3),
     }
 
 
@@ -429,7 +455,7 @@ def get_planner_cfg(cfg: dict) -> dict:
     return {
         "min_tasks_per_goal": c.get("min_tasks_per_goal", 3),
         "max_tasks_per_goal": c.get("max_tasks_per_goal", 8),
-        "scrutinize_plan":    c.get("scrutinize_plan",    False),
+        "scrutinize_plan": c.get("scrutinize_plan", False),
     }
 
 
@@ -437,11 +463,11 @@ def get_orchestrator_cfg(cfg: dict) -> dict:
     """Return the [orchestrator] section with defaults filled in."""
     c = cfg.get("orchestrator", {})
     return {
-        "max_workers":           c.get("max_workers",           1),
-        "max_turns":             c.get("max_turns",             5),
+        "max_workers": c.get("max_workers", 1),
+        "max_turns": c.get("max_turns", 5),
         "max_gap_fill_attempts": c.get("max_gap_fill_attempts", 2),
-        "max_retries":           c.get("max_retries",           5),
-        "idle_sleep":            c.get("idle_sleep",            0.5),
+        "max_retries": c.get("max_retries", 5),
+        "idle_sleep": c.get("idle_sleep", 0.5),
     }
 
 
@@ -449,14 +475,15 @@ def get_file_llm_cfg(cfg: dict) -> dict:
     """Return the [file_llm] section with defaults filled in."""
     c = cfg.get("file_llm", {})
     return {
-        "poll_interval":         c.get("poll_interval",         0.5),
-        "timeout":               c.get("timeout",               300),
+        "poll_interval": c.get("poll_interval", 0.5),
+        "timeout": c.get("timeout", 300),
         "progress_log_interval": c.get("progress_log_interval", 2),
-        "cache_enabled":         c.get("cache_enabled",         True),
+        "cache_enabled": c.get("cache_enabled", True),
     }
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
 
 def _detect_backend() -> str:
     """Return the best default backend based on set environment variables."""
@@ -478,6 +505,7 @@ def _model_size_hint(filename: str) -> str:
 def _llama_has_gpu_support() -> bool:
     try:
         from llama_cpp import llama_supports_gpu_offload
+
         return bool(llama_supports_gpu_offload())
     except (ImportError, AttributeError):
         return False
@@ -531,5 +559,3 @@ def _validate(cfg: dict) -> None:
             f"Choose one of: {', '.join(sorted(_VALID_BACKENDS))}.\n"
             f"Edit {CONFIG_PATH} to fix this."
         )
-
-

@@ -54,12 +54,13 @@ logger = get_logger(__name__)
 # Inline ToolRegistry (mirrors engine/tools.py to avoid a circular import)
 # ---------------------------------------------------------------------------
 
+
 class Tool:
     def __init__(self, name: str, description: str, input_schema: dict, fn):
-        self.name         = name
-        self.description  = description
+        self.name = name
+        self.description = description
         self.input_schema = input_schema
-        self._fn          = fn
+        self._fn = fn
 
     def run(self, input_data: dict) -> Any:
         return self._fn(input_data)
@@ -83,6 +84,7 @@ class ToolRegistry:
 # MCP Adapter
 # ---------------------------------------------------------------------------
 
+
 class MCPAdapter:
     """
     Connects to an MCP server, discovers its tools, and exposes them
@@ -100,8 +102,9 @@ class MCPAdapter:
     # ── Constructors ──────────────────────────────────────────────────────────
 
     @classmethod
-    def from_stdio(cls, command: str, args: list[str],
-                   env: dict | None = None) -> "MCPAdapter":
+    def from_stdio(
+        cls, command: str, args: list[str], env: dict | None = None
+    ) -> "MCPAdapter":
         """
         Create an adapter for a stdio MCP server (the most common kind).
 
@@ -135,7 +138,7 @@ class MCPAdapter:
 
         # Discover available tools synchronously
         tool_defs = asyncio.run(self._list_tools())
-        registry  = ToolRegistry()
+        registry = ToolRegistry()
 
         for t in tool_defs:
             # Capture t.name in the closure correctly
@@ -144,22 +147,26 @@ class MCPAdapter:
             def make_fn(name):
                 def call_tool(input_data: dict) -> str:
                     return asyncio.run(self._call_tool(name, input_data))
+
                 return call_tool
 
-            registry.register(Tool(
-                name         = tool_name,
-                description  = t.description or "",
-                input_schema = t.inputSchema if hasattr(t, "inputSchema") else {},
-                fn           = make_fn(tool_name),
-            ))
+            registry.register(
+                Tool(
+                    name=tool_name,
+                    description=t.description or "",
+                    input_schema=t.inputSchema if hasattr(t, "inputSchema") else {},
+                    fn=make_fn(tool_name),
+                )
+            )
 
-        logger.info("[MCP] Registry built with %d tool(s) from server", len(registry.tools))
+        logger.info(
+            "[MCP] Registry built with %d tool(s) from server", len(registry.tools)
+        )
         return registry
 
     # ── Async helpers ─────────────────────────────────────────────────────────
 
     async def _list_tools(self) -> list:
-
 
         async with stdio_client(self._params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -168,7 +175,6 @@ class MCPAdapter:
                 return response.tools
 
     async def _call_tool(self, name: str, arguments: dict) -> str:
-
 
         async with stdio_client(self._params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -199,4 +205,3 @@ class MCPAdapter:
             for tool in sub.tools.values():
                 merged.register(tool)
         return merged
-
