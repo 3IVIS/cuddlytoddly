@@ -30,8 +30,6 @@ TOOLS = {
     "list_dir": {
         "description": "List files and directories at a path",
         "input_schema": {"path": "string"},
-        "fn": lambda args: "\n".join(
-            str(p) for p in sorted(Path(args["path"]).iterdir())
-        ),
+        "fn": lambda args: "\n".join(str(p) for p in sorted(Path(args["path"]).iterdir())),
     },
 }

@@ -80,9 +80,7 @@ class QualityGate:
             if _is_file_output(output):
                 path = _output_name(output)
                 if not self._file_exists(path):
-                    return False, (
-                        f"declared file output '{path}' does not exist on disk"
-                    )
+                    return False, (f"declared file output '{path}' does not exist on disk")
 
         # ── Collect upstream context for the LLM verifier ────────────────────
         unknown_fields_context = self._collect_unknown_fields(node, snapshot)
@@ -246,8 +244,7 @@ class QualityGate:
         step_nodes = [
             n
             for nid, n in snapshot.items()
-            if nid.startswith(node.id + "__step_")
-            and n.metadata.get("step_type") == "tool_call"
+            if nid.startswith(node.id + "__step_") and n.metadata.get("step_type") == "tool_call"
         ]
         if not step_nodes:
             return ""
@@ -292,9 +289,7 @@ class QualityGate:
             return ""
 
         missing_text = (
-            ", ".join(broadened_for_missing)
-            if broadened_for_missing
-            else "unspecified fields"
+            ", ".join(broadened_for_missing) if broadened_for_missing else "unspecified fields"
         )
         reason_text = f" Reason: {broadened_reason}" if broadened_reason else ""
         return (

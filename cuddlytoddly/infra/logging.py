@@ -66,9 +66,7 @@ def _rotate_existing_log(path: Path) -> None:
             try:
                 numbered.rename(Path(str(base_archive) + f".{n}"))
             except OSError as exc:
-                logging.getLogger("dag").warning(
-                    "[LOGGING] Could not rotate %s: %s", numbered, exc
-                )
+                logging.getLogger("dag").warning("[LOGGING] Could not rotate %s: %s", numbered, exc)
 
     # Archive the main log file last.
     try:

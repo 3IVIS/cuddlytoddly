@@ -100,10 +100,7 @@ def _web_search(args: dict) -> str:
     try:
         from duckduckgo_search import DDGS
     except ImportError:
-        return (
-            "ERROR: duckduckgo-search is not installed. "
-            "Run: pip install duckduckgo-search"
-        )
+        return "ERROR: duckduckgo-search is not installed. Run: pip install duckduckgo-search"
 
     import time
 
@@ -128,9 +125,7 @@ def _web_search(args: dict) -> str:
                     attempt + 1,
                 )
                 return "\n\n---\n\n".join(results)
-            logger.warning(
-                "[WEB_SEARCH] No results on attempt %d for: %r", attempt + 1, query
-            )
+            logger.warning("[WEB_SEARCH] No results on attempt %d for: %r", attempt + 1, query)
             last_error = f"No results found for: {query}"
         except Exception as e:
             logger.error("[WEB_SEARCH] Attempt %d failed: %s", attempt + 1, e)
@@ -170,9 +165,7 @@ def _fetch_url(args: dict) -> str:
                 from bs4 import BeautifulSoup
 
                 soup = BeautifulSoup(resp.text, "html.parser")
-                for tag in soup(
-                    ["script", "style", "nav", "footer", "header", "aside", "form"]
-                ):
+                for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
                     tag.decompose()
                 text = soup.get_text(separator="\n")
             except ImportError:
@@ -183,9 +176,7 @@ def _fetch_url(args: dict) -> str:
         text = text.strip()
 
         if len(text) > _MAX_FETCH_CHARS:
-            text = (
-                text[:_MAX_FETCH_CHARS] + f"\n\n…[truncated — {len(text)} chars total]"
-            )
+            text = text[:_MAX_FETCH_CHARS] + f"\n\n…[truncated — {len(text)} chars total]"
 
         logger.info("[FETCH_URL] %s → %d chars", url, len(text))
         return text

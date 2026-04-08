@@ -231,9 +231,7 @@ class TestCreateLLMClient:
         assert llm.provider == "claude"
 
     def test_backend_case_insensitive(self):
-        llm = create_llm_client(
-            "FILE", prompt_log_file="/tmp/p.txt", response_file="/tmp/r.txt"
-        )
+        llm = create_llm_client("FILE", prompt_log_file="/tmp/p.txt", response_file="/tmp/r.txt")
         assert isinstance(llm, FileBasedLLM)
 
 

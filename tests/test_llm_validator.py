@@ -101,9 +101,7 @@ class TestValidatorRejection:
 
     def test_rejects_node_missing_node_id(self):
         v, _ = make_validator()
-        events = [
-            {"type": ADD_NODE, "payload": {"node_type": "task", "dependencies": []}}
-        ]
+        events = [{"type": ADD_NODE, "payload": {"node_type": "task", "dependencies": []}}]
         result = v.validate_and_normalize(events, "planning")
         assert result == []
 
@@ -131,8 +129,7 @@ class TestValidatorRejection:
         events = [node_event("existing")]
         result = v.validate_and_normalize(events, "planning")
         assert not any(
-            e["type"] == ADD_NODE and e["payload"]["node_id"] == "existing"
-            for e in result
+            e["type"] == ADD_NODE and e["payload"]["node_id"] == "existing" for e in result
         )
 
     def test_rejects_node_with_unresolvable_dep(self):

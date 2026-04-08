@@ -42,9 +42,7 @@ class TestCrashAndResume:
                 ),
                 event_log=log,
             )
-        apply_event(
-            g, Event(MARK_DONE, {"node_id": "a", "result": "a done"}), event_log=log
-        )
+        apply_event(g, Event(MARK_DONE, {"node_id": "a", "result": "a done"}), event_log=log)
 
         restored = rebuild_graph_from_log(log)
         assert set(restored.nodes.keys()) == {"a", "b", "c"}
@@ -69,12 +67,8 @@ class TestCrashAndResume:
                 ),
                 event_log=log,
             )
-        apply_event(
-            g, Event(MARK_DONE, {"node_id": "t1", "result": "done"}), event_log=log
-        )
-        apply_event(
-            g, Event(MARK_DONE, {"node_id": "t2", "result": "done"}), event_log=log
-        )
+        apply_event(g, Event(MARK_DONE, {"node_id": "t1", "result": "done"}), event_log=log)
+        apply_event(g, Event(MARK_DONE, {"node_id": "t2", "result": "done"}), event_log=log)
 
         restored = rebuild_graph_from_log(log)
         assert restored.nodes["t1"].status == "done"
@@ -357,10 +351,7 @@ class TestPlannerExecutorStub:
 
         deadline = time.time() + 8.0
         while time.time() < deadline:
-            if (
-                "generated_task" in g.nodes
-                and g.nodes["generated_task"].status == "done"
-            ):
+            if "generated_task" in g.nodes and g.nodes["generated_task"].status == "done":
                 break
             time.sleep(0.05)
 

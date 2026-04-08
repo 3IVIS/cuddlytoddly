@@ -89,9 +89,7 @@ def get_git_dag_text():
         capture_output=True,
         text=True,
     )
-    tip_branches = [
-        b.strip().lstrip("* ") for b in result.stdout.splitlines() if b.strip()
-    ]
+    tip_branches = [b.strip().lstrip("* ") for b in result.stdout.splitlines() if b.strip()]
 
     if not tip_branches:
         tip_branches = ["master"]
@@ -278,8 +276,7 @@ def strip_ansi(line):
 def map_nodes_to_lines(git_lines, snapshot):
     # Pre-compute the hash suffix for every node_id
     hash_to_node_id = {
-        "#" + hashlib.sha256(node_id.encode()).hexdigest()[:6]: node_id
-        for node_id in snapshot
+        "#" + hashlib.sha256(node_id.encode()).hexdigest()[:6]: node_id for node_id in snapshot
     }
 
     node_map = {}
@@ -383,16 +380,8 @@ def trace_branch_path_recursive(
             ncol = col + dcol
             if 0 <= ncol < len(next_line):
                 if (
-                    (
-                        dcol == 1
-                        and char_matrix[(1, 1)] == "/"
-                        and char_matrix[(0, 0)] == "/"
-                    )
-                    or (
-                        dcol == 1
-                        and char_matrix[(1, 1)] == "/"
-                        and char_matrix[(0, 0)] == "*"
-                    )
+                    (dcol == 1 and char_matrix[(1, 1)] == "/" and char_matrix[(0, 0)] == "/")
+                    or (dcol == 1 and char_matrix[(1, 1)] == "/" and char_matrix[(0, 0)] == "*")
                     or (
                         dcol == 1
                         and char_matrix[(1, 1)] == "\\"
@@ -426,47 +415,19 @@ def trace_branch_path_recursive(
                         and char_matrix[(0, 0)] == "*"
                         and char_matrix[(1, 1)] == "/"
                     )
-                    or (
-                        dcol == 1
-                        and char_matrix[(1, 1)] == "*"
-                        and char_matrix[(0, 0)] == "/"
-                    )
-                    or (
-                        dcol == 0
-                        and char_matrix[(1, 0)] == "|"
-                        and char_matrix[(0, 0)] == "*"
-                    )
-                    or (
-                        dcol == 0
-                        and char_matrix[(1, 0)] == "|"
-                        and char_matrix[(0, 0)] == "/"
-                    )
-                    or (
-                        dcol == 0
-                        and char_matrix[(1, 0)] == "|"
-                        and char_matrix[(0, 0)] == "\\"
-                    )
-                    or (
-                        dcol == 0
-                        and char_matrix[(1, 0)] == "|"
-                        and char_matrix[(0, 0)] == "|"
-                    )
-                    or (
-                        dcol == 0
-                        and char_matrix[(1, 0)] == "\\"
-                        and char_matrix[(0, 0)] == "|"
-                    )
+                    or (dcol == 1 and char_matrix[(1, 1)] == "*" and char_matrix[(0, 0)] == "/")
+                    or (dcol == 0 and char_matrix[(1, 0)] == "|" and char_matrix[(0, 0)] == "*")
+                    or (dcol == 0 and char_matrix[(1, 0)] == "|" and char_matrix[(0, 0)] == "/")
+                    or (dcol == 0 and char_matrix[(1, 0)] == "|" and char_matrix[(0, 0)] == "\\")
+                    or (dcol == 0 and char_matrix[(1, 0)] == "|" and char_matrix[(0, 0)] == "|")
+                    or (dcol == 0 and char_matrix[(1, 0)] == "\\" and char_matrix[(0, 0)] == "|")
                     or (
                         dcol == 0
                         and char_matrix[(1, 0)] == "\\"
                         and char_matrix[(0, 0)] == "/"
                         and char_matrix[(1, 1)] != "/"
                     )
-                    or (
-                        dcol == 0
-                        and char_matrix[(1, 0)] == "*"
-                        and char_matrix[(0, 0)] == "|"
-                    )
+                    or (dcol == 0 and char_matrix[(1, 0)] == "*" and char_matrix[(0, 0)] == "|")
                     or (
                         dcol == -1
                         and char_matrix[(1, -1)] == "|"
@@ -474,16 +435,8 @@ def trace_branch_path_recursive(
                         and char_matrix[(1, 0)] == " "
                         and char_matrix[(1, -2)] != "\\"
                     )
-                    or (
-                        dcol == -1
-                        and char_matrix[(1, -1)] == "\\"
-                        and char_matrix[(0, 0)] == "\\"
-                    )
-                    or (
-                        dcol == -1
-                        and char_matrix[(1, -1)] == "*"
-                        and char_matrix[(0, 0)] == "\\"
-                    )
+                    or (dcol == -1 and char_matrix[(1, -1)] == "\\" and char_matrix[(0, 0)] == "\\")
+                    or (dcol == -1 and char_matrix[(1, -1)] == "*" and char_matrix[(0, 0)] == "\\")
                     or (
                         dcol == -1
                         and char_matrix[(1, -1)] == "\\"
@@ -496,16 +449,8 @@ def trace_branch_path_recursive(
                         and char_matrix[(0, 0)] == "\\"
                         and char_matrix[(1, -2)] != "\\"
                     )
-                    or (
-                        dcol == -1
-                        and char_matrix[(1, -1)] == "\\"
-                        and char_matrix[(0, 0)] == "*"
-                    )
-                    or (
-                        dcol == -1
-                        and char_matrix[(1, -1)] == "*"
-                        and char_matrix[(0, 0)] == "\\"
-                    )
+                    or (dcol == -1 and char_matrix[(1, -1)] == "\\" and char_matrix[(0, 0)] == "*")
+                    or (dcol == -1 and char_matrix[(1, -1)] == "*" and char_matrix[(0, 0)] == "\\")
                 ):
                     subpath_positions += [
                         trace_branch_path_recursive(
@@ -535,9 +480,7 @@ def trace_branch_path_recursive(
                     next_line[col + dcol] if (0 <= col + dcol < len(next_line)) else ""
                 )
                 char_matrix[(1, dcol - 1)] = (
-                    next_line[col + dcol - 1]
-                    if (0 <= col + dcol - 1 < len(next_line))
-                    else ""
+                    next_line[col + dcol - 1] if (0 <= col + dcol - 1 < len(next_line)) else ""
                 )
 
             ncol = col + dcol
@@ -743,9 +686,7 @@ class Modal:
         row = 0
         # Title
         try:
-            stdscr.addstr(
-                row, panel_x, f" {self.title} ".center(panel_w, "─"), curses.A_BOLD
-            )
+            stdscr.addstr(row, panel_x, f" {self.title} ".center(panel_w, "─"), curses.A_BOLD)
         except curses.error:
             pass
         row += 2
@@ -764,9 +705,7 @@ class Modal:
             val_w = w - val_x - 1
 
             # Wrap the value across multiple lines
-            wrapped_val = textwrap.wrap(
-                field.value if field.value else " ", width=val_w
-            ) or [" "]
+            wrapped_val = textwrap.wrap(field.value if field.value else " ", width=val_w) or [" "]
             for j, wline in enumerate(wrapped_val):
                 try:
                     stdscr.addstr(row + j, val_x, wline.ljust(val_w), attr)
@@ -795,9 +734,7 @@ class Modal:
                         item_attr = curses.A_REVERSE if is_sel else curses.A_DIM
                         prefix = "▶ " if is_sel else "  "
                         try:
-                            stdscr.addstr(
-                                row + j, val_x, (prefix + m)[:val_w], item_attr
-                            )
+                            stdscr.addstr(row + j, val_x, (prefix + m)[:val_w], item_attr)
                         except curses.error:
                             pass
                     row += len(matches)
@@ -845,9 +782,7 @@ def export_results_to_markdown(snapshot, run_dir):
     order = topo_sort(snapshot)
 
     goal_nodes = [
-        snapshot[nid]
-        for nid in order
-        if snapshot.get(nid) and snapshot[nid].node_type == "goal"
+        snapshot[nid] for nid in order if snapshot.get(nid) and snapshot[nid].node_type == "goal"
     ]
     title = (
         goal_nodes[0].metadata.get("description", goal_nodes[0].id)
@@ -869,31 +804,21 @@ def export_results_to_markdown(snapshot, run_dir):
     ]
     for nid in order:
         node = snapshot.get(nid)
-        if (
-            not node
-            or node.metadata.get("hidden")
-            or node.node_type == "execution_step"
-        ):
+        if not node or node.metadata.get("hidden") or node.node_type == "execution_step":
             continue
         lines.append(f"| {nid} | {node.node_type} | {node.status} |")
     lines += ["", "---", "", "## Results", ""]
 
     for nid in order:
         node = snapshot.get(nid)
-        if (
-            not node
-            or node.node_type == "execution_step"
-            or node.metadata.get("hidden")
-        ):
+        if not node or node.node_type == "execution_step" or node.metadata.get("hidden"):
             continue
         desc = node.metadata.get("description", "")
         lines.append(f"### {nid}")
         if desc and desc != nid:
             lines += [f"*{desc}*", ""]
         deps = ", ".join(sorted(node.dependencies)) or "none"
-        lines.append(
-            f"**Type:** {node.node_type} | **Status:** {node.status} | **Deps:** {deps}"
-        )
+        lines.append(f"**Type:** {node.node_type} | **Status:** {node.status} | **Deps:** {deps}")
         lines.append("")
         req_input = node.metadata.get("required_input")
         output = node.metadata.get("output")
@@ -931,15 +856,9 @@ def open_add_modal(snapshot, event_queue, current_node, set_modal):
             set_modal(None)
             return
 
-        deps = [
-            d.strip()
-            for d in deps_raw.split(",")
-            if d.strip() and d.strip() in snapshot
-        ]
+        deps = [d.strip() for d in deps_raw.split(",") if d.strip() and d.strip() in snapshot]
         dependents = [
-            d.strip()
-            for d in dependents_raw.split(",")
-            if d.strip() and d.strip() in snapshot
+            d.strip() for d in dependents_raw.split(",") if d.strip() and d.strip() in snapshot
         ]
 
         event_queue.put(
@@ -978,9 +897,7 @@ def open_add_modal(snapshot, event_queue, current_node, set_modal):
                 ModalField("ID", value=""),
                 ModalField("Description", value=""),
                 ModalField("Type", value="task", completions=["task", "goal"]),
-                ModalField(
-                    "Dependencies", value=current_node or "", completions=node_ids
-                ),
+                ModalField("Dependencies", value=current_node or "", completions=node_ids),
                 ModalField("Dependents", value="", completions=node_ids),
             ],
             on_submit=on_submit,
@@ -1121,9 +1038,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
             if d.strip() and d.strip() in snapshot and d.strip() != current_node
         ]
         new_dependents_set = set(new_dependents)
-        old_dependents = {
-            nid for nid, n in snapshot.items() if current_node in n.dependencies
-        }
+        old_dependents = {nid for nid, n in snapshot.items() if current_node in n.dependencies}
 
         event_queue.put(
             Event(
@@ -1247,9 +1162,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
                 )
             )
             for child in node.children:
-                event_queue.put(
-                    Event(ADD_DEPENDENCY, {"node_id": child, "depends_on": new_id})
-                )
+                event_queue.put(Event(ADD_DEPENDENCY, {"node_id": child, "depends_on": new_id}))
                 event_queue.put(
                     Event(
                         REMOVE_DEPENDENCY,
@@ -1268,9 +1181,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal):
                 ModalField("ID", value=current_node),
                 ModalField("Description", value=node.metadata.get("description", "")),
                 ModalField("Dependencies", value=current_deps, completions=node_ids),
-                ModalField(
-                    "Dependents", value=current_dependents, completions=node_ids
-                ),
+                ModalField("Dependents", value=current_dependents, completions=node_ids),
                 ModalField(
                     "Status",
                     value=node.status,
@@ -1433,9 +1344,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
             logger.error("[UI LOOP %d] Failed to get snapshot: %s", loop_count, e)
             snapshot = {}
 
-        logger.debug(
-            "[UI LOOP %d] Snapshot keys: %s", loop_count, list(snapshot.keys())
-        )
+        logger.debug("[UI LOOP %d] Snapshot keys: %s", loop_count, list(snapshot.keys()))
 
         version_at_rebuild_start = graph.structure_version
         exec_version_at_rebuild_start = graph.execution_version
@@ -1478,9 +1387,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                 if missing:
                     missing_frozen = frozenset(missing)
                     if missing_frozen != last_missing_nodes:
-                        logger.warning(
-                            "[UI] Nodes in snapshot but NOT in git map: %s", missing
-                        )
+                        logger.warning("[UI] Nodes in snapshot but NOT in git map: %s", missing)
                         last_missing_nodes = missing_frozen
                     # force rebuild next iteration but don't skip input
                     last_seen_version = -1
@@ -1519,9 +1426,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                 if current_node:
                     current_line = node_to_line.get(current_node)
                     current_col = (
-                        get_node_col(git_lines[current_line])
-                        if current_line is not None
-                        else 0
+                        get_node_col(git_lines[current_line]) if current_line is not None else 0
                     )
                 else:
                     current_line = None
@@ -1530,9 +1435,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                 if parent_node and current_node:
                     parent_line = node_to_line.get(parent_node)
                     parent_col = (
-                        get_node_col(git_lines[parent_line])
-                        if parent_line is not None
-                        else None
+                        get_node_col(git_lines[parent_line]) if parent_line is not None else None
                     )
                 else:
                     parent_node = None
@@ -1565,9 +1468,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                         continue
                     nt = getattr(node, "node_type", None)
                     if nt == "goal":
-                        goal_star_positions[line_idx] = get_node_col(
-                            git_lines[line_idx]
-                        )
+                        goal_star_positions[line_idx] = get_node_col(git_lines[line_idx])
                     elif nt == "execution_step":
                         step_star_positions[line_idx] = (
                             get_node_col(git_lines[line_idx]),
@@ -1621,16 +1522,11 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                             if (current_line_idx, x) in path:
                                 highlight = curses.A_REVERSE
 
-                            if (
-                                ch == "*"
-                                and goal_star_positions.get(current_line_idx) == x
-                            ):
+                            if ch == "*" and goal_star_positions.get(current_line_idx) == x:
                                 ch = "o"
 
                             if ch == "*" and current_line_idx in step_star_positions:
-                                col, hidden, failed = step_star_positions[
-                                    current_line_idx
-                                ]
+                                col, hidden, failed = step_star_positions[current_line_idx]
                                 if x == col:
                                     ch = "·" if hidden else ("✗" if failed else "◆")
 
@@ -1732,12 +1628,8 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
             if parents:
                 parent_node = parents[0]
 
-        parent_stack = ensure_path_starts_at_root(dag, parent_stack + [current_node])[
-            :-1
-        ]
-        child_stack = ensure_path_starts_at_root(
-            reverse_dag, child_stack + [current_node]
-        )[:-1]
+        parent_stack = ensure_path_starts_at_root(dag, parent_stack + [current_node])[:-1]
+        child_stack = ensure_path_starts_at_root(reverse_dag, child_stack + [current_node])[:-1]
 
         if active_modal:
             active_modal.handle_key(k)
@@ -1799,9 +1691,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
             if current_node:
                 node = snapshot.get(current_node)
                 if node and node.node_type == "clarification":
-                    open_clarification_modal(
-                        current_node, snapshot, event_queue, set_modal
-                    )
+                    open_clarification_modal(current_node, snapshot, event_queue, set_modal)
                 else:
                     open_edit_modal(current_node, snapshot, event_queue, set_modal)
 
@@ -1944,9 +1834,7 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
                     dep = snapshot.get(dep_id)
                     if dep and dep.result is not None:
                         lines.append(f"   [{dep_id}]")
-                        for wrapped_line in textwrap.wrap(
-                            str(dep.result), width=panel_w - 5
-                        ):
+                        for wrapped_line in textwrap.wrap(str(dep.result), width=panel_w - 5):
                             lines.append(f"   {wrapped_line}")
 
     # After showing the node's own result, show any visible execution steps
@@ -1961,16 +1849,8 @@ def draw_info_panel(stdscr, h, w, node_id, snapshot, selected_nodes, scroll_offs
         lines.append(" ")
         lines.append(" Execution steps:")
         for step in step_children:
-            status_icon = (
-                "✓"
-                if step.status == "done"
-                else "✗"
-                if step.status == "failed"
-                else "…"
-            )
-            lines.append(
-                f"   {status_icon} {step.metadata.get('description', step.id)}"
-            )
+            status_icon = "✓" if step.status == "done" else "✗" if step.status == "failed" else "…"
+            lines.append(f"   {status_icon} {step.metadata.get('description', step.id)}")
             attempts = step.metadata.get("attempts", [])
             if len(attempts) > 1:
                 lines.append(f"     ({len(attempts)} attempts)")
@@ -2059,9 +1939,7 @@ def run_ui(
             try:
                 orchestrator.stop_llm_calls()
             except Exception as exc:
-                logger.warning(
-                    "[UI] Could not stop orchestrator before switch: %s", exc
-                )
+                logger.warning("[UI] Could not stop orchestrator before switch: %s", exc)
 
             # Show the startup screen (runs its own curses.wrapper call).
             from cuddlytoddly.ui.curses_startup import run_startup_selection
@@ -2078,16 +1956,12 @@ def run_ui(
             try:
                 orchestrator, run_dir = restart_fn(choice, False)
             except Exception as exc:
-                logger.error(
-                    "[UI] restart_fn failed during goal switch: %s", exc, exc_info=True
-                )
+                logger.error("[UI] restart_fn failed during goal switch: %s", exc, exc_info=True)
                 break
 
             # Reopen log file pointed at the new run directory.
             log_file.close()
-            new_log = (
-                (run_dir / "logs" / "dag.log") if run_dir else Path("logs/dag.log")
-            )
+            new_log = (run_dir / "logs" / "dag.log") if run_dir else Path("logs/dag.log")
             log_file = open(new_log, "a", encoding="utf-8", buffering=1)
             sys.stderr = log_file
 

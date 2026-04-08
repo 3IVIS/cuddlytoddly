@@ -12,9 +12,7 @@ from cuddlytoddly.infra.event_queue import EventQueue
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def make_orchestrator(
-    graph=None, planner=None, executor=None, quality_gate=None, max_workers=1
-):
+def make_orchestrator(graph=None, planner=None, executor=None, quality_gate=None, max_workers=1):
     g = graph or TaskGraph()
     mock_planner = planner or MagicMock()
     mock_planner.propose.return_value = []

@@ -92,9 +92,7 @@ class LLMOutputValidator:
                     )
                     continue
                 if node_id in dependencies:
-                    logger.warning(
-                        "[VALIDATOR] ADD_NODE %s rejected — self-dependency", node_id
-                    )
+                    logger.warning("[VALIDATOR] ADD_NODE %s rejected — self-dependency", node_id)
                     continue
                 if node_id in existing_ids:
                     logger.warning(
@@ -162,9 +160,7 @@ class LLMOutputValidator:
                 # However, a goal depending on its final completing task is valid
                 # and must be allowed through.
                 dependent_is_goal = node_id in goal_ids or node_id in {
-                    nid
-                    for nid, nd in proposed_nodes.items()
-                    if nd.get("node_type") == "goal"
+                    nid for nid, nd in proposed_nodes.items() if nd.get("node_type") == "goal"
                 }
                 if depends_on in goal_ids and not dependent_is_goal:
                     logger.warning(
@@ -177,9 +173,7 @@ class LLMOutputValidator:
                 proposed_edges.append((node_id, depends_on))
 
             else:
-                logger.warning(
-                    "[VALIDATOR] Unknown event type %r — skipping", event_type
-                )
+                logger.warning("[VALIDATOR] Unknown event type %r — skipping", event_type)
 
         # --------------------------------
         # 2️⃣ Transitive structural validation for nodes

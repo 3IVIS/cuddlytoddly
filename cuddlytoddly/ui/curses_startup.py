@@ -121,9 +121,7 @@ def _draw_preflight_banner(stdscr, issues: list[dict], start_y: int) -> int:
 def _draw_resume_tab(win, runs: list[RunInfo], sel: int, scroll: int):
     h, w = win.getmaxyx()
     y = 0
-    _safe_addstr(
-        win, y, 2, "Existing runs  (↑↓ select, Enter resume)", curses.color_pair(_C_DIM)
-    )
+    _safe_addstr(win, y, 2, "Existing runs  (↑↓ select, Enter resume)", curses.color_pair(_C_DIM))
     y += 1
     _hline(win, y)
     y += 1
@@ -139,9 +137,7 @@ def _draw_resume_tab(win, runs: list[RunInfo], sel: int, scroll: int):
         stats = f"{run.node_count} nodes  {date}  "
 
         try:
-            win.addstr(
-                y + i, 0, label[: w - len(stats) - 1].ljust(w - len(stats) - 1), attr
-            )
+            win.addstr(y + i, 0, label[: w - len(stats) - 1].ljust(w - len(stats) - 1), attr)
             win.addstr(
                 y + i,
                 w - len(stats) - 1,
@@ -166,9 +162,7 @@ def _draw_resume_tab(win, runs: list[RunInfo], sel: int, scroll: int):
 def _draw_new_goal_tab(win, text: str, cursor: int, error: str):
     h, w = win.getmaxyx()
     y = 0
-    _safe_addstr(
-        win, y, 2, "New goal  (type goal, Enter to start)", curses.color_pair(_C_DIM)
-    )
+    _safe_addstr(win, y, 2, "New goal  (type goal, Enter to start)", curses.color_pair(_C_DIM))
     y += 1
     _hline(win, y)
     y += 1
@@ -490,9 +484,7 @@ def _startup_screen(
                 elif k == curses.KEY_LEFT:
                     manual_goal_cursor = max(0, manual_goal_cursor - 1)
                 elif k == curses.KEY_RIGHT:
-                    manual_goal_cursor = min(
-                        len(manual_goal_text), manual_goal_cursor + 1
-                    )
+                    manual_goal_cursor = min(len(manual_goal_text), manual_goal_cursor + 1)
                 elif k in (10, 13):
                     manual_active_fld = 1  # move to plan
                 elif 32 <= k <= 126:
@@ -515,9 +507,7 @@ def _startup_screen(
                 elif k == curses.KEY_LEFT:
                     manual_plan_cursor = max(0, manual_plan_cursor - 1)
                 elif k == curses.KEY_RIGHT:
-                    manual_plan_cursor = min(
-                        len(manual_plan_text), manual_plan_cursor + 1
-                    )
+                    manual_plan_cursor = min(len(manual_plan_text), manual_plan_cursor + 1)
                 elif k in (10, 13):
                     manual_plan_text = (
                         manual_plan_text[:manual_plan_cursor]

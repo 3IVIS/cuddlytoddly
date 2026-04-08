@@ -187,9 +187,7 @@ class TestExecutorFileOutput:
             "task_1",
             metadata={
                 "description": "write a report",
-                "output": [
-                    {"name": filename, "type": "file", "description": "the report"}
-                ],
+                "output": [{"name": filename, "type": "file", "description": "the report"}],
                 "required_input": [],
             },
         )
@@ -200,9 +198,7 @@ class TestExecutorFileOutput:
         written = []
         turns = [
             done_response("report content"),  # turn 1: done without writing
-            tool_response(
-                "write_file", {"path": "report.md", "content": "actual content"}
-            ),
+            tool_response("write_file", {"path": "report.md", "content": "actual content"}),
             done_response("file_written: report.md\nsummary: content"),
         ]
         idx = [0]

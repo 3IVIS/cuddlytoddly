@@ -211,9 +211,7 @@ def load_config() -> dict:
         content = _DEFAULT_CONFIG_TEMPLATE.replace('"{backend}"', f'"{backend}"')
         CONFIG_PATH.write_text(content, encoding="utf-8")
         _print_first_run_notice(backend)
-        logger.info(
-            "[CONFIG] Created default config at %s (backend=%s)", CONFIG_PATH, backend
-        )
+        logger.info("[CONFIG] Created default config at %s (backend=%s)", CONFIG_PATH, backend)
     else:
         logger.info("[CONFIG] Loading %s", CONFIG_PATH)
 
@@ -237,9 +235,7 @@ def resolve_model_path(cfg: dict) -> str:
 
     Raises ``FileNotFoundError`` with a download command and size hint.
     """
-    filename = cfg.get("llamacpp", {}).get(
-        "model_filename", "Llama-3.3-70B-Instruct-Q4_K_M.gguf"
-    )
+    filename = cfg.get("llamacpp", {}).get("model_filename", "Llama-3.3-70B-Instruct-Q4_K_M.gguf")
 
     env_override = os.environ.get("CUDDLYTODDLY_MODEL_PATH")
     if env_override:
@@ -251,18 +247,12 @@ def resolve_model_path(cfg: dict) -> str:
 
     candidates: list[Path] = []
 
-    llama_cache = Path(
-        os.environ.get("LLAMA_CACHE", Path.home() / ".cache" / "llama.cpp")
-    )
+    llama_cache = Path(os.environ.get("LLAMA_CACHE", Path.home() / ".cache" / "llama.cpp"))
     candidates.append(llama_cache / filename)
 
-    hf_hub = (
-        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
-    )
+    hf_hub = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
     if hf_hub.exists():
-        candidates.extend(
-            sorted(hf_hub.glob(f"**/snapshots/**/{filename}"), reverse=True)
-        )
+        candidates.extend(sorted(hf_hub.glob(f"**/snapshots/**/{filename}"), reverse=True))
 
     own_models = DATA_DIR / "models"
     candidates.append(own_models / filename)
@@ -414,9 +404,7 @@ def preflight_check(cfg: dict) -> list[dict]:
                 }
             )
 
-        has_key = bool(
-            os.environ.get("OPENAI_API_KEY") or cfg.get("openai", {}).get("api_key")
-        )
+        has_key = bool(os.environ.get("OPENAI_API_KEY") or cfg.get("openai", {}).get("api_key"))
         if not has_key:
             issues.append(
                 {

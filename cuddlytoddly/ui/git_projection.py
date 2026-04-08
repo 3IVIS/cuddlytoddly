@@ -81,17 +81,13 @@ def commit_nodes_from_graph(snapshot):
         node = snapshot[node_id]
         parents = [
             node_to_commit[dep]
-            for dep in sorted(
-                node.dependencies
-            )  # sort for deterministic commit parent ordering
+            for dep in sorted(node.dependencies)  # sort for deterministic commit parent ordering
             if dep in node_to_commit
         ]
         file_path = repo_dir / f"{node_id}.txt"
         file_path.write_text(f"This is node {node_id}\nStatus: {node.status}\n")
         repo.index.add([str(file_path.relative_to(REPO_PATH))])
-        label = truncate_label(
-            node.metadata.get("description") or node_id, node_id=node_id
-        )
+        label = truncate_label(node.metadata.get("description") or node_id, node_id=node_id)
         try:
             parent_commits = [repo.commit(p) for p in parents]
             commit_obj = repo.index.commit(
@@ -132,9 +128,7 @@ def commit_node_incremental(node_id, node, snapshot):
 
     # 1. Update the physical file content
     file_path.write_text(
-        f"This is node {node_id}\n"
-        f"Dependencies: {list(node.dependencies)}\n"
-        f"Status: {node.status}\n"
+        f"This is node {node_id}\nDependencies: {list(node.dependencies)}\nStatus: {node.status}\n"
     )
     repo.index.add([str(file_path.relative_to(REPO_PATH))])
 
@@ -151,14 +145,10 @@ def commit_node_incremental(node_id, node, snapshot):
     try:
         # Convert hex strings to actual Git Commit objects
         parent_commits = [repo.commit(p) for p in parents] if parents else []
-        label = truncate_label(
-            node.metadata.get("description") or node_id, node_id=node_id
-        )
+        label = truncate_label(node.metadata.get("description") or node_id, node_id=node_id)
 
         # In Git, changing parents creates a new hash. index.commit does this for us.
-        commit_obj = repo.index.commit(
-            f"{label} [{node.status}]", parent_commits=parent_commits
-        )
+        commit_obj = repo.index.commit(f"{label} [{node.status}]", parent_commits=parent_commits)
 
         # 4. Update the global map and node metadata
         node_to_commit[node_id] = commit_obj.hexsha
@@ -203,11 +193,7 @@ def update_tip_branches(snapshot):
 
     # Point master at root
     root_id = next(
-        (
-            nid
-            for nid in snapshot
-            if not snapshot[nid].dependencies and nid in node_to_commit
-        ),
+        (nid for nid in snapshot if not snapshot[nid].dependencies and nid in node_to_commit),
         None,
     )
     if root_id:

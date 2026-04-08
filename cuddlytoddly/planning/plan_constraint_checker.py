@@ -56,9 +56,7 @@ class PlanConstraintChecker:
         events = self._dedup_edges(events)
         events = self._remove_cycles(events)
         events = self._check_required_input(events, known_dep_id=known_dep_id)
-        events = self._resolve_ghost_nodes(
-            events, active_goal_id, known_dep_id=known_dep_id
-        )
+        events = self._resolve_ghost_nodes(events, active_goal_id, known_dep_id=known_dep_id)
         return events
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -102,9 +100,7 @@ class PlanConstraintChecker:
             if evt.get("type") == ADD_DEPENDENCY:
                 key = (evt["payload"]["node_id"], evt["payload"]["depends_on"])
                 if key in seen:
-                    logger.debug(
-                        "[CHECKER] Dropping duplicate edge %s → %s", key[0], key[1]
-                    )
+                    logger.debug("[CHECKER] Dropping duplicate edge %s → %s", key[0], key[1])
                     continue
                 seen.add(key)
             result.append(evt)
@@ -138,10 +134,7 @@ class PlanConstraintChecker:
             events = [
                 evt
                 for evt in events
-                if not (
-                    evt.get("type") == ADD_NODE
-                    and evt["payload"]["node_id"] in cycle_nodes
-                )
+                if not (evt.get("type") == ADD_NODE and evt["payload"]["node_id"] in cycle_nodes)
                 and not (
                     evt.get("type") == ADD_DEPENDENCY
                     and (
@@ -196,9 +189,7 @@ class PlanConstraintChecker:
 
     # ── Check 6: required_input consistency ───────────────────────────────────
 
-    def _check_required_input(
-        self, events: list, known_dep_id: str | None = None
-    ) -> list:
+    def _check_required_input(self, events: list, known_dep_id: str | None = None) -> list:
         """
         6b — strip required_input from any task node that has no dependencies:
              those items are orphaned (no upstream producer can satisfy them).
@@ -310,21 +301,17 @@ class PlanConstraintChecker:
                     root_task_ids.add(nid)
 
         ghost_ids = [
-            nid
-            for nid, deps in dependents.items()
-            if not deps and nid not in root_task_ids
+            nid for nid, deps in dependents.items() if not deps and nid not in root_task_ids
         ]
         if not ghost_ids:
             return events
 
         # Build description maps for prompt context
         new_summaries: dict[str, str] = {
-            nid: p.get("metadata", {}).get("description", "")
-            for nid, p in new_nodes.items()
+            nid: p.get("metadata", {}).get("description", "") for nid, p in new_nodes.items()
         }
         existing_summaries: dict[str, str] = {
-            nid: node.metadata.get("description", "")
-            for nid, node in self.graph.nodes.items()
+            nid: node.metadata.get("description", "") for nid, node in self.graph.nodes.items()
         }
 
         extra_edges = []
@@ -336,9 +323,7 @@ class PlanConstraintChecker:
             # ADD_DEPENDENCY(X, depends_on=ghost) would mean ghost→...→X→ghost).
             ancestors = self._get_ancestors(ghost_id, edges, self.graph.nodes)
             valid_candidates = (
-                (set(new_nodes.keys()) | existing_ids | {active_goal_id})
-                - {ghost_id}
-                - ancestors
+                (set(new_nodes.keys()) | existing_ids | {active_goal_id}) - {ghost_id} - ancestors
             )
 
             prompt = build_ghost_node_resolution_prompt(

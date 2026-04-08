@@ -168,9 +168,7 @@ def build_executor_retry_notice(retry: int, failure: str, prev_result: str) -> s
     )
 
 
-def build_executor_file_reminder(
-    expected_files: list[str], turns_remaining: int
-) -> str:
+def build_executor_file_reminder(expected_files: list[str], turns_remaining: int) -> str:
     """Inline reminder injected when file outputs are declared but not yet written."""
     return (
         f"\nREMINDER: You must call write_file to create "
@@ -400,9 +398,7 @@ def build_clarification_context_block(fields: list, clarification_prompt: str) -
     known = [f for f in fields if f.get("value") and f.get("value") != "unknown"]
     unknown = [f for f in fields if not f.get("value") or f.get("value") == "unknown"]
 
-    lines = [
-        "\nGoal context — treat this as given input, not as open questions to research."
-    ]
+    lines = ["\nGoal context — treat this as given input, not as open questions to research."]
     lines.append(
         "CRITICAL: Do NOT create tasks to gather, research, or look up any of the "
         "information listed here, whether known or unknown.\n"

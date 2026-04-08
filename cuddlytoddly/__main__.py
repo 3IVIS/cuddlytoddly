@@ -87,12 +87,8 @@ class _DeferredLLM:
         with self._lock:
             real = self._real
         if real is None:
-            raise LLMStoppedError(
-                "LLM is still loading — execution will resume automatically"
-            )
-        return (
-            real.ask(prompt, schema=schema) if schema is not None else real.ask(prompt)
-        )
+            raise LLMStoppedError("LLM is still loading — execution will resume automatically")
+        return real.ask(prompt, schema=schema) if schema is not None else real.ask(prompt)
 
     def generate(self, prompt: str) -> str:
         return self.ask(prompt)
@@ -240,9 +236,7 @@ def main():
         logger.info("  [%s] %s", n.status, nid)
 
 
-def _init_system(
-    choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_ready=None
-):
+def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_ready=None):
     """
     Build the full orchestrator from a StartupChoice and a loaded config dict.
     Returns (orchestrator, run_dir).
@@ -298,9 +292,7 @@ def _init_system(
         fresh_start = False
         _logger.info("[STARTUP] Restored %d nodes", len(graph.nodes))
 
-        for step_id in [
-            n.id for n in graph.nodes.values() if n.node_type == "execution_step"
-        ]:
+        for step_id in [n.id for n in graph.nodes.values() if n.node_type == "execution_step"]:
             if step_id in graph.nodes:
                 graph.detach_node(step_id)
 
@@ -345,9 +337,7 @@ def _init_system(
                     len(entries),
                 )
             except Exception as exc:
-                _logger.warning(
-                    "[STARTUP] Could not seed token counter from cache: %s", exc
-                )
+                _logger.warning("[STARTUP] Could not seed token counter from cache: %s", exc)
         # ─────────────────────────────────────────────────────────────────────
 
     else:
@@ -405,9 +395,7 @@ def _init_system(
     # ── Seed graph ────────────────────────────────────────────────────────────
     if fresh_start:
         if choice.mode == "manual_plan" and choice.plan_events:
-            _logger.info(
-                "[STARTUP] Seeding manual plan (%d events)", len(choice.plan_events)
-            )
+            _logger.info("[STARTUP] Seeding manual plan (%d events)", len(choice.plan_events))
             for evt_dict in choice.plan_events:
                 apply_event(
                     graph,
@@ -456,9 +444,7 @@ def _init_system(
                 orchestrator.verify_restored_nodes()
                 _logger.info("[STARTUP] Background verification complete")
 
-            threading.Thread(
-                target=_bg_verify, daemon=True, name="startup-verify"
-            ).start()
+            threading.Thread(target=_bg_verify, daemon=True, name="startup-verify").start()
 
     return orchestrator, run_dir
 
@@ -477,9 +463,7 @@ def _build_llm_client(cfg: dict, run_dir: Path):
     if backend == "llamacpp":
         model_path = resolve_model_path(cfg)
         cache_path = (
-            str(run_dir / "llamacpp_cache.json")
-            if llm_cfg.get("cache_enabled", True)
-            else None
+            str(run_dir / "llamacpp_cache.json") if llm_cfg.get("cache_enabled", True) else None
         )
         return create_llm_client(
             "llamacpp",
@@ -492,11 +476,7 @@ def _build_llm_client(cfg: dict, run_dir: Path):
         )
 
     if backend == "claude":
-        cache_path = (
-            str(run_dir / "api_cache.json")
-            if llm_cfg.get("cache_enabled", True)
-            else None
-        )
+        cache_path = str(run_dir / "api_cache.json") if llm_cfg.get("cache_enabled", True) else None
         return create_llm_client(
             "claude",
             model=llm_cfg.get("model", "claude-opus-4-6"),
@@ -506,11 +486,7 @@ def _build_llm_client(cfg: dict, run_dir: Path):
         )
 
     if backend == "openai":
-        cache_path = (
-            str(run_dir / "api_cache.json")
-            if llm_cfg.get("cache_enabled", True)
-            else None
-        )
+        cache_path = str(run_dir / "api_cache.json") if llm_cfg.get("cache_enabled", True) else None
         kwargs: dict = dict(
             model=llm_cfg.get("model", "gpt-4o"),
             temperature=llm_cfg.get("temperature", 0.1),
@@ -526,9 +502,7 @@ def _build_llm_client(cfg: dict, run_dir: Path):
     if backend == "file":
         file_cfg = get_file_llm_cfg(cfg)
         cache_path = (
-            str(run_dir / "file_llm_cache.json")
-            if file_cfg.get("cache_enabled", True)
-            else None
+            str(run_dir / "file_llm_cache.json") if file_cfg.get("cache_enabled", True) else None
         )
         return create_llm_client(
             "file",

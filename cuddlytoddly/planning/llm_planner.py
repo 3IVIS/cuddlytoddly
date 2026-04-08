@@ -93,8 +93,8 @@ class LLMPlanner:
             clarif_prompt = existing_clarif.metadata.get("clarification_prompt", "")
             logger.info("[PLANNER] Reusing existing clarification node %s", clarif_id)
         else:
-            clarif_prompt, clarif_fields, clarif_events = (
-                self._generate_clarification_node(goal_text, active_goal.id, clarif_id)
+            clarif_prompt, clarif_fields, clarif_events = self._generate_clarification_node(
+                goal_text, active_goal.id, clarif_id
             )
 
         # ── Call 2: planning ──────────────────────────────────────────────────
@@ -149,9 +149,7 @@ class LLMPlanner:
         # ── Validate and constrain plan events ────────────────────────────────
         raw_events = self._normalize_events(raw_events)
         validator = LLMOutputValidator(self.graph)
-        safe_events = validator.validate_and_normalize(
-            raw_events, forced_origin="planning"
-        )
+        safe_events = validator.validate_and_normalize(raw_events, forced_origin="planning")
         # Pass clarif_id so the checker knows root tasks will get a dependency
         # on the clarification node even though it is not in this event batch.
         # Without this: root tasks look dependency-free → 6b strips their
@@ -167,9 +165,7 @@ class LLMPlanner:
         # IMPORTANT: these events must go AFTER safe_events so task ADD_NODE
         # events have already been applied when the reducer processes these edges.
         # add_dependency() silently no-ops if either node doesn't exist yet.
-        new_node_ids = {
-            evt["payload"]["node_id"] for evt in safe_events if evt["type"] == ADD_NODE
-        }
+        new_node_ids = {evt["payload"]["node_id"] for evt in safe_events if evt["type"] == ADD_NODE}
         wiring_events = []
         for evt in safe_events:
             if evt["type"] == ADD_NODE:
@@ -226,9 +222,7 @@ class LLMPlanner:
         """
         # Pass skills_summary so the LLM knows which information tools can
         # fetch at runtime and avoids surfacing those as user-facing questions.
-        prompt = build_clarification_prompt(
-            goal_text, skills_summary=self.skills_summary
-        )
+        prompt = build_clarification_prompt(goal_text, skills_summary=self.skills_summary)
         logger.info("[PLANNER] Generating clarification node for goal %s", goal_id)
 
         try:
@@ -327,9 +321,7 @@ class LLMPlanner:
                     k: (
                         v
                         if k == "description"
-                        else (
-                            v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v
-                        )
+                        else (v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v)
                     )
                     for k, v in n.metadata.items()
                     if k not in _VOLATILE_METADATA_KEYS
@@ -364,9 +356,7 @@ class LLMPlanner:
                 "node_type": g.node_type,
                 "status": g.status,
                 "metadata": {
-                    k: v
-                    for k, v in g.metadata.items()
-                    if k not in _VOLATILE_METADATA_KEYS
+                    k: v for k, v in g.metadata.items() if k not in _VOLATILE_METADATA_KEYS
                 },
             }
             for g in goals
@@ -379,9 +369,7 @@ class LLMPlanner:
         )
 
         skills_block = build_planner_skills_block(self.skills_summary)
-        clarification_block = build_clarification_context_block(
-            clarif_fields or [], clarif_prompt
-        )
+        clarification_block = build_clarification_context_block(clarif_fields or [], clarif_prompt)
 
         return build_planner_prompt(
             pruned_view_json=json.dumps(pruned_view, indent=2),

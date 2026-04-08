@@ -238,10 +238,7 @@ class FileBasedLLM(BaseLLM):
             logger.debug("[LLM] Prompt file exists, checking for duplicate id")
             with self.prompt_log_file.open("r") as f:
                 for line in f:
-                    if (
-                        line.startswith("id:")
-                        and line[len("id:") :].strip() == prompt_id
-                    ):
+                    if line.startswith("id:") and line[len("id:") :].strip() == prompt_id:
                         logger.warning(
                             "[LLM] Prompt id=%s already exists — skipping write",
                             prompt_id,
@@ -278,9 +275,7 @@ class FileBasedLLM(BaseLLM):
                     line = line.rstrip("\n")
                     if line.startswith("id:"):
                         if current_id == prompt_id and block_lines:
-                            response_text = "\n".join(
-                                ln for ln in block_lines if ln.strip()
-                            )
+                            response_text = "\n".join(ln for ln in block_lines if ln.strip())
                             logger.info("[LLM] Response matched id=%s", prompt_id)
                             return response_text
                         current_id = line[len("id:") :].strip()
@@ -307,9 +302,7 @@ class FileBasedLLM(BaseLLM):
 
             if now - start_time > self.timeout:
                 logger.error("[LLM] Timeout waiting for response id=%s", prompt_id)
-                raise TimeoutError(
-                    f"LLM response for id={prompt_id} not found within timeout"
-                )
+                raise TimeoutError(f"LLM response for id={prompt_id} not found within timeout")
 
             time.sleep(self.poll_interval)
 
@@ -530,9 +523,7 @@ class LlamaCppLLM(BaseLLM):
         try:
             import outlines
         except ImportError as e:
-            raise ImportError(
-                "outlines is not installed. Run: pip install outlines"
-            ) from e
+            raise ImportError("outlines is not installed. Run: pip install outlines") from e
         self._outlines_model = outlines.from_llamacpp(self._llama)
         logger.info("[LLAMACPP] Outlines model wrapper ready")
 
@@ -552,9 +543,7 @@ class LlamaCppLLM(BaseLLM):
                 fingerprint[:40],
             )
             output_type = outlines.json_schema(fingerprint)
-            self._generators[fingerprint] = outlines.Generator(
-                self._outlines_model, output_type
-            )
+            self._generators[fingerprint] = outlines.Generator(self._outlines_model, output_type)
             logger.info("[LLAMACPP] Constrained generator ready")
         return self._generators[fingerprint]
 
@@ -577,9 +566,7 @@ class LlamaCppLLM(BaseLLM):
                 logger.debug("[LLAMACPP] Chat template applied via llama.cpp tokenizer")
                 return result
         except Exception as e:
-            logger.debug(
-                "[LLAMACPP] Built-in chat template unavailable (%s), using fallback", e
-            )
+            logger.debug("[LLAMACPP] Built-in chat template unavailable (%s), using fallback", e)
 
         # Llama 3 hardcoded fallback
         return (
@@ -601,18 +588,14 @@ class LlamaCppLLM(BaseLLM):
         def _watch():
             start = time.time()
             while not done.wait(timeout=30):
-                logger.info(
-                    "[LLAMACPP] Still generating... %.0fs elapsed", time.time() - start
-                )
+                logger.info("[LLAMACPP] Still generating... %.0fs elapsed", time.time() - start)
 
         t = threading.Thread(target=_watch, daemon=True, name="llm-watchdog")
         t.start()
         return done
 
     def _run_unconstrained(self, prompt: str, safe_max: int) -> str:
-        logger.info(
-            "[LLAMACPP] Running unconstrained inference (max_tokens=%d)...", safe_max
-        )
+        logger.info("[LLAMACPP] Running unconstrained inference (max_tokens=%d)...", safe_max)
         result = self._llama(
             prompt,
             max_tokens=safe_max,
@@ -622,9 +605,7 @@ class LlamaCppLLM(BaseLLM):
         return result["choices"][0]["text"]
 
     def _run_constrained(self, prompt: str, schema: dict, safe_max: int) -> str:
-        logger.info(
-            "[LLAMACPP] Running constrained inference (max_tokens=%d)...", safe_max
-        )
+        logger.info("[LLAMACPP] Running constrained inference (max_tokens=%d)...", safe_max)
         generator = self._get_generator(schema)
         raw = generator(prompt, max_tokens=safe_max)
         if isinstance(raw, str):
@@ -690,8 +671,7 @@ class LlamaCppLLM(BaseLLM):
                 pass
             pos -= 1
         logger.error(
-            "[LLAMACPP] Could not repair truncated output. "
-            "Increase max_tokens (currently %d).",
+            "[LLAMACPP] Could not repair truncated output. Increase max_tokens (currently %d).",
             self.max_tokens,
         )
         return None
@@ -727,18 +707,14 @@ class LlamaCppLLM(BaseLLM):
                     self._cache.set(cache_key, response_text)
                 return response_text
             except Exception as e:
-                logger.warning(
-                    "[LLAMACPP] Invalid JSON on attempt %d: %s", attempt + 1, e
-                )
+                logger.warning("[LLAMACPP] Invalid JSON on attempt %d: %s", attempt + 1, e)
                 if attempt == 0:
                     repaired = self._repair_truncated_json(response_text)
                     if repaired is not None:
                         if self._cache is not None:
                             self._cache.set(cache_key, repaired)
                         return repaired
-                    logger.warning(
-                        "[LLAMACPP] Repair failed -- retrying full generation"
-                    )
+                    logger.warning("[LLAMACPP] Repair failed -- retrying full generation")
 
         raise ValueError("Model repeatedly returned invalid JSON")
 
@@ -784,9 +760,7 @@ class ApiLLM(BaseLLM):
         super().__init__()
         provider = provider.lower()
         if provider not in self._DEFAULTS:
-            raise ValueError(
-                f"Unknown provider '{provider}'. Choose 'openai' or 'claude'."
-            )
+            raise ValueError(f"Unknown provider '{provider}'. Choose 'openai' or 'claude'.")
 
         self.provider = provider
         self.api_key = api_key
@@ -798,9 +772,7 @@ class ApiLLM(BaseLLM):
         self.system_prompt = system_prompt or LLM_SYSTEM_PROMPT
         self._cache = LlamaCppCache(cache_path) if cache_path is not None else None
 
-        logger.info(
-            "[API] Initialized ApiLLM  provider=%s  model=%s", self.provider, self.model
-        )
+        logger.info("[API] Initialized ApiLLM  provider=%s  model=%s", self.provider, self.model)
         if base_url:
             logger.info("[API] Using custom base_url: %s", base_url)
         logger.info(
@@ -820,9 +792,7 @@ class ApiLLM(BaseLLM):
             try:
                 from openai import OpenAI
             except ImportError as e:
-                raise ImportError(
-                    "openai package is not installed. Run: pip install openai"
-                ) from e
+                raise ImportError("openai package is not installed. Run: pip install openai") from e
             kwargs: dict[str, Any] = {}
             if self.api_key:
                 kwargs["api_key"] = self.api_key
@@ -902,9 +872,7 @@ class ApiLLM(BaseLLM):
         response = self._client.chat.completions.create(**kwargs)
 
         if response.usage:
-            token_counter.add(
-                response.usage.prompt_tokens, response.usage.completion_tokens
-            )
+            token_counter.add(response.usage.prompt_tokens, response.usage.completion_tokens)
         content = response.choices[0].message.content or ""
         logger.info("[API] OpenAI response received (%d chars)", len(content))
         logger.debug("[API] Raw response:\n%s", content)
@@ -923,9 +891,7 @@ class ApiLLM(BaseLLM):
             )
             prefill = "{"
 
-        logger.debug(
-            "[API] Sending Anthropic request  model=%s  prefill=%r", self.model, prefill
-        )
+        logger.debug("[API] Sending Anthropic request  model=%s  prefill=%r", self.model, prefill)
         response = self._client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
@@ -947,17 +913,13 @@ class ApiLLM(BaseLLM):
 
     def ask(self, prompt: str, schema: dict | None = None) -> str:
         self._check_stop()
-        logger.info(
-            "[API] ask() called  provider=%s  model=%s", self.provider, self.model
-        )
+        logger.info("[API] ask() called  provider=%s  model=%s", self.provider, self.model)
         self._load()
         logger.debug("[API] Prompt (first 200 chars): %.200s", prompt)
 
         # Cache key matches LlamaCppLLM: prompt-only (no schema) or prompt+schema.
         cache_key = (
-            prompt
-            if schema is None
-            else prompt + "\x00" + json.dumps(schema, sort_keys=True)
+            prompt if schema is None else prompt + "\x00" + json.dumps(schema, sort_keys=True)
         )
         if self._cache is not None:
             cached = self._cache.get(cache_key)
@@ -998,9 +960,7 @@ class ApiLLM(BaseLLM):
                     logger.warning("[API] Retrying due to JSON parse failure...")
                     continue
 
-        raise ValueError(
-            f"[API] {self.provider} returned invalid JSON after 2 attempts"
-        )
+        raise ValueError(f"[API] {self.provider} returned invalid JSON after 2 attempts")
 
     def clear_cache(self) -> None:
         if self._cache is not None:
@@ -1035,6 +995,5 @@ def create_llm_client(backend: str = "file", **kwargs) -> BaseLLM:
 
     else:
         raise ValueError(
-            f"Unknown backend '{backend}'. "
-            "Valid options: 'file', 'llamacpp', 'openai', 'claude'."
+            f"Unknown backend '{backend}'. Valid options: 'file', 'llamacpp', 'openai', 'claude'."
         )

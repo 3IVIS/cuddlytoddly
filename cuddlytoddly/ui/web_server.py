@@ -30,8 +30,7 @@ try:
     from fastapi.responses import HTMLResponse
 except ImportError:
     raise ImportError(
-        "Web UI requires FastAPI and uvicorn:\n"
-        "  pip install fastapi 'uvicorn[standard]'"
+        "Web UI requires FastAPI and uvicorn:\n  pip install fastapi 'uvicorn[standard]'"
     )
 
 from cuddlytoddly.core.events import (
@@ -80,9 +79,7 @@ def _serialize_snapshot(snapshot: dict) -> dict:
             "dependencies": sorted(node.dependencies),
             "children": sorted(node.children),
             "result": node.result,
-            "metadata": {
-                k: v for k, v in node.metadata.items() if k not in _HIDDEN_META
-            },
+            "metadata": {k: v for k, v in node.metadata.items() if k not in _HIDDEN_META},
         }
     return out
 
@@ -127,9 +124,7 @@ def _build_static_html(
 
     nodes_json = json.dumps(snapshot, default=str, ensure_ascii=False)
 
-    goal_node = next(
-        (n for n in snapshot.values() if n.get("node_type") == "goal"), None
-    )
+    goal_node = next((n for n in snapshot.values() if n.get("node_type") == "goal"), None)
     goal_title = (
         (goal_node.get("metadata") or {}).get("description") or goal_node.get("id", "")
         if goal_node
@@ -140,8 +135,7 @@ def _build_static_html(
         {
             "goal": goal_title,
             "timestamp": ts,
-            "tokens": token_counts
-            or {"prompt": 0, "completion": 0, "total": 0, "calls": 0},
+            "tokens": token_counts or {"prompt": 0, "completion": 0, "total": 0, "calls": 0},
         }
     )
 
@@ -172,9 +166,7 @@ def _build_static_html(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
 
-    logger.info(
-        "[EXPORT] Static HTML written to %s (%d events embedded)", out_path, len(events)
-    )
+    logger.info("[EXPORT] Static HTML written to %s (%d events embedded)", out_path, len(events))
     return html, out_path
 
 
@@ -277,9 +269,7 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                     "node_id": node_id,
                     "origin": "user",
                     "metadata": {
-                        "description": body.get(
-                            "description", node.metadata.get("description", "")
-                        )
+                        "description": body.get("description", node.metadata.get("description", ""))
                     },
                 },
             )
@@ -345,12 +335,10 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                 )
                 orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": added}))
 
-        result_changed = "result" in body and body.get("result", "") != (
-            node.result or ""
+        result_changed = "result" in body and body.get("result", "") != (node.result or "")
+        desc_changed = "description" in body and body["description"] != node.metadata.get(
+            "description", ""
         )
-        desc_changed = "description" in body and body[
-            "description"
-        ] != node.metadata.get("description", "")
         deps_changed = "dependencies" in body and set(body["dependencies"]) != set(
             node.dependencies
         )
@@ -368,9 +356,7 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
             for child_id in node.children:
                 child = snap.get(child_id)
                 if child and child.status == "done":
-                    orchestrator.event_queue.put(
-                        Event(RESET_NODE, {"node_id": child_id})
-                    )
+                    orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
         elif desc_changed or deps_changed:
             orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": node_id}))
 
@@ -387,21 +373,15 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
         q = orchestrator.event_queue
         if mode == "rewire":
             for child in children:
-                q.put(
-                    Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id})
-                )
+                q.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id}))
                 for parent in parents:
-                    q.put(
-                        Event(ADD_DEPENDENCY, {"node_id": child, "depends_on": parent})
-                    )
+                    q.put(Event(ADD_DEPENDENCY, {"node_id": child, "depends_on": parent}))
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
             for child in children:
                 q.put(Event(RESET_NODE, {"node_id": child}))
         elif mode == "disconnect":
             for child in children:
-                q.put(
-                    Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id})
-                )
+                q.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id}))
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
             for child in children:
                 q.put(Event(RESET_NODE, {"node_id": child}))
@@ -907,9 +887,7 @@ def _create_unified_app(
 
     def _require_ready():
         if not state["ready"]:
-            raise HTTPException(
-                503, "System not yet initialised — wait for startup to complete"
-            )
+            raise HTTPException(503, "System not yet initialised — wait for startup to complete")
 
     def _orch():
         _require_ready()
@@ -969,26 +947,20 @@ def _create_unified_app(
                     "node_id": node_id,
                     "origin": "user",
                     "metadata": {
-                        "description": body.get(
-                            "description", node.metadata.get("description", "")
-                        )
+                        "description": body.get("description", node.metadata.get("description", ""))
                     },
                 },
             )
         )
         st = body.get("status", "")
         if st in ("pending", "done", "running", "failed", "to_be_expanded"):
-            orch.event_queue.put(
-                Event(UPDATE_STATUS, {"node_id": node_id, "status": st})
-            )
+            orch.event_queue.put(Event(UPDATE_STATUS, {"node_id": node_id, "status": st}))
         if "dependencies" in body:
             old = set(node.dependencies)
             new = set(body["dependencies"])
             for removed in old - new:
                 orch.event_queue.put(
-                    Event(
-                        REMOVE_DEPENDENCY, {"node_id": node_id, "depends_on": removed}
-                    )
+                    Event(REMOVE_DEPENDENCY, {"node_id": node_id, "depends_on": removed})
                 )
             for added in new - old:
                 orch.event_queue.put(
@@ -1009,21 +981,15 @@ def _create_unified_app(
         q = orch.event_queue
         if mode == "rewire":
             for child in children:
-                q.put(
-                    Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id})
-                )
+                q.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id}))
                 for parent in parents:
-                    q.put(
-                        Event(ADD_DEPENDENCY, {"node_id": child, "depends_on": parent})
-                    )
+                    q.put(Event(ADD_DEPENDENCY, {"node_id": child, "depends_on": parent}))
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
             for child in children:
                 q.put(Event(RESET_NODE, {"node_id": child}))
         elif mode == "disconnect":
             for child in children:
-                q.put(
-                    Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id})
-                )
+                q.put(Event(REMOVE_DEPENDENCY, {"node_id": child, "depends_on": node_id}))
             q.put(Event(REMOVE_NODE, {"node_id": node_id}))
             for child in children:
                 q.put(Event(RESET_NODE, {"node_id": child}))

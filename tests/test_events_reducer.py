@@ -227,9 +227,7 @@ class TestReducerMetadata:
     def test_update_metadata_merges(self):
         g = TaskGraph()
         add_node(g, "a", metadata={"description": "old", "key": "val"})
-        apply_event(
-            g, Event(UPDATE_METADATA, {"node_id": "a", "metadata": {"key": "new_val"}})
-        )
+        apply_event(g, Event(UPDATE_METADATA, {"node_id": "a", "metadata": {"key": "new_val"}}))
         assert g.nodes["a"].metadata["key"] == "new_val"
         assert g.nodes["a"].metadata["description"] == "old"
 

@@ -133,14 +133,10 @@ class TestAwaitingInput:
             "task_1",
             metadata={
                 "description": description,
-                "output": [
-                    {"name": "out", "type": "document", "description": "output"}
-                ],
+                "output": [{"name": "out", "type": "document", "description": "output"}],
             },
         )
-        add_node(
-            g, "clar_1", node_type="clarification", metadata={"description": "context"}
-        )
+        add_node(g, "clar_1", node_type="clarification", metadata={"description": "context"})
         g.nodes["task_1"].dependencies.add("clar_1")
 
         unknown = [{"key": k, "label": k} for k in unknown_keys]
@@ -275,15 +271,11 @@ class TestAwaitingInput:
             "task_1",
             metadata={
                 "description": description,
-                "output": [
-                    {"name": "out", "type": "document", "description": "output"}
-                ],
+                "output": [{"name": "out", "type": "document", "description": "output"}],
                 "required_input": required_inputs,
             },
         )
-        add_node(
-            g, "clar_1", node_type="clarification", metadata={"description": "ctx"}
-        )
+        add_node(g, "clar_1", node_type="clarification", metadata={"description": "ctx"})
         g.nodes["task_1"].dependencies.add("clar_1")
 
         unknown = [{"key": k, "label": k} for k in unknown_keys]
@@ -463,9 +455,7 @@ class TestAwaitingInput:
             "personal_task",
             metadata={
                 "description": "List personal achievements relevant to the job",
-                "output": [
-                    {"name": "out", "type": "list", "description": "achievements"}
-                ],
+                "output": [{"name": "out", "type": "list", "description": "achievements"}],
             },
         )
         add_node(g, "clar", node_type="clarification", metadata={"description": "ctx"})
@@ -499,9 +489,7 @@ class TestAwaitingInput:
                         "broadened_for_missing": ["current_salary"],
                     }
                 )
-            return json.dumps(
-                {"done": True, "result": "Here is a template for achievements."}
-            )
+            return json.dumps({"done": True, "result": "Here is a template for achievements."})
 
         llm = FakeLLM(multi_response)
         reporter = ExecutionStepReporter(
@@ -511,9 +499,7 @@ class TestAwaitingInput:
             graph=g,
         )
         executor = LLMExecutor(llm_client=llm, max_turns=3)
-        result = executor.execute(
-            g.nodes["personal_task"], g.get_snapshot(), reporter=reporter
-        )
+        result = executor.execute(g.nodes["personal_task"], g.get_snapshot(), reporter=reporter)
 
         # Result must be a string, never a signal
         assert isinstance(result, str), f"expected str, got {type(result)}"
@@ -573,9 +559,7 @@ class TestAwaitingInput:
         assert g.nodes["t"].metadata.get("broadened_description") == (
             "Produce a template for articulating achievements."
         )
-        assert g.nodes["t"].metadata.get("broadened_for_missing") == [
-            "key_achievements"
-        ]
+        assert g.nodes["t"].metadata.get("broadened_for_missing") == ["key_achievements"]
         # Quality gate was still called
         mock_gate.verify_result.assert_called_once()
 
@@ -860,9 +844,7 @@ class TestAwaitingInput:
             node_type="task",
             metadata={
                 "description": "Do research",
-                "output": [
-                    {"name": "report", "type": "document", "description": "the report"}
-                ],
+                "output": [{"name": "report", "type": "document", "description": "the report"}],
             },
         )
         g.nodes["regular_task"].status = "running"
@@ -900,9 +882,7 @@ class TestToolResultsContext:
             node_id,
             metadata={
                 "description": "research task",
-                "output": [
-                    {"name": "report", "type": "document", "description": "the report"}
-                ],
+                "output": [{"name": "report", "type": "document", "description": "the report"}],
             },
         )
         for i, attempt_list in enumerate(attempts_per_step):
@@ -913,9 +893,7 @@ class TestToolResultsContext:
                     result_str, status = item
                 else:
                     result_str, status = item, "ok"
-                attempts.append(
-                    {"turn": j, "args": {}, "result": result_str, "status": status}
-                )
+                attempts.append({"turn": j, "args": {}, "result": result_str, "status": status})
             add_node(
                 g,
                 step_id,
@@ -1014,9 +992,7 @@ class TestToolResultsContext:
                 [("Title: Salary Survey\nURL: levels.fyi", "ok")],
             ],
         )
-        ok, _ = gate.verify_result(
-            node, "Based on levels.fyi the median is $130k.", snap
-        )
+        ok, _ = gate.verify_result(node, "Based on levels.fyi the median is $130k.", snap)
         assert ok is True
         assert len(llm.calls) == 1
 
@@ -1041,9 +1017,7 @@ class TestToolResultsContext:
                 "output": [{"name": "summary", "type": "document", "description": "s"}],
             },
         )
-        gate.verify_result(
-            g.nodes["t"], "Here is the full summary content.", g.get_snapshot()
-        )
+        gate.verify_result(g.nodes["t"], "Here is the full summary content.", g.get_snapshot())
         assert prompts_seen
         # The section header "TOOL EXECUTION SUMMARY:" only appears when tool
         # context data is present. The instruction text refers to it without the
@@ -1181,9 +1155,7 @@ class TestBroadenedExecutionFixes:
         result = executor.execute(node, g.get_snapshot(), reporter=reporter)
 
         assert isinstance(result, str), "execute() must return a string"
-        assert call_count[0] >= 3, (
-            "should have made preflight + fallback + execution calls"
-        )
+        assert call_count[0] >= 3, "should have made preflight + fallback + execution calls"
         assert reporter.pending_broadening is not None
         assert reporter.pending_broadening.broadened_description == (
             "Produce a guided achievement template."
@@ -1213,9 +1185,7 @@ class TestBroadenedExecutionFixes:
             return json.dumps({"broadened_description": ""})
 
         llm = FakeLLM(multi_response)
-        node, _, g = self._make_exec_node(
-            "List personal achievements", unknown_keys=["salary"]
-        )
+        node, _, g = self._make_exec_node("List personal achievements", unknown_keys=["salary"])
         executor = LLMExecutor(llm_client=llm, max_turns=3)
         result = executor.execute(node, g.get_snapshot())
         assert result is None, (
@@ -1245,9 +1215,7 @@ class TestBroadenedExecutionFixes:
             "t",
             metadata={
                 "description": "Identify personal achievements",
-                "output": [
-                    {"name": "achievements", "type": "list", "description": "a"}
-                ],
+                "output": [{"name": "achievements", "type": "list", "description": "a"}],
                 "broadened_description": "Produce a template for articulating achievements.",
                 "broadened_for_missing": ["current_salary", "performance_reviews"],
                 "broadened_reason": "needs personal history",
@@ -1289,9 +1257,7 @@ class TestBroadenedExecutionFixes:
             },
         )
 
-        gate.verify_result(
-            g.nodes["t"], "Salaries range from $80k-$120k.", g.get_snapshot()
-        )
+        gate.verify_result(g.nodes["t"], "Salaries range from $80k-$120k.", g.get_snapshot())
         assert prompts_seen
         # The section header "BROADENED EXECUTION NOTICE:" followed by a newline
         # only appears when broadening context data is present.
@@ -1377,9 +1343,7 @@ class TestMaxRetriesAndBackoff:
         retry_after = g.nodes["t"].metadata.get("retry_after", 0)
         assert retry_after > before, "retry_after should be in the future"
         # First retry: backoff = 2**0 = 1s (retry_count was 0 before this call)
-        assert retry_after <= after + 2.0, (
-            "backoff should not exceed ~1s for first retry"
-        )
+        assert retry_after <= after + 2.0, "backoff should not exceed ~1s for first retry"
 
     def test_backoff_increases_with_each_failure(self):
         """retry_after should grow across successive failures."""
@@ -1508,9 +1472,7 @@ class TestToolErrorStringDetection:
         reporter = make_reporter("parent", g)
 
         def good_tool(args):
-            return (
-                "Title: Glassdoor salary survey\nURL: glassdoor.com\nSnippet: $120k avg"
-            )
+            return "Title: Glassdoor salary survey\nURL: glassdoor.com\nSnippet: $120k avg"
 
         registry = make_tool_registry({"web_search": good_tool})
 

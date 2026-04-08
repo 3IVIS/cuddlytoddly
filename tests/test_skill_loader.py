@@ -179,9 +179,7 @@ class TestSkillLoaderSynthetic:
     def test_broken_tools_py_skipped_gracefully(self, tmp_path):
         skill_dir = tmp_path / "broken_skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "# Broken\n\n## Description\nBroken tools.\n"
-        )
+        (skill_dir / "SKILL.md").write_text("# Broken\n\n## Description\nBroken tools.\n")
         (skill_dir / "tools.py").write_text("this is not valid python )()(")
         loader = SkillLoader(skills_dir=tmp_path)
         assert len(loader.registry.tools) == 0
@@ -189,9 +187,7 @@ class TestSkillLoaderSynthetic:
     def test_tools_py_without_tools_dict_skipped(self, tmp_path):
         skill_dir = tmp_path / "no_dict_skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "# NoDictSkill\n\n## Description\nNo dict.\n"
-        )
+        (skill_dir / "SKILL.md").write_text("# NoDictSkill\n\n## Description\nNo dict.\n")
         (skill_dir / "tools.py").write_text("TOOLS = 'not a dict'\n")
         loader = SkillLoader(skills_dir=tmp_path)
         assert len(loader.registry.tools) == 0

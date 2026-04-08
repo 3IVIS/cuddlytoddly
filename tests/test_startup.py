@@ -42,9 +42,7 @@ class TestParseManualPlan:
         plan = "My Goal\n- Task_One: Do something"
         goal, events = parse_manual_plan(plan)
         goal_events = [
-            e
-            for e in events
-            if e["type"] == ADD_NODE and e["payload"]["node_type"] == "goal"
+            e for e in events if e["type"] == ADD_NODE and e["payload"]["node_type"] == "goal"
         ]
         assert len(goal_events) == 1
 
@@ -52,11 +50,7 @@ class TestParseManualPlan:
         plan = "Goal\n- Task_A: first\n- Task_B: second [depends: Task_A]"
         goal, events = parse_manual_plan(plan)
         task_b_event = next(
-            (
-                e
-                for e in events
-                if e["type"] == ADD_NODE and e["payload"]["node_id"] == "Task_B"
-            ),
+            (e for e in events if e["type"] == ADD_NODE and e["payload"]["node_id"] == "Task_B"),
             None,
         )
         assert task_b_event is not None
@@ -66,11 +60,7 @@ class TestParseManualPlan:
         plan = "Goal\n- Task_A: first\n- Task_B: second depends on: Task_A"
         goal, events = parse_manual_plan(plan)
         task_b_event = next(
-            (
-                e
-                for e in events
-                if e["type"] == ADD_NODE and e["payload"]["node_id"] == "Task_B"
-            ),
+            (e for e in events if e["type"] == ADD_NODE and e["payload"]["node_id"] == "Task_B"),
             None,
         )
         if task_b_event:
@@ -82,9 +72,7 @@ class TestParseManualPlan:
         goal, events = parse_manual_plan(plan)
         dep_events = [e for e in events if e["type"] == ADD_DEPENDENCY]
         goal_deps = {
-            e["payload"]["depends_on"]
-            for e in dep_events
-            if e["payload"]["node_id"] != "Task_A"
+            e["payload"]["depends_on"] for e in dep_events if e["payload"]["node_id"] != "Task_A"
         }
         # Task_B is terminal (nothing depends on it) and should be wired to goal
         assert "Task_B" in goal_deps or len(dep_events) > 0
@@ -99,19 +87,12 @@ class TestParseManualPlan:
         plan = "Goal\n- My_Task: This is the description"
         goal, events = parse_manual_plan(plan)
         task_event = next(
-            (
-                e
-                for e in events
-                if e["type"] == ADD_NODE and e["payload"]["node_id"] == "My_Task"
-            ),
+            (e for e in events if e["type"] == ADD_NODE and e["payload"]["node_id"] == "My_Task"),
             None,
         )
         assert task_event is not None
         assert "description" in task_event["payload"].get("metadata", {})
-        assert (
-            "This is the description"
-            in task_event["payload"]["metadata"]["description"]
-        )
+        assert "This is the description" in task_event["payload"]["metadata"]["description"]
 
     def test_no_tasks_returns_goal_only(self):
         plan = "Just a goal with no tasks"
@@ -119,9 +100,7 @@ class TestParseManualPlan:
         assert goal != ""
         # No task ADD_NODE events, just the goal one
         task_events = [
-            e
-            for e in events
-            if e["type"] == ADD_NODE and e["payload"]["node_type"] == "task"
+            e for e in events if e["type"] == ADD_NODE and e["payload"]["node_type"] == "task"
         ]
         assert task_events == []
 
@@ -129,11 +108,7 @@ class TestParseManualPlan:
         plan = "Goal\n- A: first\n- B: second\n- C: third [depends: A, B]"
         goal, events = parse_manual_plan(plan)
         c_event = next(
-            (
-                e
-                for e in events
-                if e["type"] == ADD_NODE and e["payload"]["node_id"] == "C"
-            ),
+            (e for e in events if e["type"] == ADD_NODE and e["payload"]["node_id"] == "C"),
             None,
         )
         assert c_event is not None
@@ -298,9 +273,7 @@ class TestBuildManualPlanEvents:
     def test_goal_node_type_is_goal(self):
         tasks = [{"node_id": "T", "description": "t", "dependencies": []}]
         events = build_manual_plan_events("g", "Goal", tasks)
-        goal_event = next(
-            (e for e in events if e["payload"].get("node_id") == "g"), None
-        )
+        goal_event = next((e for e in events if e["payload"].get("node_id") == "g"), None)
         assert goal_event is not None
         assert goal_event["payload"]["node_type"] == "goal"
 
@@ -312,9 +285,7 @@ class TestBuildManualPlanEvents:
         events = build_manual_plan_events("goal", "Goal", tasks)
         dep_events = [e for e in events if e["type"] == ADD_DEPENDENCY]
         goal_dep_targets = {
-            e["payload"]["depends_on"]
-            for e in dep_events
-            if e["payload"]["node_id"] == "goal"
+            e["payload"]["depends_on"] for e in dep_events if e["payload"]["node_id"] == "goal"
         }
         # B is terminal (no one depends on it), so goal should depend on B
         assert "B" in goal_dep_targets

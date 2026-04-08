@@ -220,9 +220,7 @@ EXECUTION_TURN_SCHEMA = {
     "properties": {
         "done": {
             "type": "boolean",
-            "description": (
-                "True if this is the final answer, False if a tool call is needed."
-            ),
+            "description": ("True if this is the final answer, False if a tool call is needed."),
         },
         "result": {
             "type": "string",
@@ -285,15 +283,11 @@ DEPENDENCY_CHECK_SCHEMA = {
         },
         "missing": {
             "type": "string",
-            "description": (
-                "Short description of what is missing. Only required when ok=false."
-            ),
+            "description": ("Short description of what is missing. Only required when ok=false."),
         },
         "bridge_node": {
             "type": "object",
-            "description": (
-                "A single task that would close the gap. Only required when ok=false."
-            ),
+            "description": ("A single task that would close the gap. Only required when ok=false."),
             "properties": {
                 "node_id": {
                     "type": "string",

@@ -146,9 +146,7 @@ class LLMExecutor:
                 continue
             val = str(f.get("value", "")).strip().lower()
             if val in _PLACEHOLDERS:
-                unknown.append(
-                    {"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))}
-                )
+                unknown.append({"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))})
             else:
                 known.append(
                     {
@@ -211,9 +209,7 @@ class LLMExecutor:
                 {
                     "node_id": dep_id,
                     "description": dep.metadata.get("description", dep_id),
-                    "declared_output": _format_output_list(
-                        dep.metadata.get("output", [])
-                    ),
+                    "declared_output": _format_output_list(dep.metadata.get("output", [])),
                     "result": dep.result,
                 }
             )
@@ -224,9 +220,7 @@ class LLMExecutor:
             for entry in resolved:
                 r = entry["result"]
                 if len(r) > budget_per_dep:
-                    entry["result"] = (
-                        r[:budget_per_dep] + f"\n…[truncated, {len(r)} chars total]"
-                    )
+                    entry["result"] = r[:budget_per_dep] + f"\n…[truncated, {len(r)} chars total]"
 
         return resolved
 
@@ -315,9 +309,7 @@ class LLMExecutor:
         # goal — use these instead of the original node metadata outputs so the
         # LLM isn't working under two contradictory output contracts.
         declared_outputs = (
-            output_override
-            if output_override is not None
-            else node.metadata.get("output", [])
+            output_override if output_override is not None else node.metadata.get("output", [])
         )
         expected_files = [_output_name(o) for o in declared_outputs if _is_file(o)]
 
@@ -349,8 +341,7 @@ class LLMExecutor:
 
         return build_executor_prompt(
             node_id=node.id,
-            description=description_override
-            or node.metadata.get("description", node.id),
+            description=description_override or node.metadata.get("description", node.id),
             retry_notice=retry_notice,
             extra_reminder=extra_reminder,
             outputs_block=outputs_block,
@@ -411,9 +402,7 @@ class LLMExecutor:
 
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _preflight_awaiting_input(
-        self, node, resolved_inputs
-    ) -> "AwaitingInputSignal | None":
+    def _preflight_awaiting_input(self, node, resolved_inputs) -> "AwaitingInputSignal | None":
         """
         Ask the LLM whether this task can be executed with the currently
         available information and tools.
@@ -464,9 +453,7 @@ class LLMExecutor:
                 "key": name,
                 "label": label,
                 "value": "unknown",
-                "rationale": (
-                    f"Required by task '{node.id}': {r.get('description', label)}"
-                ),
+                "rationale": (f"Required by task '{node.id}': {r.get('description', label)}"),
             }
 
         auto_new_fields = [
@@ -485,10 +472,7 @@ class LLMExecutor:
 
         # Compute the full current missing-key set (unknown fields + structural gaps)
         current_missing_keys = sorted(
-            set(
-                [f.get("key") for f in unknown_fields]
-                + [f["key"] for f in auto_new_fields]
-            )
+            set([f.get("key") for f in unknown_fields] + [f["key"] for f in auto_new_fields])
         )
 
         # If nothing is missing at all, proceed with the original description
@@ -503,11 +487,7 @@ class LLMExecutor:
         previous_failure = node.metadata.get("verification_failure", "")
         stored_broadened = node.metadata.get("broadened_description", "")
         stored_for_missing = sorted(node.metadata.get("broadened_for_missing", []))
-        if (
-            stored_broadened
-            and stored_for_missing == current_missing_keys
-            and not previous_failure
-        ):
+        if stored_broadened and stored_for_missing == current_missing_keys and not previous_failure:
             logger.info(
                 "[EXECUTOR] Node %s: reusing stored broadened description "
                 "(missing set unchanged: %s)",
@@ -555,8 +535,7 @@ class LLMExecutor:
 
         if required_inputs:
             required_input_text = "\n".join(
-                f"  - {r.get('name', '?')} ({r.get('type', '?')}): "
-                f"{r.get('description', '')}"
+                f"  - {r.get('name', '?')} ({r.get('type', '?')}): {r.get('description', '')}"
                 for r in required_inputs
             )
         else:
@@ -589,21 +568,15 @@ class LLMExecutor:
         # Merge auto_new_fields into whatever the LLM returned, deduplicating
         llm_new_fields = parsed.get("new_fields", [])
         llm_new_keys = {f.get("key") for f in llm_new_fields}
-        merged_new = llm_new_fields + [
-            f for f in auto_new_fields if f["key"] not in llm_new_keys
-        ]
+        merged_new = llm_new_fields + [f for f in auto_new_fields if f["key"] not in llm_new_keys]
 
         llm_missing = parsed.get("missing_fields", [])
-        auto_missing = [
-            f["key"] for f in auto_new_fields if f["key"] not in llm_missing
-        ]
+        auto_missing = [f["key"] for f in auto_new_fields if f["key"] not in llm_missing]
         merged_missing = llm_missing + auto_missing
 
         # broadened_for_missing is the full set of absent keys — used on the
         # next execution to decide whether to reuse or regenerate.
-        broadened_for_missing = sorted(
-            set(merged_missing + [f.get("key") for f in merged_new])
-        )
+        broadened_for_missing = sorted(set(merged_missing + [f.get("key") for f in merged_new]))
 
         broadened_description = parsed.get("broadened_description", "")
         if not broadened_description:
@@ -644,8 +617,7 @@ class LLMExecutor:
             if signal.broadened_description:
                 effective_description = signal.broadened_description
                 logger.info(
-                    "[EXECUTOR] Node %s: running with broadened description "
-                    "(missing: %s)",
+                    "[EXECUTOR] Node %s: running with broadened description (missing: %s)",
                     node.id,
                     signal.broadened_for_missing,
                 )
@@ -719,9 +691,7 @@ class LLMExecutor:
 
             # ── File-write reminder ───────────────────────────────────────────
             if expected_files and "write_file" not in {h["name"] for h in history}:
-                extra_reminder += build_executor_file_reminder(
-                    expected_files, turns_remaining
-                )
+                extra_reminder += build_executor_file_reminder(expected_files, turns_remaining)
 
             if reporter:
                 reporter.on_llm_turn(turn)
@@ -780,9 +750,7 @@ class LLMExecutor:
                     )
                     continue
 
-                logger.info(
-                    "[EXECUTOR] Node %s completed. Result: %.120s", node.id, result
-                )
+                logger.info("[EXECUTOR] Node %s completed. Result: %.120s", node.id, result)
                 return result
 
             tool_call = response.get("tool_call")
@@ -800,9 +768,7 @@ class LLMExecutor:
             tool_args = tool_call.get("args", {})
 
             if not self.tools or tool_name not in self.tools.tools:
-                logger.warning(
-                    "[EXECUTOR] Node %s requested unknown tool '%s'", node.id, tool_name
-                )
+                logger.warning("[EXECUTOR] Node %s requested unknown tool '%s'", node.id, tool_name)
                 if reporter:
                     step_id = reporter.on_tool_start(tool_name, tool_args)
                     reporter.on_tool_done(
@@ -864,9 +830,7 @@ class LLMExecutor:
                 )
 
             if reporter and step_id:
-                reporter.on_tool_done(
-                    step_id, tool_name, tool_args, tool_result_str, error=error
-                )
+                reporter.on_tool_done(step_id, tool_name, tool_args, tool_result_str, error=error)
 
             if len(tool_result_str) > self.max_tool_result_chars:
                 tool_result_str = (

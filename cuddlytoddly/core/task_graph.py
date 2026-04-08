@@ -30,9 +30,7 @@ class TaskGraph:
             self.children = set()
             self.node_type = node_type
 
-            self.status = (
-                "pending"  # pending / ready / running / done / failed / awaiting_input
-            )
+            self.status = "pending"  # pending / ready / running / done / failed / awaiting_input
             self.result = None
 
             self.origin = origin or "user"
@@ -116,9 +114,7 @@ class TaskGraph:
     # Node Management
     # --------------------------------------------------
 
-    def add_node(
-        self, node_id, node_type="task", dependencies=None, origin="user", metadata=None
-    ):
+    def add_node(self, node_id, node_type="task", dependencies=None, origin="user", metadata=None):
         if node_id in self.nodes:
             return
 
@@ -209,8 +205,7 @@ class TaskGraph:
                 continue
             # awaiting_input deps are treated like failed — not satisfied
             if all(
-                dep in self.nodes and self.nodes[dep].status == "done"
-                for dep in node.dependencies
+                dep in self.nodes and self.nodes[dep].status == "done" for dep in node.dependencies
             ):
                 node.status = "ready"
             else:

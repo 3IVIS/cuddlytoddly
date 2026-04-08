@@ -147,9 +147,7 @@ class SkillLoader:
         """Import tools.py from a skill directory and register its TOOLS dict."""
         import importlib.util
 
-        spec = importlib.util.spec_from_file_location(
-            f"skills.{skill_name}.tools", tools_py
-        )
+        spec = importlib.util.spec_from_file_location(f"skills.{skill_name}.tools", tools_py)
         module = importlib.util.module_from_spec(spec)
         try:
             spec.loader.exec_module(module)
@@ -209,9 +207,7 @@ class SkillLoader:
 
             output_fmt = s.get("expected_output_format", "")
             if output_fmt:
-                first_line = next(
-                    (ln for ln in output_fmt.splitlines() if ln.strip()), ""
-                )
+                first_line = next((ln for ln in output_fmt.splitlines() if ln.strip()), "")
                 lines.append(f"  Output format: {first_line}")
 
         return "\n".join(lines)

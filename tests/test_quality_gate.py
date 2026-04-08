@@ -38,9 +38,7 @@ def ok_dep_response():
     return json.dumps({"ok": True})
 
 
-def gap_dep_response(
-    bridge_id="bridge", bridge_desc="do the thing", bridge_output="output.md"
-):
+def gap_dep_response(bridge_id="bridge", bridge_desc="do the thing", bridge_output="output.md"):
     return json.dumps(
         {
             "ok": False,
@@ -74,9 +72,7 @@ class TestVerifyResult:
         node, snap = make_node_with_outputs(
             [{"name": "salary_report", "type": "document", "description": "the report"}]
         )
-        ok, reason = gate.verify_result(
-            node, "Here is the full report content...", snap
-        )
+        ok, reason = gate.verify_result(node, "Here is the full report content...", snap)
         assert ok is True
         assert "all good" in reason
 
@@ -109,9 +105,7 @@ class TestVerifyResult:
         # LLM verifier rejects the bare label — this is what a real LLM would do
         # given the prompt instruction "A result that is just a filename, a single
         # word, or a name matching the output label is NOT satisfied."
-        llm = FakeLLM(
-            unsatisfied_response("result is just a label matching the output name")
-        )
+        llm = FakeLLM(unsatisfied_response("result is just a label matching the output name"))
         gate = QualityGate(llm_client=llm)
         node, snap = make_node_with_outputs(
             [{"name": "output.txt", "type": "file", "description": "the file"}]
@@ -184,9 +178,7 @@ class TestVerifyResult:
         node, snap = make_node_with_outputs(
             [{"name": "result", "type": "document", "description": "r"}]
         )
-        ok, reason = gate.verify_result(
-            node, "some substantive content here " * 10, snap
-        )
+        ok, reason = gate.verify_result(node, "some substantive content here " * 10, snap)
         assert ok is True
 
     def test_file_label_pattern_checks_disk(self, tmp_path):

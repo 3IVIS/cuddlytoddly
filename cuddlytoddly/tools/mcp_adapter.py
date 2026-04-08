@@ -102,9 +102,7 @@ class MCPAdapter:
     # ── Constructors ──────────────────────────────────────────────────────────
 
     @classmethod
-    def from_stdio(
-        cls, command: str, args: list[str], env: dict | None = None
-    ) -> "MCPAdapter":
+    def from_stdio(cls, command: str, args: list[str], env: dict | None = None) -> "MCPAdapter":
         """
         Create an adapter for a stdio MCP server (the most common kind).
 
@@ -159,9 +157,7 @@ class MCPAdapter:
                 )
             )
 
-        logger.info(
-            "[MCP] Registry built with %d tool(s) from server", len(registry.tools)
-        )
+        logger.info("[MCP] Registry built with %d tool(s) from server", len(registry.tools))
         return registry
 
     # ── Async helpers ─────────────────────────────────────────────────────────

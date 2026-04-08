@@ -54,9 +54,7 @@ def scan_runs(repo_root: Path) -> list[dict]:
         return []
 
     results = []
-    for run_dir in sorted(
-        runs_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True
-    ):
+    for run_dir in sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if not run_dir.is_dir():
             continue
         event_log = run_dir / "events.jsonl"
@@ -76,9 +74,9 @@ def scan_runs(repo_root: Path) -> list[dict]:
                         node_count += 1
                         p = evt.get("payload", {})
                         if p.get("node_type") == "goal" and not goal_text:
-                            goal_text = p.get("metadata", {}).get(
-                                "description", ""
-                            ) or p.get("node_id", "")
+                            goal_text = p.get("metadata", {}).get("description", "") or p.get(
+                                "node_id", ""
+                            )
         except Exception:
             pass
 
@@ -155,9 +153,7 @@ def parse_manual_plan(text: str) -> tuple[str, list]:
             )
             deps_raw: list[str] = []
             if dep_match:
-                deps_raw = [
-                    d.strip() for d in dep_match.group(1).split(",") if d.strip()
-                ]
+                deps_raw = [d.strip() for d in dep_match.group(1).split(",") if d.strip()]
                 content = content[: dep_match.start()].strip()
 
             if not deps_raw:
@@ -356,9 +352,7 @@ def _startup_screen(
 
         # Title bar
         try:
-            stdscr.addstr(
-                0, 0, " cuddlytoddly — startup ".center(w), ACCENT | curses.A_BOLD
-            )
+            stdscr.addstr(0, 0, " cuddlytoddly — startup ".center(w), ACCENT | curses.A_BOLD)
         except curses.error:
             pass
 
@@ -386,9 +380,7 @@ def _startup_screen(
             if not runs:
                 try:
                     stdscr.addstr(body_top + 1, 4, "No existing runs found.", NORMAL)
-                    stdscr.addstr(
-                        body_top + 2, 4, "Press Tab or → to start a new goal.", NORMAL
-                    )
+                    stdscr.addstr(body_top + 2, 4, "Press Tab or → to start a new goal.", NORMAL)
                 except curses.error:
                     pass
             else:
@@ -409,12 +401,8 @@ def _startup_screen(
             try:
                 stdscr.addstr(body_top, 4, "Goal description:", ACCENT)
                 stdscr.addstr(body_top + 1, 4, "─" * min(60, w - 6), NORMAL)
-                stdscr.addstr(
-                    body_top + 2, 4, (goal_text or " ")[: w - 6], HI | curses.A_REVERSE
-                )
-                stdscr.addstr(
-                    body_top + 5, 4, "Type the goal then press Enter.", NORMAL
-                )
+                stdscr.addstr(body_top + 2, 4, (goal_text or " ")[: w - 6], HI | curses.A_REVERSE)
+                stdscr.addstr(body_top + 5, 4, "Type the goal then press Enter.", NORMAL)
             except curses.error:
                 pass
 
@@ -431,9 +419,7 @@ def _startup_screen(
                 except curses.error:
                     pass
             try:
-                stdscr.addstr(
-                    body_top + len(instructions), 4, "─" * min(60, w - 6), NORMAL
-                )
+                stdscr.addstr(body_top + len(instructions), 4, "─" * min(60, w - 6), NORMAL)
             except curses.error:
                 pass
 

@@ -132,9 +132,7 @@ class Orchestrator:
 
     def start(self):
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="simple-orchestrator"
-        )
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="simple-orchestrator")
         self._thread.start()
         logger.info("[ORCHESTRATOR] Started (background thread)")
 
@@ -405,18 +403,14 @@ class Orchestrator:
 
             future = self._pool.submit(self.executor.execute, node, snapshot, reporter)
             self._running_futures[node.id] = future
-            future.add_done_callback(
-                lambda fut, nid=node.id: self._on_node_done(nid, fut)
-            )
+            future.add_done_callback(lambda fut, nid=node.id: self._on_node_done(nid, fut))
             launched += 1
 
         return launched
 
     def _expansion_request_pass(self):
         with self.graph_lock:
-            to_expand = [
-                n.id for n in self.graph.nodes.values() if n.status == "to_be_expanded"
-            ]
+            to_expand = [n.id for n in self.graph.nodes.values() if n.status == "to_be_expanded"]
 
         for node_id in to_expand:
             logger.info("[ORCHESTRATOR] Expansion requested for node: %s", node_id)
@@ -464,9 +458,7 @@ class Orchestrator:
 
                 for desc_id in to_reset:
                     self._apply(Event(RESET_NODE, {"node_id": desc_id}))
-                    logger.info(
-                        "[ORCHESTRATOR] Reset dependent for re-execution: %s", desc_id
-                    )
+                    logger.info("[ORCHESTRATOR] Reset dependent for re-execution: %s", desc_id)
 
     def _on_node_done(self, node_id: str, future):
         self._running_futures.pop(node_id, None)
@@ -498,8 +490,7 @@ class Orchestrator:
                 # so the next run starts with a fresh reporter.
                 if self.llm_stopped:
                     logger.info(
-                        "[EXEC] Node %s interrupted by LLM pause — "
-                        "resetting to pending",
+                        "[EXEC] Node %s interrupted by LLM pause — resetting to pending",
                         node_id,
                     )
                     if reporter:
@@ -548,8 +539,7 @@ class Orchestrator:
                         )
                     )
                     logger.info(
-                        "[EXEC] Node %s executed with broadened description "
-                        "(missing: %s)",
+                        "[EXEC] Node %s executed with broadened description (missing: %s)",
                         node_id,
                         signal.broadened_for_missing,
                     )
@@ -578,9 +568,7 @@ class Orchestrator:
             expected_files = [
                 o
                 for o in declared_outputs
-                if any(
-                    str(o).endswith(ext) for ext in self.quality_gate.FILE_EXTENSIONS
-                )
+                if any(str(o).endswith(ext) for ext in self.quality_gate.FILE_EXTENSIONS)
             ]
 
             if expected_files and "write_file" not in tool_calls_made:
@@ -608,13 +596,9 @@ class Orchestrator:
                                     "content": content,
                                 },
                             )
-                            logger.info(
-                                "[EXEC] Auto-wrote missing file output: %s", file_path
-                            )
+                            logger.info("[EXEC] Auto-wrote missing file output: %s", file_path)
                     except Exception as e:
-                        logger.warning(
-                            "[EXEC] Auto-write failed for %s: %s", file_path, e
-                        )
+                        logger.warning("[EXEC] Auto-write failed for %s: %s", file_path, e)
 
         # ── LLM verification ──────────────────────────────────────────────────
         if self.quality_gate:
@@ -652,8 +636,7 @@ class Orchestrator:
                     retry + 1 >= self.max_retries
                 ):  # retry is 0-indexed; this is the (retry+1)th failure
                     logger.error(
-                        "[EXEC] Node %s exhausted %d retries — "
-                        "marking permanently failed",
+                        "[EXEC] Node %s exhausted %d retries — marking permanently failed",
                         node_id,
                         self.max_retries,
                     )
@@ -681,9 +664,7 @@ class Orchestrator:
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
                 self._apply(Event(RESET_NODE, {"node_id": node_id}))
             else:
-                logger.info(
-                    "[EXEC] Node %s verified OK. Result: %.120s", node_id, result
-                )
+                logger.info("[EXEC] Node %s verified OK. Result: %.120s", node_id, result)
                 self._apply(
                     Event(
                         MARK_DONE,
@@ -746,9 +727,7 @@ class Orchestrator:
 
         with self.graph_lock:
             snapshot = self.graph.get_snapshot()
-            awaiting = [
-                n for n in self.graph.nodes.values() if n.status == "awaiting_input"
-            ]
+            awaiting = [n for n in self.graph.nodes.values() if n.status == "awaiting_input"]
 
         resumed = 0
         for node in awaiting:
@@ -790,8 +769,7 @@ class Orchestrator:
             else:
                 # Path B: no specific fields — resume when any field is now filled
                 any_filled = any(
-                    str(f.get("value", "")).strip().lower() not in _PLACEHOLDERS
-                    for f in fields
+                    str(f.get("value", "")).strip().lower() not in _PLACEHOLDERS for f in fields
                 )
                 if any_filled:
                     should_resume = True
@@ -948,9 +926,7 @@ class Orchestrator:
                     )
                 )
 
-        logger.info(
-            "[ORCHESTRATOR] Injected bridge node %s for %s", bridge_id, blocked_node_id
-        )
+        logger.info("[ORCHESTRATOR] Injected bridge node %s for %s", bridge_id, blocked_node_id)
 
     # ── Startup verification ─────────────────────────────────────────────────
 
@@ -980,16 +956,14 @@ class Orchestrator:
                     path = output.get("name", "")
                 else:
                     is_file = any(
-                        str(output).endswith(ext)
-                        for ext in self.quality_gate.FILE_EXTENSIONS
+                        str(output).endswith(ext) for ext in self.quality_gate.FILE_EXTENSIONS
                     )
                     path = str(output)
                 if is_file and path and not self.quality_gate._file_exists(path):
                     missing_files.append(path)
             if missing_files:
                 logger.warning(
-                    "[STARTUP] Node %s declared file output(s) %s do not exist "
-                    "on disk — resetting",
+                    "[STARTUP] Node %s declared file output(s) %s do not exist on disk — resetting",
                     node.id,
                     missing_files,
                 )
@@ -999,8 +973,7 @@ class Orchestrator:
                         n.status = "pending"
                         n.result = None
                         n.metadata["verification_failure"] = (
-                            f"declared file output(s) {missing_files} "
-                            f"do not exist on disk"
+                            f"declared file output(s) {missing_files} do not exist on disk"
                         )
                         n.metadata.pop("verified", None)
                         n.metadata["retry_count"] = n.metadata.get("retry_count", 0) + 1
@@ -1017,13 +990,9 @@ class Orchestrator:
             ]
 
         if not candidates:
-            logger.info(
-                "[STARTUP] All restored nodes already verified — nothing to check"
-            )
+            logger.info("[STARTUP] All restored nodes already verified — nothing to check")
         else:
-            logger.info(
-                "[STARTUP] %d restored node(s) need verification", len(candidates)
-            )
+            logger.info("[STARTUP] %d restored node(s) need verification", len(candidates))
 
         for node in candidates:
             if self._stop_event.is_set():
@@ -1240,6 +1209,4 @@ class Orchestrator:
 
     def _is_fully_done(self) -> bool:
         with self.graph_lock:
-            return all(
-                n.status in ("done", "failed") for n in self.graph.nodes.values()
-            )
+            return all(n.status in ("done", "failed") for n in self.graph.nodes.values())
