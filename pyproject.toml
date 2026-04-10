@@ -1,6 +1,6 @@
 [project]
 name = "cuddlytoddly"
-version = "0.1.9"
+version = "0.1.10"
 description = "AI agent framework that builds an explicit, editable task graph before executing anything."
 readme = "README.md"
 license = { text = "MIT" }
@@ -23,6 +23,12 @@ classifiers = [
 dependencies = [
     "gitpython>=3.1",
     "platformdirs>=4.0",
+    "fastapi>=0.100",
+    "uvicorn>=0.20",
+    "mcp",
+    "beautifulsoup4",
+    "duckduckgo-search",
+    "requests",
     'windows-curses>=2.3; sys_platform == "win32"',
 ]
 
