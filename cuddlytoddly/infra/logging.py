@@ -17,6 +17,7 @@ inherit handlers automatically.
 import logging
 import logging.handlers
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -93,17 +94,24 @@ class _DeduplicateFilter(logging.Filter):
 
     Not applied to stderr — the live terminal output is a separate stream
     where a user may want to see repeated warnings.
+
+    FIX #4: ``_last_key`` is now protected by a ``threading.Lock`` so that
+    concurrent executor threads logging through the same handler cannot race
+    on the shared state and either suppress lines that should appear or emit
+    lines that should be suppressed.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self._last_key: tuple | None = None
+        self._lock = threading.Lock()
 
     def filter(self, record: logging.LogRecord) -> bool:
         key = (record.levelno, record.name, record.getMessage())
-        if key == self._last_key:
-            return False  # identical to previous — suppress
-        self._last_key = key
+        with self._lock:
+            if key == self._last_key:
+                return False  # identical to previous — suppress
+            self._last_key = key
         return True
 
 
@@ -140,9 +148,6 @@ def setup_logging(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Archive previous session logs before starting fresh ──────────────────
-    # Each call to setup_logging() marks the start of a new session.
-    # Existing files are renamed to dag.log.YYYYMMDD_HHMMSS so history is
-    # preserved.  Empty files (e.g. from a failed prior startup) are skipped.
     for fname in ("dag.log", "dag_debug.log"):
         _rotate_existing_log(log_dir / fname)
 

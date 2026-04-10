@@ -1,8 +1,7 @@
-# --- FILE: cuddlytoddly/engine/llm_orchestrator.py ---
-
 # engine/llm_orchestrator.py
 
 import json
+import re
 import threading
 import time
 from collections import namedtuple
@@ -76,6 +75,7 @@ class Orchestrator:
         max_gap_fill_attempts: int = 2,
         idle_sleep: float = 0.5,
         max_retries: int = 5,
+        verify_timeout: float = 300.0,
     ):
         self.graph = graph
         self.planner = planner
@@ -87,6 +87,10 @@ class Orchestrator:
         self.max_gap_fill_attempts = max_gap_fill_attempts
         self.idle_sleep = idle_sleep
         self.max_retries = max_retries
+        # Maximum seconds to spend in verify_restored_nodes().  Background
+        # verification runs in a daemon thread; if the LLM hangs this prevents
+        # the thread from parking forever holding the LLM connection.
+        self.verify_timeout = verify_timeout
 
         # UI contract
         self.graph_lock = threading.RLock()
@@ -510,11 +514,6 @@ class Orchestrator:
             return
 
         # ── Broadening metadata: write back if node ran with broadened description
-        # The executor no longer blocks on missing inputs — it executes with a
-        # broadened description and carries the signal via the reporter.  After
-        # successful completion we write the broadening info into node metadata
-        # (for UI visibility and reuse on the next execution) and patch the
-        # clarification node with any new_fields so the user can fill them in.
         reporter_for_broadening = self._reporters.get(node_id)
         if reporter_for_broadening and reporter_for_broadening.pending_broadening:
             signal = reporter_for_broadening.pending_broadening
@@ -546,11 +545,6 @@ class Orchestrator:
                         signal.broadened_for_missing,
                     )
         else:
-            # Node ran with its original description — clear any stale broadened
-            # metadata left over from a previous attempt that did run with
-            # broadening.  Without this, the quality-gate verifier would still
-            # see a BROADENED EXECUTION NOTICE and reject legitimate specific
-            # results as invented.
             with self.graph_lock:
                 node = self.graph.nodes.get(node_id)
                 if node and node.metadata.get("broadened_description"):
@@ -602,8 +596,6 @@ class Orchestrator:
             ]
 
             if expected_files and "write_file" not in tool_calls_made:
-                import re
-
                 file_path = expected_files[0]
                 content = result
 
@@ -644,9 +636,6 @@ class Orchestrator:
             reason = ""
 
         # ── Consolidate state mutation in a single lock acquisition ──────────
-        # Holding the lock across both MARK_FAILED and RESET_NODE prevents
-        # concurrent _on_node_done callbacks from interleaving their resets
-        # and producing duplicate rapid-fire relaunches.
         with self.graph_lock:
             if node_id not in self.graph.nodes:
                 return
@@ -661,10 +650,7 @@ class Orchestrator:
                     reason,
                 )
 
-                # ── Max retries cap ───────────────────────────────────────────
-                if (
-                    retry + 1 >= self.max_retries
-                ):  # retry is 0-indexed; this is the (retry+1)th failure
+                if retry + 1 >= self.max_retries:
                     logger.error(
                         "[EXEC] Node %s exhausted %d retries — marking permanently failed",
                         node_id,
@@ -834,7 +820,6 @@ class Orchestrator:
 
         Must be called with self.graph_lock held.
         """
-        # Prefer the hint supplied by the executor; fall back to dependency scan
         clar_id = hint_clar_id
         if not clar_id or clar_id not in self.graph.nodes:
             node = self.graph.nodes.get(task_node_id)
@@ -873,9 +858,13 @@ class Orchestrator:
             )
         )
 
-        # Patch the result JSON so _resume_unblocked_pass can read the new keys
+        # Snapshot clar.result while the lock is held (caller must hold
+        # graph_lock) so the JSON parse cannot race with another thread
+        # updating the same node's result via _apply().
+        current_result: str | None = clar.result
+
         try:
-            result_fields = json.loads(clar.result) if clar.result else []
+            result_fields = json.loads(current_result) if current_result else []
             result_fields.extend(fields_to_add)
             self._apply(
                 Event(
@@ -961,6 +950,7 @@ class Orchestrator:
     # ── Startup verification ─────────────────────────────────────────────────
 
     def verify_restored_nodes(self):
+        deadline = time.time() + self.verify_timeout
         with self.graph_lock:
             done_tasks = [
                 n
@@ -969,9 +959,6 @@ class Orchestrator:
             ]
 
         # Pass 1: file-existence check for nodes with declared file outputs.
-        # _looks_like_filename was removed — instead we check disk existence
-        # directly for any output declared as a file type, mirroring what
-        # QualityGate.verify_result does at runtime.
         for node in done_tasks:
             if not self.quality_gate:
                 continue
@@ -991,6 +978,7 @@ class Orchestrator:
                     path = str(output)
                 if is_file and path and not self.quality_gate._file_exists(path):
                     missing_files.append(path)
+
             if missing_files:
                 logger.warning(
                     "[STARTUP] Node %s declared file output(s) %s do not exist on disk — resetting",
@@ -1000,13 +988,22 @@ class Orchestrator:
                 with self.graph_lock:
                     n = self.graph.nodes.get(node.id)
                     if n:
-                        n.status = "pending"
-                        n.result = None
-                        n.metadata["verification_failure"] = (
-                            f"declared file output(s) {missing_files} do not exist on disk"
-                        )
-                        n.metadata.pop("verified", None)
-                        n.metadata["retry_count"] = n.metadata.get("retry_count", 0) + 1
+                        retry = n.metadata.get("retry_count", 0)
+                        # FIX #3: emit RESET_NODE through _apply() so the status
+                        # change is written to the event log.  Without this the
+                        # node is still "done" on the next replay and immediately
+                        # fails verification again in an infinite loop.
+                        self._apply(Event(RESET_NODE, {"node_id": node.id}))
+                        # Re-fetch after apply (apply may have triggered callbacks)
+                        n = self.graph.nodes.get(node.id)
+                        if n:
+                            # Metadata pops have no dedicated event type; they are
+                            # informational fields that do not affect replay.
+                            n.metadata["verification_failure"] = (
+                                f"declared file output(s) {missing_files} do not exist on disk"
+                            )
+                            n.metadata.pop("verified", None)
+                            n.metadata["retry_count"] = retry + 1
 
         # Pass 2: LLM verification for nodes never verified
         with self.graph_lock:
@@ -1026,6 +1023,14 @@ class Orchestrator:
 
         for node in candidates:
             if self._stop_event.is_set():
+                break
+            if time.time() > deadline:
+                logger.warning(
+                    "[STARTUP] verify_restored_nodes hit %.0fs timeout — "
+                    "%d node(s) left unverified",
+                    self.verify_timeout,
+                    len(candidates) - candidates.index(node),
+                )
                 break
 
             logger.info("[STARTUP] Verifying restored node: %s", node.id)
@@ -1050,11 +1055,15 @@ class Orchestrator:
                         reason,
                     )
                     n = self.graph.nodes[node.id]
-                    n.status = "pending"
-                    n.result = None
-                    n.metadata["verification_failure"] = reason
-                    n.metadata.pop("verified", None)
-                    n.metadata["retry_count"] = n.metadata.get("retry_count", 0) + 1
+                    retry = n.metadata.get("retry_count", 0)
+                    # FIX #3: emit RESET_NODE so the reset is captured in the
+                    # event log and survives the next replay correctly.
+                    self._apply(Event(RESET_NODE, {"node_id": node.id}))
+                    n = self.graph.nodes.get(node.id)
+                    if n:
+                        n.metadata["verification_failure"] = reason
+                        n.metadata.pop("verified", None)
+                        n.metadata["retry_count"] = retry + 1
                 else:
                     logger.info("[STARTUP] Restored node %s verified OK", node.id)
                     self._apply(
@@ -1151,9 +1160,11 @@ class Orchestrator:
             node = self.graph.nodes.get(node_id)
             if not node or node_id in self._running_futures:
                 return
-            node.status = "pending"
-            node.result = None
-            self.graph.recompute_readiness()
+            # Emit RESET_NODE through _apply() so the state change is written to
+            # the event log and survives replay correctly.  Previously this
+            # mutated node.status directly, which meant a retried node would
+            # revert to "failed" or "done" on the next run's replay.
+            self._apply(Event(RESET_NODE, {"node_id": node_id}))
 
     def resume_node(self, node_id: str) -> bool:
         """

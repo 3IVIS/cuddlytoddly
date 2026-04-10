@@ -82,10 +82,20 @@ def remove_commit_hashes(lines):
 node_to_commit = {}  # maps node_id -> latest commit hash
 
 
-def get_git_dag_text():
+def get_git_dag_text(repo_path: str | None = None):
+    """Return git log lines for the current DAG.
+
+    Parameters
+    ----------
+    repo_path:
+        Path to the shadow git repository.  Defaults to
+        ``git_proj.REPO_PATH`` (the module-level default) for backward compat.
+    """
+    if repo_path is None:
+        repo_path = git_proj.REPO_PATH
     result = subprocess.run(
         ["git", "branch", "--list", "tip_*"],
-        cwd=git_proj.REPO_PATH,
+        cwd=repo_path,
         capture_output=True,
         text=True,
     )
@@ -96,7 +106,7 @@ def get_git_dag_text():
 
     result = subprocess.run(
         ["git", "log", "--graph", "--oneline", "--color=always"] + tip_branches,
-        cwd=git_proj.REPO_PATH,
+        cwd=repo_path,
         capture_output=True,
         text=True,
     )
@@ -322,11 +332,26 @@ def trace_branch_path_recursive(
     visited=None,
     is_start=True,
     debug=False,
+    _depth=0,
 ):
     """
-    Recursive function to find path from (row,col) to (child_row,child_col)
-    following \ | / characters, stopping at other *.
+    Recursively trace a visual path from (row, col) to (child_row, child_col)
+    following the \\ | / characters produced by ``git log --graph``, stopping
+    when another ``*`` node marker is encountered.
+
+    Returns a set of (row, col) positions that form the highlighted path.
+    When a dead-end or blocking ``*`` is detected the sentinel ``{"x"}`` is
+    returned so callers can detect that this branch did not reach the target.
+
+    ``_depth`` guards against hitting Python's recursion limit on very long git
+    logs — the function returns an empty set gracefully when the limit is hit.
     """
+    _MAX_DEPTH = 800  # comfortably below Python's default recursion limit of 1000
+
+    if _depth > _MAX_DEPTH:
+        logger.debug("[UI] trace_branch_path_recursive hit depth limit at (%d,%d)", row, col)
+        return set()
+
     if visited is None:
         visited = set()
     path_positions = set()
@@ -463,6 +488,7 @@ def trace_branch_path_recursive(
                             visited,
                             is_start=False,
                             debug=debug,
+                            _depth=_depth + 1,
                         )
                     ]
         if (
@@ -495,6 +521,7 @@ def trace_branch_path_recursive(
                     visited,
                     is_start=False,
                     debug=debug,
+                    _depth=_depth + 1,
                 )
                 | temp_set
             ]
@@ -521,6 +548,7 @@ def trace_branch_path_recursive(
                     visited,
                     is_start=False,
                     debug=debug,
+                    _depth=_depth + 1,
                 )
                 | temp_set
             ]
@@ -1280,7 +1308,7 @@ def open_remove_modal(current_node, snapshot, event_queue, set_modal):
     )
 
 
-def dag_interface(stdscr, orchestrator, run_dir=None):
+def dag_interface(stdscr, orchestrator, run_dir=None, repo_path=None):
     graph = orchestrator.graph
     graph_lock = orchestrator.graph_lock
     event_queue = orchestrator.event_queue
@@ -1366,7 +1394,7 @@ def dag_interface(stdscr, orchestrator, run_dir=None):
                     snapshot = graph.get_snapshot()
 
                 rebuild_repo_from_graph(graph)
-                cached_git_lines = get_git_dag_text()
+                cached_git_lines = get_git_dag_text(repo_path)
                 cached_node_to_line = map_nodes_to_lines(cached_git_lines, snapshot)
 
                 last_seen_version = version_at_rebuild_start
@@ -1894,12 +1922,14 @@ def run_ui(
     run_dir: Path | None = None,
     repo_root: Path | None = None,
     restart_fn=None,
+    git_proj_instance=None,
 ):
     """
     Run the curses DAG UI.
+
     If the user presses 'g', the startup screen is shown so they can pick a
-    different goal or resume a previous run.  This requires `repo_root` and
-    `restart_fn` to be supplied:
+    different goal or resume a previous run.  This requires ``repo_root`` and
+    ``restart_fn`` to be supplied::
 
         run_ui(
             orchestrator,
@@ -1907,7 +1937,20 @@ def run_ui(
             repo_root=REPO_ROOT,
             restart_fn=_init_system,   # callable(StartupChoice) -> (orch, run_dir)
         )
+
+    Parameters
+    ----------
+    git_proj_instance:
+        Optional ``GitProjection`` instance for this run.  When supplied,
+        git operations use its isolated state rather than the module-level
+        default, which prevents concurrent runs from clobbering each other.
+        Falls back to the module-level default when ``None``.
     """
+    from cuddlytoddly.ui.git_projection import GitProjection
+
+    _git = git_proj_instance if isinstance(git_proj_instance, GitProjection) else None
+    _repo_path = _git.repo_path if _git else git_proj.REPO_PATH
+
     root = logging.getLogger("dag")
     ch = getattr(root, "_stderr_handler", None)
     if ch:
@@ -1918,13 +1961,19 @@ def run_ui(
     old_stderr = sys.stderr
     sys.stderr = log_file
 
+    def _rebuild(graph):
+        if _git:
+            _git.rebuild_repo_from_graph(graph)
+        else:
+            rebuild_repo_from_graph(graph)
+
     try:
         while True:
             try:
-                rebuild_repo_from_graph(orchestrator.graph)
+                _rebuild(orchestrator.graph)
             except Exception as exc:
                 logger.warning("[UI] Git pre-warm failed (non-fatal): %s", exc)
-            result = curses.wrapper(dag_interface, orchestrator, run_dir)
+            result = curses.wrapper(dag_interface, orchestrator, run_dir, _repo_path)
 
             # Normal quit — nothing more to do.
             if result != "switch":
@@ -1958,6 +2007,9 @@ def run_ui(
             except Exception as exc:
                 logger.error("[UI] restart_fn failed during goal switch: %s", exc, exc_info=True)
                 break
+
+            # Refresh repo_path for the new run so git_dag_text uses the right dir.
+            _repo_path = _git.repo_path if _git else git_proj.REPO_PATH
 
             # Reopen log file pointed at the new run directory.
             log_file.close()

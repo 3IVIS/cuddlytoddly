@@ -1,10 +1,16 @@
 # infra/event_log.py
 
+# FIX #11: moved `import logging` to module level — it was previously inside
+# the except block on every replay iteration (harmless due to Python's import
+# cache, but misleading and contrary to PEP 8 style).
 import json
+import logging
 import threading
 from pathlib import Path
 
 from cuddlytoddly.core.events import Event
+
+_replay_logger = logging.getLogger("dag.infra.event_log")
 
 
 class EventLog:
@@ -53,9 +59,7 @@ class EventLog:
                     yield Event.from_dict(data)
                 except (json.JSONDecodeError, KeyError, ValueError) as e:
                     # Log and skip — one bad line should not abort a full restore
-                    import logging
-
-                    logging.getLogger("dag.infra.event_log").warning(
+                    _replay_logger.warning(
                         "[EVENT LOG] Skipping corrupt line %d: %s — %s",
                         lineno,
                         repr(raw[:80]),

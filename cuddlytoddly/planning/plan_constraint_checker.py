@@ -149,7 +149,7 @@ class PlanConstraintChecker:
     @staticmethod
     def _find_cycle_nodes(adj: dict, new_ids: set) -> set:
         """
-        DFS 3-colour cycle detection scoped to new nodes.
+        Iterative DFS 3-colour cycle detection scoped to new nodes.
 
         Returns the minimal set of new nodes that form the first detected
         cycle, or an empty set if the graph is acyclic.
@@ -157,34 +157,52 @@ class PlanConstraintChecker:
         Neighbours that are not in new_ids (i.e. existing graph nodes) are
         skipped — they are already validated and cannot form new cycles on
         their own.
+
+        The implementation is fully iterative to avoid hitting Python's default
+        recursion limit on large plans.  Each stack frame is a tuple of
+        (node, iterator-over-neighbours, path-snapshot) so we can reconstruct
+        the DFS path when a back-edge is detected without relying on the call
+        stack.
         """
         WHITE, GRAY, BLACK = 0, 1, 2
         color = {nid: WHITE for nid in new_ids}
-        stack_path: list = []  # current DFS path; shared via closure
 
-        def dfs(node: str) -> set:
-            color[node] = GRAY
-            stack_path.append(node)
-            for neighbour in adj.get(node, set()):
+        for start in list(new_ids):
+            if color.get(start) != WHITE:
+                continue
+
+            # Each entry: (node, neighbour_iter, path_up_to_and_including_node)
+            path: list[str] = []
+            stack: list[tuple] = [(start, iter(adj.get(start, set())), None)]
+            color[start] = GRAY
+            path.append(start)
+
+            while stack:
+                node, neighbours, _ = stack[-1]
+                try:
+                    neighbour = next(neighbours)
+                except StopIteration:
+                    # All neighbours explored — colour black and backtrack
+                    color[node] = BLACK
+                    stack.pop()
+                    if path and path[-1] == node:
+                        path.pop()
+                    continue
+
                 if neighbour not in color:
                     continue  # existing graph node — skip
-                if color[neighbour] == GRAY:
-                    # Back-edge: collect cycle members from neighbour onward
-                    idx = stack_path.index(neighbour)
-                    return set(stack_path[idx:])
-                if color[neighbour] == WHITE:
-                    result = dfs(neighbour)
-                    if result:
-                        return result
-            stack_path.pop()
-            color[node] = BLACK
-            return set()
 
-        for nid in list(new_ids):
-            if color.get(nid) == WHITE:
-                result = dfs(nid)
-                if result:
-                    return result & new_ids  # intersect: only return NEW nodes
+                if color[neighbour] == GRAY:
+                    # Back-edge found — extract the cycle from the current path
+                    idx = path.index(neighbour)
+                    cycle = set(path[idx:])
+                    return cycle & new_ids  # only return NEW nodes
+
+                if color[neighbour] == WHITE:
+                    color[neighbour] = GRAY
+                    path.append(neighbour)
+                    stack.append((neighbour, iter(adj.get(neighbour, set())), None))
+
         return set()
 
     # ── Check 6: required_input consistency ───────────────────────────────────

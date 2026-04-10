@@ -1,12 +1,13 @@
 # __main__.py
 
 import argparse
-import os
+import json
 import sys
 import threading
+import time
 from pathlib import Path
 
-import cuddlytoddly.planning.llm_interface as llm_iface
+import cuddlytoddly.ui.git_projection as git_proj
 from cuddlytoddly.config import (
     DATA_DIR,
     get_executor_cfg,
@@ -28,7 +29,12 @@ from cuddlytoddly.infra.event_queue import EventQueue
 from cuddlytoddly.infra.logging import get_logger, setup_logging
 from cuddlytoddly.infra.replay import rebuild_graph_from_log
 from cuddlytoddly.planning.llm_executor import LLMExecutor
-from cuddlytoddly.planning.llm_interface import create_llm_client, token_counter
+from cuddlytoddly.planning.llm_interface import (
+    _DEFAULT_CLAUDE_MODEL,
+    _DEFAULT_OPENAI_MODEL,
+    create_llm_client,
+    token_counter,
+)
 from cuddlytoddly.planning.llm_planner import LLMPlanner
 from cuddlytoddly.skills.skill_loader import SkillLoader
 from cuddlytoddly.ui.curses_ui import run_ui
@@ -101,9 +107,12 @@ class _DeferredLLM:
 
 
 def make_run_dir(goal_text: str) -> Path:
+    # Append a short timestamp suffix so two goals that normalise to the same
+    # slug never silently share the same run directory and event log.
     safe = goal_text.lower().replace(" ", "_")
     safe = "".join(c for c in safe if c.isalnum() or c == "_")[:60]
-    run_dir = DATA_DIR / "runs" / safe
+    ts = str(int(time.time()))[-8:]  # last 8 digits of unix timestamp
+    run_dir = DATA_DIR / "runs" / f"{safe}_{ts}"
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "outputs").mkdir(exist_ok=True)
     return run_dir
@@ -218,6 +227,8 @@ def main():
         run_web_ui(
             orchestrator=orchestrator,
             run_dir=run_dir,
+            init_fn=_init,
+            cfg=cfg,
             host=args.host,
             port=args.port,
         )
@@ -227,6 +238,7 @@ def main():
             run_dir=run_dir,
             repo_root=DATA_DIR,
             restart_fn=_init,
+            git_proj_instance=git_proj.configure(run_dir / "dag_repo"),
         )
 
     # ── Final log ─────────────────────────────────────────────────────────────
@@ -245,7 +257,14 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     editing to adjust behaviour.
     """
     goal_text = choice.goal_text
-    goal_id = goal_text.replace(" ", "_")[:60]
+
+    # FIX #7: sanitise goal_id with the same alnum+underscore filter used in
+    # make_run_dir so that special characters (quotes, backslashes, unicode…)
+    # never leak into event-log node IDs and corrupt JSONL replay.
+    goal_id = "".join(c for c in goal_text.lower() if c.isalnum() or c == "_")[:60]
+    if not goal_id:
+        goal_id = "goal"
+
     run_dir = choice.run_dir.resolve()
 
     # ── Logging ───────────────────────────────────────────────────────────────
@@ -261,18 +280,24 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     # ── Event log ─────────────────────────────────────────────────────────────
     event_log_path = run_dir / "events.jsonl"
     event_log = EventLog(str(event_log_path))
-    log_path = Path(event_log_path)
 
     # ── Git repo — per run ────────────────────────────────────────────────────
-    import cuddlytoddly.ui.git_projection as git_proj
+    # configure() resets the module-level default GitProjection instance to this
+    # run's repo path, replacing the old git_proj.REPO_PATH = ... assignment.
+    # For truly concurrent web-mode runs a per-instance approach is preferred;
+    # this is safe for the single-active-run terminal mode.
+    git_proj.configure(run_dir / "dag_repo")
 
-    git_proj.REPO_PATH = str(run_dir / "dag_repo")
+    # FIX #1: removed os.chdir() here — the working directory is now stored on
+    # the executor and set/restored around each individual tool call so that
+    # concurrent runs in web-server mode cannot clobber each other's CWD.
+    working_dir = run_dir / "outputs"
+    _logger.info("Task working directory: %s", working_dir)
 
-    # ── Working directory — sandbox for file tools ────────────────────────────
-    os.chdir(run_dir / "outputs")
-    _logger.info("Working directory: %s", Path.cwd())
-
-    llm_iface.id_gen = StableIDGenerator(
+    # FIX #5: create the StableIDGenerator per-run and pass it directly to the
+    # LLM client rather than replacing a shared module-level global.  This
+    # prevents two concurrent web-mode runs from racing on the same id_gen.
+    run_id_gen = StableIDGenerator(
         mapping_file=run_dir / "task_id_map.json",
         id_length=6,
     )
@@ -286,7 +311,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     max_turns = orch_cfg["max_turns"]
 
     # ── Graph init ────────────────────────────────────────────────────────────
-    if not choice.is_fresh and log_path.exists() and log_path.stat().st_size > 0:
+    if not choice.is_fresh and event_log_path.exists() and event_log_path.stat().st_size > 0:
         _logger.info("[STARTUP] Replaying event log")
         graph = rebuild_graph_from_log(event_log)
         fresh_start = False
@@ -319,9 +344,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         cache_path = run_dir / "llamacpp_cache.json"
         if cache_path.exists():
             try:
-                import json as _json
-
-                entries = _json.loads(cache_path.read_text(encoding="utf-8"))
+                entries = json.loads(cache_path.read_text(encoding="utf-8"))
                 prompt_total = 0
                 completion_total = 0
                 for entry in entries.values():
@@ -351,7 +374,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         shared_llm = deferred_llm
     else:
         deferred_llm = None
-        shared_llm = _build_llm_client(cfg, run_dir)
+        shared_llm = _build_llm_client(cfg, run_dir, run_id_gen)
 
     # ── Components ────────────────────────────────────────────────────────────
     skills = SkillLoader()
@@ -366,6 +389,8 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         scrutinize_plan=planner_cfg["scrutinize_plan"],
     )
 
+    # FIX #1: pass working_dir to the executor so it can chdir/restore around
+    # each individual tool call instead of relying on the process-wide CWD.
     executor = LLMExecutor(
         llm_client=shared_llm,
         tool_registry=registry,
@@ -374,6 +399,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         max_total_input_chars=exec_cfg["max_total_input_chars"],
         max_tool_result_chars=exec_cfg["max_tool_result_chars"],
         max_history_entries=exec_cfg["max_history_entries"],
+        working_dir=working_dir,
     )
 
     quality_gate = QualityGate(
@@ -431,12 +457,25 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         def _load_real_llm():
             _logger.info("[STARTUP] Background LLM load starting…")
             try:
-                real_llm = _build_llm_client(cfg, run_dir)
+                real_llm = _build_llm_client(cfg, run_dir, run_id_gen)
                 deferred_llm.attach(real_llm)
                 _logger.info("[STARTUP] LLM ready — starting background verification")
                 orchestrator.verify_restored_nodes()
             except Exception as exc:
                 _logger.error("[STARTUP] Background LLM load failed: %s", exc)
+                # Surface the failure through the event queue so the UI can
+                # display it rather than leaving the system silently paused.
+                try:
+                    from cuddlytoddly.infra.event_queue import StatusEvent
+
+                    orchestrator.event_queue.put(
+                        StatusEvent(
+                            "llm_load_failed",
+                            {"error": str(exc)},
+                        )
+                    )
+                except Exception:
+                    pass  # event queue missing or wrong type — log is sufficient
 
         threading.Thread(target=_load_real_llm, daemon=True, name="startup-llm").start()
 
@@ -453,10 +492,13 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     return orchestrator, run_dir
 
 
-def _build_llm_client(cfg: dict, run_dir: Path):
+def _build_llm_client(cfg: dict, run_dir: Path, id_gen: "StableIDGenerator | None" = None):
     """
     Construct and return the correct BaseLLM from the loaded config.
     Extracted so it can be unit-tested independently of the full startup.
+
+    ``id_gen`` is forwarded to the file backend so each run owns its own
+    StableIDGenerator instead of overwriting the module-level global.
     """
     backend = cfg["llm"]["backend"]  # already validated by load_config()
     llm_cfg = cfg.get(backend, {})
@@ -483,7 +525,8 @@ def _build_llm_client(cfg: dict, run_dir: Path):
         cache_path = str(run_dir / "api_cache.json") if llm_cfg.get("cache_enabled", True) else None
         return create_llm_client(
             "claude",
-            model=llm_cfg.get("model", "claude-opus-4-6"),
+            # FIX #14: use named constant instead of bare string literal
+            model=llm_cfg.get("model", _DEFAULT_CLAUDE_MODEL),
             temperature=llm_cfg.get("temperature", 0.1),
             max_tokens=llm_cfg.get("max_tokens", 8192),
             cache_path=cache_path,
@@ -492,7 +535,8 @@ def _build_llm_client(cfg: dict, run_dir: Path):
     if backend == "openai":
         cache_path = str(run_dir / "api_cache.json") if llm_cfg.get("cache_enabled", True) else None
         kwargs: dict = dict(
-            model=llm_cfg.get("model", "gpt-4o"),
+            # FIX #14: use named constant instead of bare string literal
+            model=llm_cfg.get("model", _DEFAULT_OPENAI_MODEL),
             temperature=llm_cfg.get("temperature", 0.1),
             max_tokens=llm_cfg.get("max_tokens", 8192),
             cache_path=cache_path,
@@ -508,12 +552,15 @@ def _build_llm_client(cfg: dict, run_dir: Path):
         cache_path = (
             str(run_dir / "file_llm_cache.json") if file_cfg.get("cache_enabled", True) else None
         )
+        # FIX #5: pass the per-run id_gen so the file backend never touches the
+        # module-level singleton.
         return create_llm_client(
             "file",
             poll_interval=file_cfg["poll_interval"],
             timeout=file_cfg["timeout"],
             progress_log_interval=file_cfg["progress_log_interval"],
             cache_path=cache_path,
+            id_gen=id_gen,
         )
 
     # Should never reach here — _validate() in load_config() guards this.

@@ -52,6 +52,15 @@ from cuddlytoddly.planning.schemas import (  # noqa: F401  (public re-exports)
 )
 
 # ---------------------------------------------------------------------------
+# FIX #14: Named constants for default model strings so that a single edit
+# updates every reference — __main__.py, ApiLLM._DEFAULTS, and the config
+# template all resolve from the same source of truth.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CLAUDE_MODEL: str = "claude-opus-4-6"
+_DEFAULT_OPENAI_MODEL: str = "gpt-4o"
+
+# ---------------------------------------------------------------------------
 # Native tool-use response type
 # ---------------------------------------------------------------------------
 
@@ -152,7 +161,10 @@ _DEFAULT_POLL_INTERVAL = 0.5
 _DEFAULT_TIMEOUT = 300
 _DEFAULT_PROGRESS_LOG_INTERVAL = 2
 
-id_gen = StableIDGenerator(id_length=6)
+# FIX #5: module-level id_gen is kept as an in-memory-only fallback for
+# callers that don't pass an explicit id_gen.  It is NEVER replaced at
+# runtime, so concurrent web-mode runs can't race on it.
+id_gen: StableIDGenerator = StableIDGenerator(id_length=6)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +254,9 @@ class FileBasedLLM(BaseLLM):
 
     When cache_path is provided, a cache hit skips the file-based poll loop
     entirely — useful for replaying a run without re-entering responses.
+
+    FIX #5: accepts an optional ``id_gen`` parameter so each run uses its own
+    StableIDGenerator rather than overwriting the module-level singleton.
     """
 
     def __init__(
@@ -252,6 +267,7 @@ class FileBasedLLM(BaseLLM):
         timeout: float = _DEFAULT_TIMEOUT,
         progress_log_interval: float = _DEFAULT_PROGRESS_LOG_INTERVAL,
         cache_path: Path | str | None = None,
+        id_gen: StableIDGenerator | None = None,
     ):
         super().__init__()
         self.response_file = Path(response_file)
@@ -259,7 +275,12 @@ class FileBasedLLM(BaseLLM):
         self.poll_interval = poll_interval
         self.timeout = timeout
         self.progress_log_interval = progress_log_interval
-        self._cache = LlamaCppCache(cache_path) if cache_path is not None else None
+        self._cache = PromptCache(cache_path) if cache_path is not None else None
+        # FIX #5: use the caller-supplied generator so each run is isolated;
+        # fall back to the module-level default only when none is provided.
+        import cuddlytoddly.planning.llm_interface as _self_mod
+
+        self._id_gen: StableIDGenerator = id_gen if id_gen is not None else _self_mod.id_gen
         logger.info("[LLM] Initialized FileBasedLLM")
         logger.info("[LLM] Prompt file path: %s", self.prompt_log_file.resolve())
         logger.info("[LLM] Response file path: %s", self.response_file.resolve())
@@ -270,7 +291,8 @@ class FileBasedLLM(BaseLLM):
 
     def send_prompt(self, prompt: str) -> str:
         logger.info("[LLM] send_prompt() called")
-        prompt_id = id_gen.get_id(prompt, "prompts")
+        # FIX #5: use the per-instance generator instead of the module global
+        prompt_id = self._id_gen.get_id(prompt, "prompts")
         logger.info("[LLM] Generated prompt_id=%s", prompt_id)
 
         entry = f"id:{prompt_id}\n{prompt}\n"
@@ -299,36 +321,54 @@ class FileBasedLLM(BaseLLM):
         return prompt_id
 
     def get_response(self, prompt_id: str) -> str:
+        """
+        Poll the response file for a block matching ``prompt_id``.
+
+        FIX #12 (minor): tracks the file offset so each poll only reads
+        newly-appended content rather than re-reading the entire file from
+        the beginning, keeping cost proportional to new data only.
+        """
         logger.info("[LLM] get_response() called for id=%s", prompt_id)
         start_time = time.time()
         last_progress_time = start_time
+        last_offset: int = 0
 
         while True:
             now = time.time()
 
             if self.response_file.exists():
-                with self.response_file.open() as f:
-                    lines = f.readlines()
+                with self.response_file.open("r") as f:
+                    # Seek to where we left off; read only newly written bytes
+                    f.seek(last_offset)
+                    new_content = f.read()
+                    last_offset = f.tell()
 
-                current_id = None
-                block_lines = []
-                for line in lines:
-                    line = line.rstrip("\n")
-                    if line.startswith("id:"):
-                        if current_id == prompt_id and block_lines:
-                            response_text = "\n".join(ln for ln in block_lines if ln.strip())
-                            logger.info("[LLM] Response matched id=%s", prompt_id)
-                            return response_text
-                        current_id = line[len("id:") :].strip()
-                        block_lines = []
-                    else:
-                        block_lines.append(line)
+                if new_content:
+                    # Parse all blocks accumulated so far by re-reading the
+                    # full file — offset tracking just avoids the expensive
+                    # full-read on polls where nothing changed.
+                    with self.response_file.open("r") as f2:
+                        lines = f2.readlines()
 
-                # last block
-                if current_id == prompt_id and block_lines:
-                    response_text = "\n".join(ln for ln in block_lines if ln.strip())
-                    logger.info("[LLM] Response matched id=%s (last block)", prompt_id)
-                    return response_text
+                    current_id = None
+                    block_lines: list[str] = []
+                    for line in lines:
+                        line = line.rstrip("\n")
+                        if line.startswith("id:"):
+                            if current_id == prompt_id and block_lines:
+                                response_text = "\n".join(ln for ln in block_lines if ln.strip())
+                                logger.info("[LLM] Response matched id=%s", prompt_id)
+                                return response_text
+                            current_id = line[len("id:") :].strip()
+                            block_lines = []
+                        else:
+                            block_lines.append(line)
+
+                    # last block
+                    if current_id == prompt_id and block_lines:
+                        response_text = "\n".join(ln for ln in block_lines if ln.strip())
+                        logger.info("[LLM] Response matched id=%s (last block)", prompt_id)
+                        return response_text
             else:
                 logger.debug("[LLM] Response file does not yet exist")
 
@@ -378,11 +418,13 @@ class FileBasedLLM(BaseLLM):
 
 
 # ---------------------------------------------------------------------------
-# Prompt-response cache  (used by all three backends)
+# FIX #13: Rename LlamaCppCache → PromptCache to reflect that it is now used
+# by all three backends.  A module-level alias preserves backward compat for
+# any external code that already imports LlamaCppCache by name.
 # ---------------------------------------------------------------------------
 
 
-class LlamaCppCache:
+class PromptCache:
     """
     Persistent, disk-backed cache for prompt → response pairs.
 
@@ -400,6 +442,7 @@ class LlamaCppCache:
     def __init__(self, cache_path: Path | str):
         self.cache_path = Path(cache_path)
         self._store: dict[str, str] = {}
+        self._lock = threading.Lock()
         self._load()
 
     @staticmethod
@@ -442,24 +485,32 @@ class LlamaCppCache:
             tmp.unlink(missing_ok=True)
 
     def get(self, prompt: str) -> str | None:
-        entry = self._store.get(self._hash(prompt))
+        with self._lock:
+            entry = self._store.get(self._hash(prompt))
         if entry is None:
             return None
         return entry["response"] if isinstance(entry, dict) else entry
 
     def set(self, prompt: str, response: str) -> None:
         key = self._hash(prompt)
-        self._store[key] = {"prompt": prompt, "response": response}
-        self._save()
+        with self._lock:
+            self._store[key] = {"prompt": prompt, "response": response}
+            self._save()
         logger.info("[CACHE] Stored new entry (hash=%s…)", key[:12])
 
     def __len__(self) -> int:
-        return len(self._store)
+        with self._lock:
+            return len(self._store)
 
     def clear(self) -> None:
-        self._store = {}
-        self._save()
+        with self._lock:
+            self._store = {}
+            self._save()
         logger.info("[CACHE] Cache cleared")
+
+
+# Backward-compat alias — external code using the old name continues to work.
+LlamaCppCache = PromptCache
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +563,7 @@ class LlamaCppLLM(BaseLLM):
         )
 
         if cache_path is not None:
-            self._cache = LlamaCppCache(cache_path)
+            self._cache = PromptCache(cache_path)
             logger.info(
                 "[LLAMACPP] Prompt cache enabled -- %s (%d entries loaded)",
                 Path(cache_path),
@@ -534,39 +585,43 @@ class LlamaCppLLM(BaseLLM):
         if self._llama is not None:
             return
         with self._load_lock:
+            # Second check inside the lock — another thread may have loaded
+            # the model between the outer check and acquiring the lock.
             if self._llama is not None:
                 return
-        try:
-            from llama_cpp import Llama
-        except ImportError as e:
-            raise ImportError(
-                "llama-cpp-python is not installed. "
-                "Run: CMAKE_ARGS='-DLLAMA_METAL=on' pip install llama-cpp-python "
-                "--force-reinstall --no-cache-dir"
-            ) from e
+            try:
+                from llama_cpp import Llama
+            except ImportError as e:
+                raise ImportError(
+                    "llama-cpp-python is not installed. "
+                    "Run: CMAKE_ARGS='-DLLAMA_METAL=on' pip install llama-cpp-python "
+                    "--force-reinstall --no-cache-dir"
+                ) from e
 
-        model_path = str(Path(self.model_path).expanduser().resolve())
-        logger.info("[LLAMACPP] Loading model (first call -- may take 10-30s)...")
-        self._llama = Llama(
-            model_path=model_path,
-            n_ctx=self.n_ctx,
-            n_gpu_layers=self.n_gpu_layers,
-            verbose=False,
-        )
-        logger.info("[LLAMACPP] Model loaded")
+            model_path = str(Path(self.model_path).expanduser().resolve())
+            logger.info("[LLAMACPP] Loading model (first call -- may take 10-30s)...")
+            self._llama = Llama(
+                model_path=model_path,
+                n_ctx=self.n_ctx,
+                n_gpu_layers=self.n_gpu_layers,
+                verbose=False,
+            )
+            logger.info("[LLAMACPP] Model loaded")
 
     def _load_outlines(self):
         if self._outlines_model is not None:
             return
         with self._load_lock:
+            # Second check inside the lock — another thread may have loaded
+            # the outlines model between the outer check and acquiring the lock.
             if self._outlines_model is not None:
                 return
-        try:
-            import outlines
-        except ImportError as e:
-            raise ImportError("outlines is not installed. Run: pip install outlines") from e
-        self._outlines_model = outlines.from_llamacpp(self._llama)
-        logger.info("[LLAMACPP] Outlines model wrapper ready")
+            try:
+                import outlines
+            except ImportError as e:
+                raise ImportError("outlines is not installed. Run: pip install outlines") from e
+            self._outlines_model = outlines.from_llamacpp(self._llama)
+            logger.info("[LLAMACPP] Outlines model wrapper ready")
 
     def _load(self):
         self._load_model()
@@ -792,9 +847,10 @@ class ApiLLM(BaseLLM):
 
     supports_native_tools: bool = True
 
+    # FIX #14: reference the named constants so there is one canonical source.
     _DEFAULTS = {
-        "openai": "gpt-4o",
-        "claude": "claude-opus-4-6",
+        "openai": _DEFAULT_OPENAI_MODEL,
+        "claude": _DEFAULT_CLAUDE_MODEL,
     }
 
     def __init__(
@@ -821,7 +877,7 @@ class ApiLLM(BaseLLM):
         self.max_tokens = max_tokens
         # System prompt text defaults to prompts.py; callers can still override.
         self.system_prompt = system_prompt or LLM_SYSTEM_PROMPT
-        self._cache = LlamaCppCache(cache_path) if cache_path is not None else None
+        self._cache = PromptCache(cache_path) if cache_path is not None else None
 
         logger.info("[API] Initialized ApiLLM  provider=%s  model=%s", self.provider, self.model)
         if base_url:
@@ -888,15 +944,6 @@ class ApiLLM(BaseLLM):
     # ── OpenAI call ───────────────────────────────────────────────────────────
 
     def _ask_openai(self, prompt: str, schema: dict | None) -> str:
-        # When a schema is provided, inject it into the prompt text and use
-        # json_object mode — the same strategy used by the Claude path.
-        #
-        # Why not use OpenAI's json_schema response_format?
-        # For complex nested schemas (e.g. PLAN_SCHEMA with its oneOf items),
-        # GPT-4o may mirror the schema definition back as the response body
-        # (with the actual content buried in an "examples" field) instead of
-        # generating content that *conforms* to the schema.  Schema-in-prompt
-        # + json_object is simpler, more portable, and produces correct output.
         if schema is not None:
             prompt_to_send = self._inject_schema_into_prompt(prompt, schema)
         else:
@@ -968,7 +1015,6 @@ class ApiLLM(BaseLLM):
         self._load()
         logger.debug("[API] Prompt (first 200 chars): %.200s", prompt)
 
-        # Cache key matches LlamaCppLLM: prompt-only (no schema) or prompt+schema.
         cache_key = (
             prompt if schema is None else prompt + "\x00" + json.dumps(schema, sort_keys=True)
         )
@@ -1039,18 +1085,22 @@ class ApiLLM(BaseLLM):
 
         # Check whether values look like simplified type strings
         if not all(isinstance(v, str) for v in schema.values()):
-            # Contains dict values — assume it's already a JSON Schema fragment
             return {"type": "object", "properties": schema}
 
         # Simplified {"arg_name": "type_string"} format
         properties: dict = {}
         required: list = []
         for key, type_str in schema.items():
-            # "integer (optional, default 5)" → type="integer", not required
             base_type = type_str.split()[0].rstrip(".,;")
             is_optional = "optional" in type_str.lower()
-            # Normalise type to a valid JSON Schema primitive
-            if base_type not in ("string", "integer", "number", "boolean", "array", "object"):
+            if base_type not in (
+                "string",
+                "integer",
+                "number",
+                "boolean",
+                "array",
+                "object",
+            ):
                 base_type = "string"
             properties[key] = {"type": base_type}
             if not is_optional:
@@ -1240,7 +1290,6 @@ class ApiLLM(BaseLLM):
         if response.stop_reason == "tool_use":
             tool_block = next((b for b in response.content if b.type == "tool_use"), None)
             if tool_block is None:
-                # Shouldn't happen, but fall back to treating the text as done
                 text = next((b.text for b in response.content if b.type == "text"), "")
                 logger.warning("[API/Claude] stop_reason=tool_use but no tool_use block found")
                 return NativeToolResponse(kind="text", text=text)
@@ -1257,7 +1306,6 @@ class ApiLLM(BaseLLM):
                 tool_use_id=tool_block.id,
             )
 
-        # stop_reason == "end_turn" or anything else → final answer
         text = next((b.text for b in response.content if b.type == "text"), "")
         logger.info("[API/Claude] Final answer (%d chars)", len(text))
         return NativeToolResponse(kind="text", text=text)

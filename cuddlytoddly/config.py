@@ -222,7 +222,10 @@ host = "127.0.0.1"
 port = 8765
 """
 
-_VALID_BACKENDS = {"llamacpp", "claude", "openai"}
+# FIX #8: include "file" so that backend = "file" in config.toml is accepted
+# by _validate() instead of raising ValueError.  The "file" backend is a
+# legitimate dev/testing backend fully supported by _build_llm_client().
+_VALID_BACKENDS = {"llamacpp", "claude", "openai", "file"}
 
 # Backends that use a remote API and can therefore afford higher limits.
 _API_BACKENDS = {"claude", "openai"}

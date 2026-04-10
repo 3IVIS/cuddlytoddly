@@ -35,6 +35,7 @@ EXECUTION_EVENTS = {
     MARK_FAILED,
     RESET_NODE,
     UPDATE_METADATA,
+    UPDATE_STATUS,
     SET_RESULT,
     RESET_SUBTREE,
     MARK_AWAITING_INPUT,
@@ -159,7 +160,13 @@ def apply_event(graph: TaskGraph, event: Event, event_log=None):
     elif t in EXECUTION_EVENTS:
         graph.execution_version += 1
 
-    graph.recompute_readiness()
+    # Use the incremental readiness update when only the children of the
+    # completed node can become newly ready (MARK_DONE).  For all other
+    # events fall back to the full graph scan which is always correct.
+    if t == MARK_DONE:
+        graph.recompute_readiness_for(p.get("node_id", ""))
+    else:
+        graph.recompute_readiness()
 
     if event_log:
         event_log.append(event)

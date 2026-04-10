@@ -17,6 +17,19 @@ logger = get_logger(__name__)
 
 class TaskGraph:
     class Node:
+        # FIX #15: __slots__ reduces per-instance memory overhead for large graphs.
+        # All instance attributes assigned in __init__ must appear here.
+        __slots__ = (
+            "id",
+            "dependencies",
+            "children",
+            "node_type",
+            "status",
+            "result",
+            "origin",
+            "metadata",
+        )
+
         def __init__(
             self,
             node_id,
@@ -49,44 +62,42 @@ class TaskGraph:
             self.metadata.setdefault("description", "")
             self.metadata.setdefault("reflection_notes", [])
 
-            def _coerce_io_list(items):
-                """Upgrade legacy slug strings to typed IO objects."""
-                result = []
-                for item in items:
-                    if isinstance(item, str):
-                        # Infer type from extension
-                        t = (
-                            "file"
-                            if any(
-                                item.endswith(ext)
-                                for ext in {
-                                    ".md",
-                                    ".txt",
-                                    ".py",
-                                    ".json",
-                                    ".csv",
-                                    ".html",
-                                    ".yaml",
-                                    ".xml",
-                                }
-                            )
-                            else "document"
-                        )
-                        result.append(
-                            {
-                                "name": item,
-                                "type": t,
-                                "description": item.replace("_", " "),
-                            }
-                        )
-                    else:
-                        result.append(item)
-                return result
-
-            self.metadata["required_input"] = _coerce_io_list(
+            self.metadata["required_input"] = self._coerce_io_list(
                 self.metadata.get("required_input", [])
             )
-            self.metadata["output"] = _coerce_io_list(self.metadata.get("output", []))
+            self.metadata["output"] = self._coerce_io_list(self.metadata.get("output", []))
+
+        @staticmethod
+        def _coerce_io_list(items) -> list:
+            """Upgrade legacy slug strings to typed IO objects."""
+            _FILE_EXTENSIONS = {
+                ".md",
+                ".txt",
+                ".py",
+                ".json",
+                ".csv",
+                ".html",
+                ".yaml",
+                ".xml",
+            }
+            result = []
+            for item in items:
+                if isinstance(item, str):
+                    t = (
+                        "file"
+                        if any(item.endswith(ext) for ext in _FILE_EXTENSIONS)
+                        else "document"
+                    )
+                    result.append(
+                        {
+                            "name": item,
+                            "type": t,
+                            "description": item.replace("_", " "),
+                        }
+                    )
+                else:
+                    result.append(item)
+            return result
 
         def reset(self):
             self.status = "pending"
@@ -211,12 +222,65 @@ class TaskGraph:
             else:
                 node.status = "pending"
 
+    def recompute_readiness_for(self, node_id: str) -> None:
+        """
+        FIX #10: Incremental readiness update.
+
+        Re-evaluate only the direct children of *node_id* instead of scanning
+        the entire graph.  Called by apply_event for MARK_DONE events where
+        only the children of the completed node can become newly ready.
+
+        Falls back gracefully when the node is not present (already removed).
+        """
+        node = self.nodes.get(node_id)
+        if node is None:
+            return
+        for child_id in node.children:
+            child = self.nodes.get(child_id)
+            if child is None:
+                continue
+            if child.status in (
+                "done",
+                "running",
+                "failed",
+                "to_be_expanded",
+                "awaiting_input",
+            ):
+                continue
+            if all(
+                dep in self.nodes and self.nodes[dep].status == "done" for dep in child.dependencies
+            ):
+                child.status = "ready"
+            else:
+                child.status = "pending"
+
     # --------------------------------------------------
     # Snapshot
     # --------------------------------------------------
 
     def get_snapshot(self):
-        return copy.deepcopy(self.nodes)
+        """
+        FIX #9: Return a lightweight snapshot that avoids a full deep-copy.
+
+        Strings (``result``) are immutable — no copy needed.
+        ``dependencies`` and ``children`` are copied as frozen sets so callers
+        can't mutate the graph's sets.
+        ``metadata`` is shallow-copied; nested lists/dicts are shared but
+        callers treat snapshots as read-only so this is safe in practice.
+        """
+        result = {}
+        for nid, node in self.nodes.items():
+            snap = object.__new__(self.Node)
+            snap.id = node.id
+            snap.node_type = node.node_type
+            snap.status = node.status
+            snap.result = node.result  # str is immutable
+            snap.origin = node.origin
+            snap.dependencies = frozenset(node.dependencies)
+            snap.children = frozenset(node.children)
+            snap.metadata = copy.copy(node.metadata)  # shallow copy
+            result[nid] = snap
+        return result
 
     # --------------------------------------------------
     # Utility
@@ -228,21 +292,27 @@ class TaskGraph:
     # --------------------------------------------------
 
     def _would_create_cycle(self, node_id, depends_on):
+        """
+        FIX #2: Iterative DFS to detect cycles — replaces the old recursive
+        inner function that could hit Python's recursion limit on deep graphs.
+        """
         if depends_on not in self.nodes or node_id not in self.nodes:
             return False
 
-        visited = set()
-
-        def dfs(n):
-            if n == node_id:
+        # Walk upstream from `depends_on`; if we reach `node_id` a cycle exists.
+        visited: set[str] = set()
+        stack = [depends_on]
+        while stack:
+            current = stack.pop()
+            if current == node_id:
                 return True
-            visited.add(n)
-            for dep in self.nodes[n].dependencies:  # ← was: children
-                if dep not in visited and dfs(dep):
-                    return True
-            return False
-
-        return dfs(depends_on)
+            if current in visited:
+                continue
+            visited.add(current)
+            node = self.nodes.get(current)
+            if node:
+                stack.extend(node.dependencies)
+        return False
 
     # --------------------------------------------------
     # Branch / Descendants

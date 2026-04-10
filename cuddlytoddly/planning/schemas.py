@@ -236,7 +236,11 @@ EXECUTION_TURN_SCHEMA = {
                 "name": {"type": "string"},
                 "args": {
                     "type": "object",
-                    "additionalProperties": {"type": "string"},
+                    # Allow any JSON value type (string, number, boolean, array,
+                    # object, null).  The previous {"type": "string"} constraint
+                    # silently prevented tools from receiving integer, boolean, or
+                    # array arguments.
+                    "additionalProperties": True,
                 },
             },
             "required": ["name", "args"],
