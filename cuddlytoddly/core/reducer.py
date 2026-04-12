@@ -27,6 +27,11 @@ STRUCTURAL_EVENTS = {
     ADD_DEPENDENCY,
     REMOVE_DEPENDENCY,
     SET_NODE_TYPE,
+    # FIX #3: DETACH_NODE mutates graph structure (removes a node's edges and
+    # presence from the active node set) so it belongs in STRUCTURAL_EVENTS so
+    # that structure_version is incremented and version-based invalidation in
+    # the UI and any polling logic picks up the change.
+    DETACH_NODE,
 }
 
 EXECUTION_EVENTS = {
@@ -44,6 +49,23 @@ EXECUTION_EVENTS = {
 
 
 def apply_event(graph: TaskGraph, event: Event, event_log=None):
+    # FIX: Write-ahead logging — persist the event to disk BEFORE mutating the
+    # in-memory graph.  The previous order (mutate first, log second) meant that
+    # a process crash between the two steps left the event missing from the log
+    # while the mutation had already been applied.  On the next startup, replay
+    # would produce a graph that is missing that event — silently incorrect state.
+    #
+    # With WAL, two safe outcomes are possible after a crash:
+    #   • Crash before the append  → event never applied; replay is consistent.
+    #   • Crash after the append   → event is in the log; replay re-applies it.
+    #
+    # apply_event is idempotent for ADD_NODE (already-present nodes are updated
+    # rather than duplicated), and most execution events are naturally idempotent
+    # (setting status to the same value again is a no-op).  The small risk of
+    # double-application on replay is far less harmful than silent data loss.
+    if event_log:
+        event_log.append(event)
+
     t = event.type
     p = event.payload or {}
 
@@ -127,6 +149,29 @@ def apply_event(graph: TaskGraph, event: Event, event_log=None):
             node.metadata.pop("retry_after", None)
             node.metadata.pop("verification_failure", None)
 
+    # FIX #1: RESET_SUBTREE was imported, listed in EXECUTION_EVENTS, but had
+    # no handler branch — any emitted event silently did nothing to the graph
+    # while still incrementing the version counter.  The handler now walks the
+    # subtree rooted at node_id and resets every non-running descendant.
+    elif t == RESET_SUBTREE:
+        root_id = p.get("node_id")
+        if root_id and root_id in graph.nodes:
+            queue = list(graph.nodes[root_id].children)
+            visited: set = set()
+            while queue:
+                child_id = queue.pop()
+                if child_id in visited or child_id not in graph.nodes:
+                    continue
+                visited.add(child_id)
+                child = graph.nodes[child_id]
+                if child.status != "running":
+                    child.reset()
+                    queue.extend(child.children)
+            # Also reset the root node itself if it is not running.
+            root = graph.nodes[root_id]
+            if root.status != "running":
+                root.reset()
+
     elif t == DETACH_NODE:
         graph.detach_node(p["node_id"])
 
@@ -167,6 +212,3 @@ def apply_event(graph: TaskGraph, event: Event, event_log=None):
         graph.recompute_readiness_for(p.get("node_id", ""))
     else:
         graph.recompute_readiness()
-
-    if event_log:
-        event_log.append(event)

@@ -394,6 +394,10 @@ class PlanConstraintChecker:
 
         return events + extra_edges
 
+    # FIX: removed duplicate @staticmethod decorator.  The original code had
+    # two stacked @staticmethod decorators on this method.  On Python < 3.10
+    # that raises TypeError at runtime (staticmethod objects are not callable
+    # before 3.10).  On Python ≥ 3.10 it silently works but is still wrong.
     @staticmethod
     def _get_ancestors(node_id: str, edges: set, graph_nodes: dict) -> set:
         """
@@ -402,13 +406,22 @@ class PlanConstraintChecker:
 
         Used to build the exclusion set for ghost node candidate selection so
         no cycle-creating dependent is offered to the LLM.
+
+        Fix #15: the original implementation scanned all edges on every queue
+        pop — O(n×m) overall.  We now build an adjacency dict once in O(m) so
+        each per-node lookup is O(out-degree) instead of O(m).
         """
+        # Build adjacency dict from proposed edges once — O(m).
+        proposed_adj: dict[str, list] = {}
+        for src, dep in edges:
+            proposed_adj.setdefault(src, []).append(dep)
+
         ancestors: set = set()
         queue = [node_id]
         while queue:
             n = queue.pop()
-            for src, dep in edges:
-                if src == n and dep not in ancestors:
+            for dep in proposed_adj.get(n, []):
+                if dep not in ancestors:
                     ancestors.add(dep)
                     queue.append(dep)
             if n in graph_nodes:

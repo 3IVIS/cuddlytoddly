@@ -5,6 +5,7 @@ import json
 from cuddlytoddly.core.events import (
     ADD_DEPENDENCY,
     ADD_NODE,
+    MARK_DONE,
     SET_RESULT,
 )
 from cuddlytoddly.infra.logging import get_logger
@@ -42,6 +43,14 @@ def _clarification_node_id(goal_id: str) -> str:
 
 
 class LLMPlanner:
+    # Sensible defaults for clarification-field generation.  These are
+    # intentionally separate from the task planning limits: a goal that
+    # warrants 15 tasks does not need 15 clarification questions, and a
+    # simple goal with only 3 tasks may still benefit from several
+    # targeted questions.
+    _DEFAULT_MIN_CLARIFICATION_FIELDS: int = 2
+    _DEFAULT_MAX_CLARIFICATION_FIELDS: int = 6
+
     def __init__(
         self,
         llm_client,
@@ -51,6 +60,8 @@ class LLMPlanner:
         min_tasks_per_goal: int = 3,
         max_tasks_per_goal: int = 8,
         scrutinize_plan: bool = False,
+        min_clarification_fields: "int | None" = None,
+        max_clarification_fields: "int | None" = None,
     ):
         self.llm = llm_client
         self.graph = graph
@@ -59,6 +70,19 @@ class LLMPlanner:
         self.min_tasks_per_goal = min_tasks_per_goal
         self.max_tasks_per_goal = max_tasks_per_goal
         self.scrutinize_plan = scrutinize_plan
+        # FIX: use dedicated clarification field limits instead of reusing the
+        # task count limits.  Callers that do not supply these get sensible
+        # standalone defaults rather than whatever the task count happens to be.
+        self.min_clarification_fields: int = (
+            min_clarification_fields
+            if min_clarification_fields is not None
+            else self._DEFAULT_MIN_CLARIFICATION_FIELDS
+        )
+        self.max_clarification_fields: int = (
+            max_clarification_fields
+            if max_clarification_fields is not None
+            else self._DEFAULT_MAX_CLARIFICATION_FIELDS
+        )
         self.constraint_checker = PlanConstraintChecker(graph, llm_client)
 
     def propose(self, context):
@@ -225,8 +249,8 @@ class LLMPlanner:
         prompt = build_clarification_prompt(
             goal_text,
             skills_summary=self.skills_summary,
-            min_fields=self.min_tasks_per_goal,
-            max_fields=self.max_tasks_per_goal,
+            min_fields=self.min_clarification_fields,
+            max_fields=self.max_clarification_fields,
         )
         logger.info("[PLANNER] Generating clarification node for goal %s", goal_id)
 
@@ -260,12 +284,13 @@ class LLMPlanner:
                     },
                 },
             },
-            # MARK_DONE (not SET_RESULT) — sets both status="done" and result so
-            # recompute_readiness() will promote dependent root tasks to "ready".
-            # SET_RESULT only updates node.result without touching status, which
-            # would leave the node at "ready" and block all dependent tasks.
+            # Fix #11: use the imported MARK_DONE constant instead of the bare
+            # string literal "MARK_DONE".  If the constant is ever renamed or
+            # refactored, a bare string would silently become an unknown event
+            # type, leaving the clarification node in "ready" status forever
+            # and permanently blocking all dependent tasks.
             {
-                "type": "MARK_DONE",
+                "type": MARK_DONE,
                 "payload": {
                     "node_id": clarif_id,
                     "result": json.dumps(fields, ensure_ascii=False),
@@ -355,13 +380,23 @@ class LLMPlanner:
         pruned_view = [n for n in graph_view if n["node_id"] in relevant_ids]
         existing_ids = {n["node_id"] for n in graph_view}
 
+        # Fix #14: mirror the description pass-through from _serialize_snapshot
+        # so that long goal descriptions are never silently truncated to 120
+        # chars.  The description is the primary input the planner uses to
+        # decompose a goal into tasks; truncating it produces incomplete plans.
         goals_repr = [
             {
                 "node_id": g.id,
                 "node_type": g.node_type,
                 "status": g.status,
                 "metadata": {
-                    k: v for k, v in g.metadata.items() if k not in _VOLATILE_METADATA_KEYS
+                    k: (
+                        v
+                        if k == "description"
+                        else (v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v)
+                    )
+                    for k, v in g.metadata.items()
+                    if k not in _VOLATILE_METADATA_KEYS
                 },
             }
             for g in goals

@@ -489,6 +489,14 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
     async def replan_goal(goal_id: str):
         orchestrator.replan_goal(goal_id)
         return {"ok": True}
+        # FIX: removed duplicate `return {"ok": True}` that was dead code here.
+
+    # FIX: added missing /api/llm/pause route.  create_app had /api/llm/resume
+    # but not /api/llm/pause, so the UI pause button was a no-op (404) when the
+    # server was started with an inline goal.
+    @app.post("/api/llm/pause")
+    async def llm_pause():
+        orchestrator.stop_llm_calls()
         return {"ok": True}
 
     @app.post("/api/llm/resume")
@@ -610,6 +618,14 @@ def _create_unified_app(
         "loading": False,
         "error": "",
     }
+    # Fix #5: protect compound check-and-set operations on `state` from race
+    # conditions between concurrent FastAPI handler coroutines (which run on
+    # the ASGI thread pool) and the background _init() thread.  A plain dict
+    # in CPython is GIL-safe for individual key reads/writes, but patterns like
+    # `if state["loading"]: ... state["loading"] = True` are not atomic.
+    # Without the lock two simultaneous POST /api/startup requests could both
+    # pass the loading check and each spin up an _init() thread.
+    _state_lock = threading.Lock()
 
     startup_html = (_HERE / "web_ui_startup.html").read_text(encoding="utf-8")
     dag_html = (_HERE / "web_ui.html").read_text(encoding="utf-8")
@@ -652,64 +668,71 @@ def _create_unified_app(
 
     @app.post("/api/startup")
     async def api_startup(body: dict):
-        if state["ready"]:
-            return {"ok": True, "already_initialized": True}
-        if state["loading"]:
-            return {"ok": False, "error": "Already loading"}
-        if init_fn is None:
-            return {"ok": False, "error": "No init_fn configured"}
+        with _state_lock:
+            if state["ready"]:
+                return {"ok": True, "already_initialized": True}
+            if state["loading"]:
+                return {"ok": False, "error": "Already loading"}
+            if init_fn is None:
+                return {"ok": False, "error": "No init_fn configured"}
 
-        from cuddlytoddly.__main__ import make_run_dir
-        from cuddlytoddly.ui.startup import StartupChoice, parse_manual_plan
+            from cuddlytoddly.__main__ import make_run_dir
+            from cuddlytoddly.ui.startup import StartupChoice, parse_manual_plan
 
-        mode = body.get("mode", "new_goal")
-        goal_text = body.get("goal_text", "").strip()
-        plan_text = body.get("plan_text", "").strip()
-        run_path = body.get("run_dir", "")
+            mode = body.get("mode", "new_goal")
+            goal_text = body.get("goal_text", "").strip()
+            plan_text = body.get("plan_text", "").strip()
+            run_path = body.get("run_dir", "")
 
-        if mode == "existing":
-            if not run_path:
-                return {"ok": False, "error": "run_dir required"}
-            choice = StartupChoice(
-                mode="existing",
-                run_dir=Path(run_path),
-                goal_text=goal_text or Path(run_path).name.replace("_", " "),
-                is_fresh=False,
-            )
-        elif mode == "manual_plan":
-            if not plan_text:
-                return {"ok": False, "error": "plan_text required"}
-            gt, evts = parse_manual_plan(plan_text)
-            if not gt:
-                return {"ok": False, "error": "Could not parse plan — add a goal line"}
-            choice = StartupChoice(
-                mode="manual_plan",
-                run_dir=make_run_dir(gt).resolve(),
-                goal_text=gt,
-                plan_events=evts,
-                is_fresh=True,
-            )
-        else:
-            if not goal_text:
-                return {"ok": False, "error": "goal_text required"}
-            choice = StartupChoice(
-                mode="new_goal",
-                run_dir=make_run_dir(goal_text).resolve(),
-                goal_text=goal_text,
-                is_fresh=True,
-            )
+            if mode == "existing":
+                if not run_path:
+                    return {"ok": False, "error": "run_dir required"}
+                choice = StartupChoice(
+                    mode="existing",
+                    run_dir=Path(run_path),
+                    goal_text=goal_text or Path(run_path).name.replace("_", " "),
+                    is_fresh=False,
+                )
+            elif mode == "manual_plan":
+                if not plan_text:
+                    return {"ok": False, "error": "plan_text required"}
+                gt, evts = parse_manual_plan(plan_text)
+                if not gt:
+                    return {"ok": False, "error": "Could not parse plan — add a goal line"}
+                choice = StartupChoice(
+                    mode="manual_plan",
+                    run_dir=make_run_dir(gt).resolve(),
+                    goal_text=gt,
+                    plan_events=evts,
+                    is_fresh=True,
+                )
+            else:
+                if not goal_text:
+                    return {"ok": False, "error": "goal_text required"}
+                choice = StartupChoice(
+                    mode="new_goal",
+                    run_dir=make_run_dir(goal_text).resolve(),
+                    goal_text=goal_text,
+                    is_fresh=True,
+                )
 
-        state["loading"] = True
-        state["error"] = ""
+            # Set loading=True inside the lock so that a concurrent request
+            # that also passes the loading check above sees it immediately.
+            state["loading"] = True
+            state["error"] = ""
 
         def _init():
             try:
                 if mode == "existing":
 
                     def _on_graph_ready(orch, rd):
-                        state["orchestrator"] = orch
-                        state["run_dir"] = rd
-                        state["ready"] = True
+                        # FIX: wrap all three writes in the state lock so no
+                        # concurrent reader can observe ready=True while
+                        # orchestrator is still None.
+                        with _state_lock:
+                            state["orchestrator"] = orch
+                            state["run_dir"] = rd
+                            state["ready"] = True
                         logger.info(
                             "[WEB] Graph ready — DAG visible (%d nodes)",
                             len(orch.graph.nodes),
@@ -718,18 +741,24 @@ def _create_unified_app(
                     init_fn(choice, on_graph_ready=_on_graph_ready)
                 else:
                     orch, rd = init_fn(choice)
-                    state["orchestrator"] = orch
-                    state["run_dir"] = rd
-                    state["ready"] = True
+                    # FIX: wrap all three writes in the state lock so no
+                    # concurrent reader can observe ready=True while
+                    # orchestrator is still None.
+                    with _state_lock:
+                        state["orchestrator"] = orch
+                        state["run_dir"] = rd
+                        state["ready"] = True
                     logger.info(
                         "[WEB] System initialised — DAG has %d nodes",
                         len(orch.graph.nodes),
                     )
             except Exception as e:
                 logger.exception("[WEB] init_fn failed: %s", e)
-                state["error"] = str(e)
+                with _state_lock:
+                    state["error"] = str(e)
             finally:
-                state["loading"] = False
+                with _state_lock:
+                    state["loading"] = False
 
         threading.Thread(target=_init, daemon=True, name="web-init").start()
         return {"ok": True}
@@ -746,77 +775,82 @@ def _create_unified_app(
         switching.  After returning {ok: true} the client polls /api/status
         (same as after /api/startup) and reloads when initialized flips true.
         """
-        if state["loading"]:
-            return {
-                "ok": False,
-                "error": "Already loading — wait for the current operation to finish",
-            }
-        if init_fn is None:
-            return {"ok": False, "error": "No init_fn configured"}
+        with _state_lock:
+            if state["loading"]:
+                return {
+                    "ok": False,
+                    "error": "Already loading — wait for the current operation to finish",
+                }
+            if init_fn is None:
+                return {"ok": False, "error": "No init_fn configured"}
 
-        from cuddlytoddly.__main__ import make_run_dir
-        from cuddlytoddly.ui.startup import StartupChoice, parse_manual_plan
+            from cuddlytoddly.__main__ import make_run_dir
+            from cuddlytoddly.ui.startup import StartupChoice, parse_manual_plan
 
-        mode = body.get("mode", "new_goal")
-        goal_text = body.get("goal_text", "").strip()
-        plan_text = body.get("plan_text", "").strip()
-        run_path = body.get("run_dir", "")
+            mode = body.get("mode", "new_goal")
+            goal_text = body.get("goal_text", "").strip()
+            plan_text = body.get("plan_text", "").strip()
+            run_path = body.get("run_dir", "")
 
-        if mode == "existing":
-            if not run_path:
-                return {"ok": False, "error": "run_dir required"}
-            choice = StartupChoice(
-                mode="existing",
-                run_dir=Path(run_path),
-                goal_text=goal_text or Path(run_path).name.replace("_", " "),
-                is_fresh=False,
-            )
-        elif mode == "manual_plan":
-            if not plan_text:
-                return {"ok": False, "error": "plan_text required"}
-            gt, evts = parse_manual_plan(plan_text)
-            if not gt:
-                return {"ok": False, "error": "Could not parse plan — add a goal line"}
-            choice = StartupChoice(
-                mode="manual_plan",
-                run_dir=make_run_dir(gt).resolve(),
-                goal_text=gt,
-                plan_events=evts,
-                is_fresh=True,
-            )
-        else:  # new_goal
-            if not goal_text:
-                return {"ok": False, "error": "goal_text required"}
-            choice = StartupChoice(
-                mode="new_goal",
-                run_dir=make_run_dir(goal_text).resolve(),
-                goal_text=goal_text,
-                is_fresh=True,
-            )
+            if mode == "existing":
+                if not run_path:
+                    return {"ok": False, "error": "run_dir required"}
+                choice = StartupChoice(
+                    mode="existing",
+                    run_dir=Path(run_path),
+                    goal_text=goal_text or Path(run_path).name.replace("_", " "),
+                    is_fresh=False,
+                )
+            elif mode == "manual_plan":
+                if not plan_text:
+                    return {"ok": False, "error": "plan_text required"}
+                gt, evts = parse_manual_plan(plan_text)
+                if not gt:
+                    return {"ok": False, "error": "Could not parse plan — add a goal line"}
+                choice = StartupChoice(
+                    mode="manual_plan",
+                    run_dir=make_run_dir(gt).resolve(),
+                    goal_text=gt,
+                    plan_events=evts,
+                    is_fresh=True,
+                )
+            else:  # new_goal
+                if not goal_text:
+                    return {"ok": False, "error": "goal_text required"}
+                choice = StartupChoice(
+                    mode="new_goal",
+                    run_dir=make_run_dir(goal_text).resolve(),
+                    goal_text=goal_text,
+                    is_fresh=True,
+                )
 
-        # Stop the running orchestrator before replacing it so its background
-        # thread and thread-pool don't keep consuming resources.
-        old_orch = state["orchestrator"]
-        if old_orch is not None:
-            try:
-                old_orch.stop()
-            except Exception as exc:
-                logger.warning("[WEB] Could not cleanly stop old orchestrator: %s", exc)
+            # Stop the running orchestrator before replacing it so its background
+            # thread and thread-pool don't keep consuming resources.
+            old_orch = state["orchestrator"]
+            if old_orch is not None:
+                try:
+                    old_orch.stop()
+                except Exception as exc:
+                    logger.warning("[WEB] Could not cleanly stop old orchestrator: %s", exc)
 
-        state["orchestrator"] = None
-        state["run_dir"] = None
-        state["ready"] = False
-        state["loading"] = True
-        state["error"] = ""
+            # FIX: clear state atomically inside the lock so no concurrent
+            # reader sees ready=True with a None or stale orchestrator.
+            state["orchestrator"] = None
+            state["run_dir"] = None
+            state["ready"] = False
+            state["loading"] = True
+            state["error"] = ""
 
         def _switch():
             try:
                 if mode == "existing":
 
                     def _on_graph_ready(orch, rd):
-                        state["orchestrator"] = orch
-                        state["run_dir"] = rd
-                        state["ready"] = True
+                        # FIX: wrap all three writes in the state lock.
+                        with _state_lock:
+                            state["orchestrator"] = orch
+                            state["run_dir"] = rd
+                            state["ready"] = True
                         logger.info(
                             "[WEB] Switch complete — DAG visible (%d nodes)",
                             len(orch.graph.nodes),
@@ -825,18 +859,22 @@ def _create_unified_app(
                     init_fn(choice, on_graph_ready=_on_graph_ready)
                 else:
                     orch, rd = init_fn(choice)
-                    state["orchestrator"] = orch
-                    state["run_dir"] = rd
-                    state["ready"] = True
+                    # FIX: wrap all three writes in the state lock.
+                    with _state_lock:
+                        state["orchestrator"] = orch
+                        state["run_dir"] = rd
+                        state["ready"] = True
                     logger.info(
                         "[WEB] Switch complete — DAG has %d nodes",
                         len(orch.graph.nodes),
                     )
             except Exception as e:
                 logger.exception("[WEB] switch failed: %s", e)
-                state["error"] = str(e)
+                with _state_lock:
+                    state["error"] = str(e)
             finally:
-                state["loading"] = False
+                with _state_lock:
+                    state["loading"] = False
 
         threading.Thread(target=_switch, daemon=True, name="web-switch").start()
         return {"ok": True}
@@ -857,13 +895,35 @@ def _create_unified_app(
                 await websocket.close()
                 return
 
-        orch = state["orchestrator"]
         last_sv = last_ev = -1
         last_paused = None
         last_activity = None
+        # FIX: track which orchestrator instance was last polled.  When
+        # /api/switch replaces the orchestrator we reset the version sentinels
+        # so the new state is pushed to the client immediately, rather than
+        # the WebSocket silently continuing to stream from the old (stopped)
+        # orchestrator for the lifetime of the connection.
+        last_orch: object = None
 
         try:
             while True:
+                # Re-read the orchestrator on every tick — it may have been
+                # replaced by /api/switch since the last iteration.
+                orch = state["orchestrator"]
+
+                if orch is None:
+                    # A switch is in progress; wait for ready to flip back.
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # Reset version sentinels whenever the orchestrator identity
+                # changes so the first tick after a switch sends a full snapshot.
+                if orch is not last_orch:
+                    last_sv = last_ev = -1
+                    last_paused = None
+                    last_activity = None
+                    last_orch = orch
+
                 sv = orch.graph.structure_version
                 ev = orch.graph.execution_version
                 paused = orch.llm_stopped

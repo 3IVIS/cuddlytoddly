@@ -4,7 +4,7 @@ import json
 import re
 import threading
 import time
-from collections import namedtuple
+from collections import deque, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
 from cuddlytoddly.core.events import (
@@ -24,9 +24,14 @@ from cuddlytoddly.core.events import (
 )
 from cuddlytoddly.core.reducer import apply_event
 from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
-from cuddlytoddly.infra.event_queue import EventQueue
+from cuddlytoddly.infra.event_queue import EventQueue, StatusEvent
 from cuddlytoddly.infra.logging import get_logger
-from cuddlytoddly.planning.llm_interface import BaseLLM, token_counter
+from cuddlytoddly.planning.llm_interface import (
+    BaseLLM,
+    LLMStoppedError,
+    TokenCounter,
+    token_counter,
+)
 
 logger = get_logger(__name__)
 
@@ -56,11 +61,13 @@ class Orchestrator:
 
     @property
     def token_counts(self) -> dict:
+        # FIX #3: read from the per-run counter (self._token_counter) so that
+        # concurrent runs in web-server mode each report their own usage.
         return {
-            "prompt": token_counter.prompt_tokens,
-            "completion": token_counter.completion_tokens,
-            "total": token_counter.total_tokens,
-            "calls": token_counter.calls,
+            "prompt": self._token_counter.prompt_tokens,
+            "completion": self._token_counter.completion_tokens,
+            "total": self._token_counter.total_tokens,
+            "calls": self._token_counter.calls,
         }
 
     def __init__(
@@ -76,7 +83,13 @@ class Orchestrator:
         idle_sleep: float = 0.5,
         max_retries: int = 5,
         verify_timeout: float = 300.0,
+        token_counter_instance: "TokenCounter | None" = None,
     ):
+        # FIX #3: use the per-run counter when provided; fall back to the
+        # module-level singleton for backward compatibility.
+        self._token_counter: TokenCounter = (
+            token_counter_instance if token_counter_instance is not None else token_counter
+        )
         self.graph = graph
         self.planner = planner
         self.executor = executor
@@ -104,17 +117,29 @@ class Orchestrator:
         self._thread: threading.Thread | None = None
         self._prev_results: dict[str, object] = {}
 
-        # LLM clients for pause/resume — collected from planner and executor.
-        # Only real BaseLLM instances are registered; MagicMock/stub objects in
-        # tests auto-create any attribute, so the old hasattr() check would
-        # accidentally register them and make llm_stopped always return True.
+        # Fix #6: register LLM clients using duck typing so that _DeferredLLM
+        # (which wraps a real client but is not a BaseLLM subclass) is also
+        # included.  We detect real LLM clients by requiring is_stopped to be
+        # a genuine @property defined on the class — MagicMock/stub objects in
+        # tests auto-create attributes on demand, so their class-level
+        # descriptor is a MagicMock, not a property, and they are excluded.
         self._llm_clients = []
         self._reporters: dict[str, ExecutionStepReporter] = {}
 
         for component in (planner, executor, quality_gate):
             client = getattr(component, "llm", None)
-            if isinstance(client, BaseLLM):
+            if client is None:
+                continue
+            is_real_llm = isinstance(client, BaseLLM) or isinstance(
+                getattr(type(client), "is_stopped", None), property
+            )
+            if is_real_llm:
                 self._llm_clients.append(client)
+
+        # Out-of-band status events emitted by background threads (e.g.
+        # llm_load_failed).  The UI polls this via get_status_events().
+        self._status_events: list[StatusEvent] = []
+        self._status_events_lock = threading.Lock()
 
     # ── LLM pause / resume ───────────────────────────────────────────────────
 
@@ -202,6 +227,17 @@ class Orchestrator:
         while not self.event_queue.empty():
             try:
                 event = self.event_queue.get()
+
+                # FIX: StatusEvent is a separate dataclass (kind/payload fields,
+                # no .type) used for out-of-band signals like llm_load_failed.
+                # The old code fell through to `event.type` which raised
+                # AttributeError, caught silently by the except clause below —
+                # permanently discarding the signal and leaving the UI with no
+                # feedback when LLM loading fails.
+                if isinstance(event, StatusEvent):
+                    self._handle_status_event(event)
+                    continue
+
                 if event.type == "RESET_SUBTREE":
                     logger.info(
                         "[ORCHESTRATOR] RESET_SUBTREE received for: %s",
@@ -214,16 +250,52 @@ class Orchestrator:
             except Exception as e:
                 logger.error("[ORCHESTRATOR] Error draining event: %s", e)
 
+    def _handle_status_event(self, event: StatusEvent) -> None:
+        """
+        Dispatch out-of-band status signals that are not graph mutations.
+
+        Currently recognised kinds:
+          llm_load_failed — background LLM loader failed; payload has "error".
+
+        Unknown kinds are logged and stored so the UI can surface them.
+        """
+        logger.warning(
+            "[ORCHESTRATOR] StatusEvent received: kind=%s payload=%s",
+            event.kind,
+            event.payload,
+        )
+        with self._status_events_lock:
+            self._status_events.append(event)
+
+        if event.kind == "llm_load_failed":
+            error_msg = event.payload.get("error", "unknown error")
+            logger.error("[ORCHESTRATOR] LLM load failed: %s", error_msg)
+            # Set current_activity so the UI displays the error in its
+            # activity bar rather than showing nothing.
+            self.current_activity = f"LLM load failed: {error_msg}"
+            self.activity_started = None
+
+    def get_status_events(self) -> list:
+        """
+        Return and clear all buffered StatusEvents.
+        Called by the web UI on each snapshot tick so errors are surfaced.
+        """
+        with self._status_events_lock:
+            events = list(self._status_events)
+            self._status_events.clear()
+        return events
+
     def _reset_subtree_impl(self, root_id: str):
         with self.graph_lock:
             if root_id not in self.graph.nodes:
                 return
 
             to_reset = []
-            queue = [root_id]
+            # Use deque for O(1) popleft(); list.pop(0) is O(n) per call.
+            queue: deque = deque([root_id])
             visited = set()
             while queue:
-                nid = queue.pop(0)
+                nid = queue.popleft()
                 if nid in visited:
                     continue
                 visited.add(nid)
@@ -318,6 +390,11 @@ class Orchestrator:
                 if not node.metadata.get("expanded", False):
                     continue
 
+                # Check direct dependencies (upstream tasks the goal relies on)
+                # and direct children (nodes that depend on this goal).
+                # Transitivity is implicit: an intermediate sub-goal only reaches
+                # "done" after _complete_finished_goals has already processed it,
+                # so checking direct relations is sufficient — no BFS needed.
                 related = set(node.dependencies) | set(node.children)
                 if not related:
                     continue
@@ -467,18 +544,53 @@ class Orchestrator:
                     logger.info("[ORCHESTRATOR] Reset dependent for re-execution: %s", desc_id)
 
     def _on_node_done(self, node_id: str, future):
-        self._running_futures.pop(node_id, None)
+        # Fix #1: _on_node_done runs in a ThreadPoolExecutor done-callback
+        # thread.  self._running_futures, self.current_activity, and
+        # self.activity_started are also read/written by _execution_pass on the
+        # orchestrator main-loop thread.  Acquire graph_lock for the shared-
+        # state mutations at the top of this method so the two threads cannot
+        # race.
+        with self.graph_lock:
+            self._running_futures.pop(node_id, None)
 
-        if self.current_activity and node_id in (self.current_activity or ""):
-            if self._running_futures:
-                other = next(iter(self._running_futures))
-                self.current_activity = f"Executing: {other}"
-            else:
-                self.current_activity = None
-                self.activity_started = None
+            # FIX #4: the original check used `node_id in self.current_activity`
+            # which is a substring test.  A short node_id like "task_1" would
+            # wrongly match an activity string for "task_10" or "task_1_abc",
+            # causing the activity indicator to be cleared for the wrong node.
+            # Use an exact string comparison instead.
+            if self.current_activity == f"Executing: {node_id}":
+                if self._running_futures:
+                    other = next(iter(self._running_futures))
+                    self.current_activity = f"Executing: {other}"
+                else:
+                    self.current_activity = None
+                    self.activity_started = None
 
         try:
             result = future.result()
+        except LLMStoppedError as exc:
+            # FIX: _DeferredLLM raises LLMStoppedError while the real LLM is
+            # still loading (before attach() is called).  _DeferredLLM is not a
+            # BaseLLM subclass so it is not in _llm_clients, which means
+            # self.llm_stopped would return False — causing the node to be
+            # permanently MARK_FAILED rather than reset and retried once the
+            # real LLM becomes available.  Handle it here explicitly so these
+            # transient interruptions are always treated as a pause, not a
+            # failure.
+            logger.info(
+                "[EXEC] Node %s interrupted by LLM stop/loading (%s) — resetting to pending",
+                node_id,
+                exc,
+            )
+            reporter = self._reporters.pop(node_id, None)
+            with self.graph_lock:
+                if node_id in self.graph.nodes:
+                    if reporter:
+                        for step_id in list(reporter._all_step_ids):
+                            if step_id in self.graph.nodes:
+                                self.graph.detach_node(step_id)
+                    self._apply(Event(RESET_NODE, {"node_id": node_id}))
+            return
         except Exception as exc:
             logger.warning("[EXEC] Node %s raised: %s", node_id, exc)
             result = None
@@ -514,7 +626,11 @@ class Orchestrator:
             return
 
         # ── Broadening metadata: write back if node ran with broadened description
-        reporter_for_broadening = self._reporters.get(node_id)
+        # Access _reporters under graph_lock: _on_node_done runs in a
+        # ThreadPoolExecutor done-callback and concurrent callbacks could
+        # otherwise race with the dict writes in _execution_pass.
+        with self.graph_lock:
+            reporter_for_broadening = self._reporters.get(node_id)
         if reporter_for_broadening and reporter_for_broadening.pending_broadening:
             signal = reporter_for_broadening.pending_broadening
             with self.graph_lock:
@@ -679,6 +795,11 @@ class Orchestrator:
                     reporter.expose_all()
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
                 self._apply(Event(RESET_NODE, {"node_id": node_id}))
+                # Fix #3: pop the reporter on every retry, not only on final
+                # failure.  The next execution cycle creates a fresh reporter
+                # anyway; keeping the stale one risks accumulating dangling
+                # step-node references across retries.
+                self._reporters.pop(node_id, None)
             else:
                 logger.info("[EXEC] Node %s verified OK. Result: %.120s", node_id, result)
                 self._apply(
@@ -743,7 +864,9 @@ class Orchestrator:
 
         with self.graph_lock:
             snapshot = self.graph.get_snapshot()
-            awaiting = [n for n in self.graph.nodes.values() if n.status == "awaiting_input"]
+            # FIX: build the awaiting list from the snapshot (an immutable copy)
+            # rather than from self.graph.nodes (the live mutable collection).
+            awaiting = [n for n in snapshot.values() if n.status == "awaiting_input"]
 
         resumed = 0
         for node in awaiting:
@@ -820,6 +943,9 @@ class Orchestrator:
 
         Must be called with self.graph_lock held.
         """
+        assert self.graph_lock._is_owned(), (  # noqa: SLF001
+            "_patch_clarification_node must be called with self.graph_lock held"
+        )
         clar_id = hint_clar_id
         if not clar_id or clar_id not in self.graph.nodes:
             node = self.graph.nodes.get(task_node_id)
@@ -858,9 +984,6 @@ class Orchestrator:
             )
         )
 
-        # Snapshot clar.result while the lock is held (caller must hold
-        # graph_lock) so the JSON parse cannot race with another thread
-        # updating the same node's result via _apply().
         current_result: str | None = clar.result
 
         try:
@@ -989,16 +1112,9 @@ class Orchestrator:
                     n = self.graph.nodes.get(node.id)
                     if n:
                         retry = n.metadata.get("retry_count", 0)
-                        # FIX #3: emit RESET_NODE through _apply() so the status
-                        # change is written to the event log.  Without this the
-                        # node is still "done" on the next replay and immediately
-                        # fails verification again in an infinite loop.
                         self._apply(Event(RESET_NODE, {"node_id": node.id}))
-                        # Re-fetch after apply (apply may have triggered callbacks)
                         n = self.graph.nodes.get(node.id)
                         if n:
-                            # Metadata pops have no dedicated event type; they are
-                            # informational fields that do not affect replay.
                             n.metadata["verification_failure"] = (
                                 f"declared file output(s) {missing_files} do not exist on disk"
                             )
@@ -1056,8 +1172,6 @@ class Orchestrator:
                     )
                     n = self.graph.nodes[node.id]
                     retry = n.metadata.get("retry_count", 0)
-                    # FIX #3: emit RESET_NODE so the reset is captured in the
-                    # event log and survives the next replay correctly.
                     self._apply(Event(RESET_NODE, {"node_id": node.id}))
                     n = self.graph.nodes.get(node.id)
                     if n:
@@ -1160,10 +1274,6 @@ class Orchestrator:
             node = self.graph.nodes.get(node_id)
             if not node or node_id in self._running_futures:
                 return
-            # Emit RESET_NODE through _apply() so the state change is written to
-            # the event log and survives replay correctly.  Previously this
-            # mutated node.status directly, which meant a retried node would
-            # revert to "failed" or "done" on the next run's replay.
             self._apply(Event(RESET_NODE, {"node_id": node_id}))
 
     def resume_node(self, node_id: str) -> bool:
@@ -1195,6 +1305,20 @@ class Orchestrator:
             goal = self.graph.nodes.get(goal_id)
             if not goal or goal.node_type != "goal":
                 return
+
+            # FIX #7: check whether any children are currently running before
+            # removing idle children and clearing the expanded flag.
+            running_children = [cid for cid in goal.children if cid in self._running_futures]
+            if running_children:
+                logger.warning(
+                    "[ORCHESTRATOR] replan_goal(%s): %d child(ren) still running "
+                    "(%s) — removing idle children but deferring expanded=False "
+                    "to avoid a mid-execution re-plan.",
+                    goal_id,
+                    len(running_children),
+                    running_children,
+                )
+
             for cid in list(goal.children):
                 if (
                     cid in self.graph.nodes
@@ -1202,15 +1326,17 @@ class Orchestrator:
                     and cid not in self._running_futures
                 ):
                     self._apply(Event(REMOVE_NODE, {"node_id": cid}))
-            self._apply(
-                Event(
-                    UPDATE_METADATA,
-                    {
-                        "node_id": goal_id,
-                        "metadata": {"expanded": False},
-                    },
+
+            if not running_children:
+                self._apply(
+                    Event(
+                        UPDATE_METADATA,
+                        {
+                            "node_id": goal_id,
+                            "metadata": {"expanded": False},
+                        },
+                    )
                 )
-            )
 
     def update_metadata(self, node_id: str, metadata: dict):
         with self.graph_lock:

@@ -224,28 +224,29 @@ class TaskGraph:
 
     def recompute_readiness_for(self, node_id: str) -> None:
         """
-        FIX #10: Incremental readiness update.
+        Incremental readiness update for MARK_DONE events.
 
-        Re-evaluate only the direct children of *node_id* instead of scanning
-        the entire graph.  Called by apply_event for MARK_DONE events where
-        only the children of the completed node can become newly ready.
+        Re-evaluates the direct children of *node_id* (which can become newly
+        ready) AND any node currently marked "ready" whose dependencies are no
+        longer all "done" (which can regress to "pending" if a sibling was
+        reset or removed while this node was completing).
+
+        This two-pass approach is faster than a full graph scan for typical
+        MARK_DONE events while still catching the regression cases that the
+        original children-only implementation missed.
 
         Falls back gracefully when the node is not present (already removed).
         """
+        _SKIP = frozenset(("done", "running", "failed", "to_be_expanded", "awaiting_input"))
+
         node = self.nodes.get(node_id)
         if node is None:
             return
+
+        # Pass 1 — promote children of the completed node.
         for child_id in node.children:
             child = self.nodes.get(child_id)
-            if child is None:
-                continue
-            if child.status in (
-                "done",
-                "running",
-                "failed",
-                "to_be_expanded",
-                "awaiting_input",
-            ):
+            if child is None or child.status in _SKIP:
                 continue
             if all(
                 dep in self.nodes and self.nodes[dep].status == "done" for dep in child.dependencies
@@ -253,6 +254,17 @@ class TaskGraph:
                 child.status = "ready"
             else:
                 child.status = "pending"
+
+        # Pass 2 — catch regressions: a node that was already "ready" may have
+        # had one of its other dependencies reset or removed concurrently.
+        # Scan only the currently-ready nodes (a small subset of the graph).
+        for other in list(self.nodes.values()):
+            if other.status != "ready":
+                continue
+            if not all(
+                dep in self.nodes and self.nodes[dep].status == "done" for dep in other.dependencies
+            ):
+                other.status = "pending"
 
     # --------------------------------------------------
     # Snapshot
@@ -320,8 +332,15 @@ class TaskGraph:
 
     def get_branch(self, root_id):
         """
-        Returns all nodes reachable from the root node (inclusive),
-        walking upstream through dependencies.
+        Return all nodes reachable *upstream* from ``root_id`` (inclusive),
+        by walking through each node's ``dependencies`` set.
+
+        FIX #10: The method name "get_branch" conventionally implies a
+        downstream (child-ward) walk, but this implementation walks *upstream*
+        toward prerequisites — i.e. it returns the full dependency closure of
+        the given node, not its descendants.  The docstring and inline comments
+        have been corrected to match the actual behaviour.  Callers that need
+        downstream descendants should use ``node.children`` or a BFS over it.
         """
         if root_id not in self.nodes:
             return {}
@@ -337,7 +356,7 @@ class TaskGraph:
             node = self.nodes[current_id]
             branch_nodes[current_id] = node
 
-            # Walk upstream (toward prerequisites)
+            # Walk upstream toward prerequisites (following dependencies, not children)
             stack.extend(node.dependencies)
 
         return branch_nodes

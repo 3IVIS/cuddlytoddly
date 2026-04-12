@@ -517,8 +517,18 @@ class LLMExecutor:
                 previous_failure[:80],
             )
 
+        # Fix #9: when the LLM is stopped and there ARE missing fields, returning
+        # None here tells execute() "no missing inputs — proceed normally", which
+        # causes it to run the task with the un-broadened description and
+        # potentially hallucinated field values.  The subsequent LLM call inside
+        # the execution loop will raise LLMStoppedError and reset the node
+        # anyway, but the cleaner approach is to raise immediately so the
+        # executor's uniform LLMStoppedError handler deals with it, not a
+        # silent None return that masks the real reason for the abort.
         if getattr(self.llm, "is_stopped", False):
-            return None
+            from cuddlytoddly.planning.llm_interface import LLMStoppedError
+
+            raise LLMStoppedError("LLM is paused — deferring broadening call until resumed")
 
         def _fmt_fields(fields):
             return (
@@ -954,24 +964,29 @@ class LLMExecutor:
                 result = response.text
 
                 if expected_files and "write_file" not in {h["name"] for h in history}:
-                    correction_id = f"toolu_correction_{uuid.uuid4().hex[:8]}"
                     logger.warning(
                         "[EXECUTOR] Node %s gave final answer without calling write_file "
                         "— injecting correction turn",
                         node.id,
                     )
+                    # Fix #10: the old code injected a fake tool_use history
+                    # entry (pretending the model called write_file with an ID
+                    # it never issued).  Both Anthropic and OpenAI validate
+                    # tool_use_id consistency and reject such conversations with
+                    # a 400 error.  Use a plain "correction" entry instead,
+                    # which _build_native_messages_* renders as a user message —
+                    # a safe, provider-agnostic way to redirect the model.
                     history = self._append_to_history(
                         history,
                         {
-                            "name": "write_file",
-                            "args": {"path": expected_files[0], "content": ""},
-                            "result": (
-                                f"ERROR: write_file was called with empty content. "
-                                f"You must call write_file again with the actual content of "
-                                f"{expected_files[0]}. Do not give a final answer until the "
-                                f"file has been written with real content."
+                            "kind": "correction",
+                            "content": (
+                                f"Your previous response was a text answer, but this task "
+                                f"requires you to call write_file to produce "
+                                f"{expected_files[0]}. "
+                                f"Do not give a final text answer — call write_file with the "
+                                f"actual file content now."
                             ),
-                            "tool_use_id": correction_id,
                         },
                     )
                     continue

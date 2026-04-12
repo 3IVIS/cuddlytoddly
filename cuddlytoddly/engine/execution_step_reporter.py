@@ -40,8 +40,10 @@ class ExecutionStepReporter:
         self._graph_lock = graph_lock
         self._graph = graph
 
-        # tool_name -> node_id  (for retry detection)
-        self._tool_nodes: dict[str, str] = {}
+        # tool_name -> list[node_id]  (list because the same tool may be called
+        # multiple times in a single execution, e.g. write_file for two files).
+        # The last entry in the list is the "active" node for retry detection.
+        self._tool_nodes: dict[str, list[str]] = {}
         # ordered list of all step node ids (for hide/expose)
         self._all_step_ids: list[str] = []
         self._turn = 0
@@ -65,27 +67,33 @@ class ExecutionStepReporter:
         self._turn = turn
 
     def on_tool_start(self, tool_name: str, tool_args: dict) -> str:
-        # Check in-memory registry first (same session retry)
-        if tool_name in self._tool_nodes:
-            step_id = self._tool_nodes[tool_name]
-            with self._graph_lock:
-                self._apply(Event(MARK_RUNNING, {"node_id": step_id}))
-            return step_id
+        # FIX #9: A tool may legitimately be called more than once per execution
+        # (e.g. write_file called for two different output files).  The old code
+        # keyed the registry on tool_name alone, so the second call reused the
+        # first call's step node and its description was never updated.  We now
+        # key on (tool_name, call_index) by appending a numeric suffix, and only
+        # reuse an existing node when the task is being *retried* from scratch
+        # (fresh _tool_nodes map but the node already exists in the graph from a
+        # previous attempt of the same parent task).
 
-        step_id = f"{self.parent_node_id}__step_{tool_name}"
+        # Build a candidate step_id using call-count to make it unique
+        call_index = len(self._tool_nodes.get(tool_name, []))
+        step_id = (
+            f"{self.parent_node_id}__step_{tool_name}"
+            if call_index == 0
+            else f"{self.parent_node_id}__step_{tool_name}_{call_index}"
+        )
 
-        # Check if this step already exists in the graph from a previous session
+        # Check if this exact step already exists in the graph (session retry)
         existing = self._graph.nodes.get(step_id)
         if existing is not None:
             logger.debug(
-                "[STEPREPORTER] Found pre-existing step node %s from previous session",
+                "[STEPREPORTER] Reusing pre-existing step node %s (session retry)",
                 step_id,
             )
-            # Re-register it so the rest of the reporter is aware of it
-            self._tool_nodes[tool_name] = step_id
+            self._tool_nodes.setdefault(tool_name, []).append(step_id)
             if step_id not in self._all_step_ids:
                 self._all_step_ids.append(step_id)
-
             with self._graph_lock:
                 self._apply(Event(MARK_RUNNING, {"node_id": step_id}))
             return step_id
@@ -139,7 +147,7 @@ class ExecutionStepReporter:
                 )
             )
 
-        self._tool_nodes[tool_name] = step_id
+        self._tool_nodes.setdefault(tool_name, []).append(step_id)
         self._all_step_ids.append(step_id)
         return step_id
 

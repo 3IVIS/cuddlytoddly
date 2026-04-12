@@ -2,11 +2,13 @@
 
 import argparse
 import json
+import secrets
 import sys
 import threading
 import time
 from pathlib import Path
 
+import cuddlytoddly.skills.file_ops.tools as file_ops_tools
 import cuddlytoddly.ui.git_projection as git_proj
 from cuddlytoddly.config import (
     DATA_DIR,
@@ -32,6 +34,7 @@ from cuddlytoddly.planning.llm_executor import LLMExecutor
 from cuddlytoddly.planning.llm_interface import (
     _DEFAULT_CLAUDE_MODEL,
     _DEFAULT_OPENAI_MODEL,
+    TokenCounter,
     create_llm_client,
     token_counter,
 )
@@ -43,7 +46,12 @@ from cuddlytoddly.ui.web_server import run_web_ui
 
 REPO_ROOT = Path(__file__).resolve().parent  # package code location
 
-setup_logging()
+# FIX #8: do NOT call setup_logging() at module import time.  The module is
+# imported before any run directory is known, so a module-level call produces
+# log output with no per-run log file and accumulates duplicate handlers if the
+# module is imported more than once (e.g. in tests).  setup_logging() is now
+# called once, early in main(), before any log messages are emitted.
+
 logger = get_logger(__name__)
 
 
@@ -78,14 +86,20 @@ class _DeferredLLM:
             return getattr(self._real, "is_stopped", False)
 
     def stop(self) -> None:
+        # FIX #5: snapshot _real under the lock, then call stop() outside it.
+        # Holding _lock while delegating risks deadlock if the backend's stop()
+        # tries to acquire its own lock while a concurrent ask() thread holds it.
         with self._lock:
-            if self._real is not None and hasattr(self._real, "stop"):
-                self._real.stop()
+            real = self._real
+        if real is not None and hasattr(real, "stop"):
+            real.stop()
 
     def resume(self) -> None:
+        # FIX #5: same pattern as stop() — release lock before delegating.
         with self._lock:
-            if self._real is not None and hasattr(self._real, "resume"):
-                self._real.resume()
+            real = self._real
+        if real is not None and hasattr(real, "resume"):
+            real.resume()
 
     def ask(self, prompt: str, schema=None) -> str:
         from cuddlytoddly.planning.llm_interface import LLMStoppedError
@@ -97,7 +111,21 @@ class _DeferredLLM:
         return real.ask(prompt, schema=schema) if schema is not None else real.ask(prompt)
 
     def generate(self, prompt: str) -> str:
-        return self.ask(prompt)
+        # FIX #10: delegate to the real client's generate() method once
+        # attached, rather than routing through ask() which has different
+        # semantics (ask() always accepts a schema kwarg; generate() is a
+        # simpler text-completion call without structured output).  Before
+        # attachment we raise LLMStoppedError consistent with ask().
+        from cuddlytoddly.planning.llm_interface import LLMStoppedError
+
+        with self._lock:
+            real = self._real
+        if real is None:
+            raise LLMStoppedError("LLM is still loading — execution will resume automatically")
+        if hasattr(real, "generate"):
+            return real.generate(prompt)
+        # Fallback: if the real client exposes only ask(), use it without schema.
+        return real.ask(prompt)
 
     def attach(self, real_llm) -> None:
         """Swap in the real client; from this point on the LLM is live."""
@@ -107,13 +135,30 @@ class _DeferredLLM:
 
 
 def make_run_dir(goal_text: str) -> Path:
-    # Append a short timestamp suffix so two goals that normalise to the same
-    # slug never silently share the same run directory and event log.
+    # FIX #2: the original suffix used only the last 8 digits of the Unix
+    # timestamp, which is not unique within the same second.  Two runs for the
+    # same goal started within the same second would share an identical
+    # directory name; mkdir(exist_ok=True) would silently succeed, causing both
+    # runs to write to the same events.jsonl and corrupt each other's replay.
+    #
+    # The fix appends a cryptographically random 8-character hex suffix in
+    # addition to the full timestamp, making directory collisions effectively
+    # impossible without sacrificing the human-readable goal slug.
+    #
+    # FIX: mkdir now uses exist_ok=False so that any (vanishingly unlikely)
+    # collision raises immediately rather than silently sharing the directory.
+    #
+    # Fix #7 (new): if after filtering all characters the slug is empty (e.g.
+    # goal text was pure unicode/emoji), fall back to "goal" so the directory
+    # name is never just "_{ts}_{rand}" which is confusing to humans.
     safe = goal_text.lower().replace(" ", "_")
     safe = "".join(c for c in safe if c.isalnum() or c == "_")[:60]
-    ts = str(int(time.time()))[-8:]  # last 8 digits of unix timestamp
-    run_dir = DATA_DIR / "runs" / f"{safe}_{ts}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    if not safe:
+        safe = "goal"
+    ts = str(int(time.time()))
+    rand = secrets.token_hex(4)  # 8 random hex chars
+    run_dir = DATA_DIR / "runs" / f"{safe}_{ts}_{rand}"
+    run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "outputs").mkdir(exist_ok=True)
     return run_dir
 
@@ -138,6 +183,21 @@ def _print_preflight_issues(issues: list[dict]) -> None:
 
 
 def main():
+    # Bootstrap stderr logging so that preflight warnings and config-load
+    # messages are visible before the run directory is known.  _init_system()
+    # calls setup_logging(log_dir=…) which clears these handlers and installs
+    # the full rotating file handlers, so there is only ever one complete
+    # initialisation rather than two overlapping ones.
+    import logging as _logging
+
+    _dag_root = _logging.getLogger("dag")
+    if not _dag_root.hasHandlers():
+        _dag_root.setLevel(_logging.DEBUG)
+        _bootstrap_ch = _logging.StreamHandler()
+        _bootstrap_ch.setLevel(_logging.WARNING)
+        _bootstrap_ch.setFormatter(_logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+        _dag_root.addHandler(_bootstrap_ch)
+
     # ── Load config ───────────────────────────────────────────────────────────
     cfg = load_config()
     server_cfg = cfg.get("server", {})
@@ -294,6 +354,13 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     working_dir = run_dir / "outputs"
     _logger.info("Task working directory: %s", working_dir)
 
+    # FIX (security): configure the file_ops sandbox so that read_file,
+    # write_file, append_file, and list_dir are restricted to the run's
+    # outputs/ directory.  Absolute paths outside this sandbox raise
+    # ValueError and fail the tool call cleanly rather than silently
+    # reading or writing arbitrary files on the host filesystem.
+    file_ops_tools.configure(working_dir)
+
     # FIX #5: create the StableIDGenerator per-run and pass it directly to the
     # LLM client rather than replacing a shared module-level global.  This
     # prevents two concurrent web-mode runs from racing on the same id_gen.
@@ -309,6 +376,12 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
 
     max_workers = orch_cfg["max_workers"]
     max_turns = orch_cfg["max_turns"]
+
+    # ── Per-run token counter ─────────────────────────────────────────────────
+    # FIX #3: created here — before the graph-replay block — so it is in scope
+    # when the seed call inside the replay branch fires (the seed call must
+    # happen before the first LLM call, not after).
+    run_token_counter = TokenCounter()
 
     # ── Graph init ────────────────────────────────────────────────────────────
     if not choice.is_fresh and event_log_path.exists() and event_log_path.stat().st_size > 0:
@@ -339,17 +412,42 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         # ── Restore historical token counts ───────────────────────────────────
         # Read llamacpp_cache.json (present for llama.cpp runs; absent for
         # Anthropic/OpenAI runs — skipped silently in that case).
-        # Each entry has {"prompt": str, "response": str}; token counts are
-        # approximated with len//4, matching the live accounting in LlamaCppLLM.
+        # FIX #9: the original code approximated token counts as len(text) // 4,
+        # which is an English-centric heuristic that can be off by 2-5× for
+        # non-English text.  We now use tiktoken (if available) for a much more
+        # accurate count, and fall back to the character-based approximation only
+        # when tiktoken is not installed.  A warning is logged on fallback so the
+        # discrepancy is visible in the run logs.
         cache_path = run_dir / "llamacpp_cache.json"
         if cache_path.exists():
             try:
                 entries = json.loads(cache_path.read_text(encoding="utf-8"))
                 prompt_total = 0
                 completion_total = 0
+
+                try:
+                    import tiktoken
+
+                    enc = tiktoken.get_encoding("cl100k_base")
+
+                    def _count_tokens(text: str) -> int:
+                        return len(enc.encode(text))
+
+                except ImportError:
+                    _logger.warning(
+                        "[STARTUP] tiktoken not installed — token counts seeded from cache "
+                        "will use the len//4 approximation which may be inaccurate for "
+                        "non-English text.  Install tiktoken for accurate counts."
+                    )
+
+                    def _count_tokens(text: str) -> int:  # type: ignore[misc]
+                        return len(text) // 4
+
                 for entry in entries.values():
-                    prompt_total += len(entry.get("prompt", "")) // 4
-                    completion_total += len(entry.get("response", "")) // 4
+                    prompt_total += _count_tokens(entry.get("prompt", ""))
+                    completion_total += _count_tokens(entry.get("response", ""))
+
+                run_token_counter.seed(prompt_total, completion_total, calls=len(entries))
                 token_counter.seed(prompt_total, completion_total, calls=len(entries))
                 _logger.info(
                     "[STARTUP] Seeded token counter from cache: "
@@ -374,7 +472,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         shared_llm = deferred_llm
     else:
         deferred_llm = None
-        shared_llm = _build_llm_client(cfg, run_dir, run_id_gen)
+        shared_llm = _build_llm_client(cfg, run_dir, run_id_gen, run_token_counter)
 
     # ── Components ────────────────────────────────────────────────────────────
     skills = SkillLoader()
@@ -402,10 +500,14 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         working_dir=working_dir,
     )
 
+    # FIX #5: pass the executor's working_dir to QualityGate so that declared
+    # file output paths (e.g. "report.md") are resolved against the correct
+    # directory during file-existence checks rather than the process CWD.
     quality_gate = QualityGate(
         llm_client=shared_llm,
         tool_registry=registry,
         max_total_input_chars=exec_cfg["max_total_input_chars"],
+        working_dir=working_dir,
     )
 
     queue = EventQueue()
@@ -420,6 +522,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         max_gap_fill_attempts=orch_cfg["max_gap_fill_attempts"],
         max_retries=orch_cfg["max_retries"],
         idle_sleep=orch_cfg["idle_sleep"],
+        token_counter_instance=run_token_counter,
     )
 
     # ── Seed graph ────────────────────────────────────────────────────────────
@@ -457,25 +560,24 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         def _load_real_llm():
             _logger.info("[STARTUP] Background LLM load starting…")
             try:
-                real_llm = _build_llm_client(cfg, run_dir, run_id_gen)
+                real_llm = _build_llm_client(cfg, run_dir, run_id_gen, run_token_counter)
                 deferred_llm.attach(real_llm)
                 _logger.info("[STARTUP] LLM ready — starting background verification")
                 orchestrator.verify_restored_nodes()
             except Exception as exc:
                 _logger.error("[STARTUP] Background LLM load failed: %s", exc)
-                # Surface the failure through the event queue so the UI can
-                # display it rather than leaving the system silently paused.
-                try:
-                    from cuddlytoddly.infra.event_queue import StatusEvent
+                # FIX: StatusEvent now lives in event_queue (it was previously
+                # imported inside a try/except because it didn't exist there,
+                # so failures were always silently swallowed).  Import at the
+                # top of the except block — no defensive try needed.
+                from cuddlytoddly.infra.event_queue import StatusEvent
 
-                    orchestrator.event_queue.put(
-                        StatusEvent(
-                            "llm_load_failed",
-                            {"error": str(exc)},
-                        )
+                orchestrator.event_queue.put(
+                    StatusEvent(
+                        "llm_load_failed",
+                        {"error": str(exc)},
                     )
-                except Exception:
-                    pass  # event queue missing or wrong type — log is sufficient
+                )
 
         threading.Thread(target=_load_real_llm, daemon=True, name="startup-llm").start()
 
@@ -492,7 +594,12 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     return orchestrator, run_dir
 
 
-def _build_llm_client(cfg: dict, run_dir: Path, id_gen: "StableIDGenerator | None" = None):
+def _build_llm_client(
+    cfg: dict,
+    run_dir: Path,
+    id_gen: "StableIDGenerator | None" = None,
+    run_token_counter: "TokenCounter | None" = None,
+):
     """
     Construct and return the correct BaseLLM from the loaded config.
     Extracted so it can be unit-tested independently of the full startup.
@@ -519,6 +626,7 @@ def _build_llm_client(cfg: dict, run_dir: Path, id_gen: "StableIDGenerator | Non
             max_tokens=llm_cfg.get("max_tokens", 8192),
             temperature=llm_cfg.get("temperature", 0.1),
             cache_path=cache_path,
+            token_counter_instance=run_token_counter,
         )
 
     if backend == "claude":
@@ -530,6 +638,7 @@ def _build_llm_client(cfg: dict, run_dir: Path, id_gen: "StableIDGenerator | Non
             temperature=llm_cfg.get("temperature", 0.1),
             max_tokens=llm_cfg.get("max_tokens", 8192),
             cache_path=cache_path,
+            token_counter_instance=run_token_counter,
         )
 
     if backend == "openai":
@@ -545,6 +654,7 @@ def _build_llm_client(cfg: dict, run_dir: Path, id_gen: "StableIDGenerator | Non
             kwargs["base_url"] = llm_cfg["base_url"]
         if "api_key" in llm_cfg:
             kwargs["api_key"] = llm_cfg["api_key"]
+        kwargs["token_counter_instance"] = run_token_counter
         return create_llm_client("openai", **kwargs)
 
     if backend == "file":
@@ -561,6 +671,7 @@ def _build_llm_client(cfg: dict, run_dir: Path, id_gen: "StableIDGenerator | Non
             progress_log_interval=file_cfg["progress_log_interval"],
             cache_path=cache_path,
             id_gen=id_gen,
+            token_counter_instance=run_token_counter,
         )
 
     # Should never reach here — _validate() in load_config() guards this.

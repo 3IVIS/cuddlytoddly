@@ -24,6 +24,11 @@ from platformdirs import user_data_dir
 
 from cuddlytoddly.infra.logging import get_logger
 
+# FIX #8: import model name constants so the config template uses the same
+# single source of truth as the LLM backends, rather than hard-coded strings
+# that go stale when default models are updated.
+from cuddlytoddly.planning.llm_interface import _DEFAULT_CLAUDE_MODEL, _DEFAULT_OPENAI_MODEL
+
 logger = get_logger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -117,7 +122,7 @@ max_history_entries = 3
 [claude]
 
 # Requires the ANTHROPIC_API_KEY environment variable.
-model         = "claude-opus-4-6"
+model         = "{claude_model}"
 temperature   = 0.1
 max_tokens    = 8192
 
@@ -139,7 +144,7 @@ max_history_entries     = 10
 [openai]
 
 # Requires the OPENAI_API_KEY environment variable (or api_key below).
-model         = "gpt-4o"
+model         = "{openai_model}"
 temperature   = 0.1
 max_tokens    = 8192
 
@@ -148,7 +153,15 @@ cache_enabled = true
 
 # Uncomment for OpenAI-compatible providers (Together, Groq, Mistral, etc.)
 # base_url = "https://api.together.xyz/v1"
-# api_key  = ""   # set here or via OPENAI_API_KEY
+#
+# FIX #11: SECURITY WARNING — setting api_key here stores your secret key in a
+# plain-text file on disk at a well-known path.  Anyone with read access to
+# your home directory can read it.  Prefer setting the OPENAI_API_KEY
+# environment variable instead (e.g. in your shell profile or a .env file that
+# is NOT committed to version control).  Only use this option when an env var
+# is not practical, and ensure the config file has restrictive permissions
+# (chmod 600 on Linux/macOS).
+# api_key  = ""   # prefer OPENAI_API_KEY env var — see security note above
 
 # ── Execution limits (openai) ─────────────────────────────────────────────────
 # Higher limits for remote API: large context windows, parallelisable calls.
@@ -249,7 +262,13 @@ def load_config() -> dict:
 
     if not CONFIG_PATH.exists():
         backend = _detect_backend()
-        content = _DEFAULT_CONFIG_TEMPLATE.replace('"{backend}"', f'"{backend}"')
+        # FIX #8: substitute all three placeholders so the written file always
+        # reflects the current default model names from llm_interface.py.
+        content = (
+            _DEFAULT_CONFIG_TEMPLATE.replace('"{backend}"', f'"{backend}"')
+            .replace('"{claude_model}"', f'"{_DEFAULT_CLAUDE_MODEL}"')
+            .replace('"{openai_model}"', f'"{_DEFAULT_OPENAI_MODEL}"')
+        )
         CONFIG_PATH.write_text(content, encoding="utf-8")
         _print_first_run_notice(backend)
         logger.info("[CONFIG] Created default config at %s (backend=%s)", CONFIG_PATH, backend)
@@ -260,6 +279,19 @@ def load_config() -> dict:
         cfg = tomllib.load(fh)
 
     _validate(cfg)
+
+    # FIX #11: warn at load time if a plain-text api_key is present in the
+    # [openai] section so that users who set it there are reminded of the
+    # security implication every time the application starts.
+    if cfg.get("openai", {}).get("api_key"):
+        logger.warning(
+            "[CONFIG] api_key is set in plain text under [openai] in %s. "
+            "Consider using the OPENAI_API_KEY environment variable instead "
+            "to avoid storing secrets on disk. "
+            "Ensure the config file has restrictive permissions (chmod 600).",
+            CONFIG_PATH,
+        )
+
     return cfg
 
 

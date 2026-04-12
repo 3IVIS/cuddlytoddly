@@ -93,8 +93,10 @@ class NativeToolResponse:
 
 class TokenCounter:
     """
-    Module-level singleton tracking tokens consumed across all LLM calls
-    in this process.  Thread-safe; all attributes are read-only properties.
+    Thread-safe token counter.  One instance is created per LLM backend so
+    that concurrent web-mode runs each track their own usage independently.
+    A module-level fallback singleton (``token_counter``) is kept for
+    backward compatibility with code that imports it directly.
     """
 
     def __init__(self):
@@ -206,8 +208,15 @@ class BaseLLM(ABC):
 
     supports_native_tools: bool = False
 
-    def __init__(self):
+    def __init__(self, token_counter_instance: "TokenCounter | None" = None):
         self._stop_event = threading.Event()
+        # FIX #3: Each backend owns its counter so concurrent web-mode runs
+        # do not accumulate tokens into a shared module-level singleton.
+        # Falls back to the module-level ``token_counter`` when none supplied
+        # (e.g. third-party code constructing backends directly).
+        self._token_counter: TokenCounter = (
+            token_counter_instance if token_counter_instance is not None else token_counter
+        )
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -268,8 +277,9 @@ class FileBasedLLM(BaseLLM):
         progress_log_interval: float = _DEFAULT_PROGRESS_LOG_INTERVAL,
         cache_path: Path | str | None = None,
         id_gen: StableIDGenerator | None = None,
+        token_counter_instance: "TokenCounter | None" = None,
     ):
-        super().__init__()
+        super().__init__(token_counter_instance=token_counter_instance)
         self.response_file = Path(response_file)
         self.prompt_log_file = Path(prompt_log_file)
         self.poll_interval = poll_interval
@@ -324,35 +334,42 @@ class FileBasedLLM(BaseLLM):
         """
         Poll the response file for a block matching ``prompt_id``.
 
-        FIX #12 (minor): tracks the file offset so each poll only reads
-        newly-appended content rather than re-reading the entire file from
-        the beginning, keeping cost proportional to new data only.
+        FIX #3: Replaced the two-open approach (one incremental seek to detect
+        new bytes, a second full re-read to parse blocks) with a single
+        consistent read per poll.  The old design used last_offset to guard
+        against redundant full-reads, but then immediately opened the file a
+        second time — making the offset tracking useless and introducing a
+        TOCTOU window where content written between the two opens could be
+        silently skipped or double-counted.
+
+        The new implementation reads the entire file once per poll and skips
+        the parse step when the file size has not grown since the last read,
+        preserving the cost-reduction goal without the inconsistency.
         """
         logger.info("[LLM] get_response() called for id=%s", prompt_id)
         start_time = time.time()
         last_progress_time = start_time
-        last_offset: int = 0
+        last_known_size: int = 0
 
         while True:
+            # Honour stop() calls that arrive while waiting for a response.
+            if self._stop_event.is_set():
+                raise LLMStoppedError(f"LLM calls paused while waiting for response id={prompt_id}")
+
             now = time.time()
 
             if self.response_file.exists():
-                with self.response_file.open("r") as f:
-                    # Seek to where we left off; read only newly written bytes
-                    f.seek(last_offset)
-                    new_content = f.read()
-                    last_offset = f.tell()
+                current_size = self.response_file.stat().st_size
 
-                if new_content:
-                    # Parse all blocks accumulated so far by re-reading the
-                    # full file — offset tracking just avoids the expensive
-                    # full-read on polls where nothing changed.
-                    with self.response_file.open("r") as f2:
-                        lines = f2.readlines()
+                if current_size > last_known_size:
+                    # File has grown — read it once atomically and parse.
+                    last_known_size = current_size
+                    with self.response_file.open("r", encoding="utf-8", errors="replace") as f:
+                        lines_in_file = f.readlines()
 
                     current_id = None
                     block_lines: list[str] = []
-                    for line in lines:
+                    for line in lines_in_file:
                         line = line.rstrip("\n")
                         if line.startswith("id:"):
                             if current_id == prompt_id and block_lines:
@@ -395,14 +412,14 @@ class FileBasedLLM(BaseLLM):
             cached = self._cache.get(prompt)
             if cached is not None:
                 logger.info("[LLM] Cache HIT — skipping file poll")
-                token_counter.add(len(prompt) // 4, len(cached) // 4)
+                self._token_counter.add(len(prompt) // 4, len(cached) // 4)
                 return cached
 
         prompt_id = self.send_prompt(prompt)
         logger.info("[LLM] ask() obtained prompt_id=%s", prompt_id)
         response = self.get_response(prompt_id)
         logger.info("[LLM] ask() completed for id=%s", prompt_id)
-        token_counter.add(len(prompt) // 4, len(response) // 4)
+        self._token_counter.add(len(prompt) // 4, len(response) // 4)
 
         if self._cache is not None:
             self._cache.set(prompt, response)
@@ -473,12 +490,18 @@ class PromptCache:
                 logger.warning("[CACHE] Could not backup corrupted cache")
             self._store = {}
 
-    def _save(self) -> None:
+    def _save(self, store_snapshot: "dict | None" = None) -> None:
+        # FIX #4: callers pass a snapshot taken while the lock was held so
+        # this method can do disk I/O without holding the lock at all.
+        # When called internally (e.g. _load -> corruption recovery) with no
+        # snapshot, fall back to reading self._store directly; that call site
+        # is always single-threaded so there is no contention risk.
+        data = store_snapshot if store_snapshot is not None else self._store
         tmp = self.cache_path.with_suffix(".tmp")
         try:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             with tmp.open("w", encoding="utf-8") as f:
-                json.dump(self._store, f, indent=2)
+                json.dump(data, f, indent=2)
             tmp.replace(self.cache_path)
         except OSError as e:
             logger.error("[CACHE] Failed to write cache file: %s", e)
@@ -493,9 +516,13 @@ class PromptCache:
 
     def set(self, prompt: str, response: str) -> None:
         key = self._hash(prompt)
+        # FIX #4: take a snapshot of the store under the lock, then write to
+        # disk outside it.  Holding the lock during json.dump + file rename
+        # blocks every concurrent get() call for the full duration of I/O.
         with self._lock:
             self._store[key] = {"prompt": prompt, "response": response}
-            self._save()
+            store_snapshot = dict(self._store)
+        self._save(store_snapshot)
         logger.info("[CACHE] Stored new entry (hash=%s…)", key[:12])
 
     def __len__(self) -> int:
@@ -505,7 +532,8 @@ class PromptCache:
     def clear(self) -> None:
         with self._lock:
             self._store = {}
-            self._save()
+            store_snapshot: dict = {}
+        self._save(store_snapshot)
         logger.info("[CACHE] Cache cleared")
 
 
@@ -543,8 +571,9 @@ class LlamaCppLLM(BaseLLM):
         max_tokens: int = 2048,
         schema=None,
         cache_path: Path | str | None = PROJECT_ROOT / "llamacpp_cache.json",
+        token_counter_instance: "TokenCounter | None" = None,
     ):
-        super().__init__()
+        super().__init__(token_counter_instance=token_counter_instance)
         self.model_path = str(model_path)
         self.n_ctx = n_ctx
         self.n_gpu_layers = n_gpu_layers
@@ -732,7 +761,7 @@ class LlamaCppLLM(BaseLLM):
                 done.set()
 
         completion_tokens = len(self._llama.tokenize(raw.encode("utf-8")))
-        token_counter.add(prompt_tokens, completion_tokens)
+        self._token_counter.add(prompt_tokens, completion_tokens)
 
         logger.info(
             "[LLAMACPP] Inference complete in %.1fs -- %d chars",
@@ -797,8 +826,14 @@ class LlamaCppLLM(BaseLLM):
             response_text = self._run_model(prompt, constrained_schema)
             try:
                 parsed = json.loads(response_text)
-                if not parsed:
-                    raise ValueError("Empty JSON response")
+                # FIX: mirror the ApiLLM fix — only reject a genuinely null
+                # response.  The old check `not parsed and parsed != 0` treated
+                # {} and [] as invalid because `not {}` and `not []` are True in
+                # Python, causing unnecessary retries and ultimately raising
+                # "Model repeatedly returned invalid JSON" for any task where
+                # the correct response is an empty object or empty array.
+                if parsed is None:
+                    raise ValueError("Null JSON response")
                 if self._cache is not None:
                     self._cache.set(cache_key, response_text)
                 return response_text
@@ -863,8 +898,9 @@ class ApiLLM(BaseLLM):
         max_tokens: int = 4096,
         system_prompt: str | None = None,
         cache_path: Path | str | None = None,
+        token_counter_instance: "TokenCounter | None" = None,
     ):
-        super().__init__()
+        super().__init__(token_counter_instance=token_counter_instance)
         provider = provider.lower()
         if provider not in self._DEFAULTS:
             raise ValueError(f"Unknown provider '{provider}'. Choose 'openai' or 'claude'.")
@@ -888,38 +924,50 @@ class ApiLLM(BaseLLM):
         )
 
         self._client = None  # lazy-loaded
+        # FIX #1: protect lazy client initialisation with a lock so that
+        # concurrent executor threads (max_workers > 1) cannot race through
+        # the `if self._client is None` check and each create their own client.
+        self._load_lock = threading.Lock()
 
     # ── Client loading ────────────────────────────────────────────────────────
 
     def _load(self):
+        # Fast path — client already initialised (no lock needed after first load).
         if self._client is not None:
             return
 
-        if self.provider == "openai":
-            try:
-                from openai import OpenAI
-            except ImportError as e:
-                raise ImportError("openai package is not installed. Run: pip install openai") from e
-            kwargs: dict[str, Any] = {}
-            if self.api_key:
-                kwargs["api_key"] = self.api_key
-            if self.base_url:
-                kwargs["base_url"] = self.base_url
-            self._client = OpenAI(**kwargs)
-            logger.info("[API] OpenAI client ready")
+        # FIX #1: double-checked locking — identical pattern to LlamaCppLLM.
+        with self._load_lock:
+            if self._client is not None:
+                return
 
-        elif self.provider == "claude":
-            try:
-                import anthropic
-            except ImportError as e:
-                raise ImportError(
-                    "anthropic package is not installed. Run: pip install anthropic"
-                ) from e
-            kwargs = {}
-            if self.api_key:
-                kwargs["api_key"] = self.api_key
-            self._client = anthropic.Anthropic(**kwargs)
-            logger.info("[API] Anthropic client ready")
+            if self.provider == "openai":
+                try:
+                    from openai import OpenAI
+                except ImportError as e:
+                    raise ImportError(
+                        "openai package is not installed. Run: pip install openai"
+                    ) from e
+                kwargs: dict[str, Any] = {}
+                if self.api_key:
+                    kwargs["api_key"] = self.api_key
+                if self.base_url:
+                    kwargs["base_url"] = self.base_url
+                self._client = OpenAI(**kwargs)
+                logger.info("[API] OpenAI client ready")
+
+            elif self.provider == "claude":
+                try:
+                    import anthropic
+                except ImportError as e:
+                    raise ImportError(
+                        "anthropic package is not installed. Run: pip install anthropic"
+                    ) from e
+                kwargs = {}
+                if self.api_key:
+                    kwargs["api_key"] = self.api_key
+                self._client = anthropic.Anthropic(**kwargs)
+                logger.info("[API] Anthropic client ready")
 
     # ── Schema helpers ────────────────────────────────────────────────────────
 
@@ -959,18 +1007,25 @@ class ApiLLM(BaseLLM):
             messages=messages,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
-            response_format={"type": "json_object"},
         )
 
+        # response_format=json_object is an OpenAI-specific extension.
+        # Many compatible providers (Groq, Together, Mistral, etc.) reject
+        # it with a 400 error when base_url is set to their endpoint.
+        # Only include it when hitting the real OpenAI API (no base_url override).
+        if self.base_url is None:
+            kwargs["response_format"] = {"type": "json_object"}
+
         logger.debug(
-            "[API] Sending OpenAI request  model=%s  schema=%s",
+            "[API] Sending OpenAI request  model=%s  schema=%s  json_mode=%s",
             self.model,
             "yes" if schema else "no",
+            "yes" if self.base_url is None else "no (custom base_url)",
         )
         response = self._client.chat.completions.create(**kwargs)
 
         if response.usage:
-            token_counter.add(response.usage.prompt_tokens, response.usage.completion_tokens)
+            self._token_counter.add(response.usage.prompt_tokens, response.usage.completion_tokens)
         content = response.choices[0].message.content or ""
         logger.info("[API] OpenAI response received (%d chars)", len(content))
         logger.debug("[API] Raw response:\n%s", content)
@@ -1000,7 +1055,7 @@ class ApiLLM(BaseLLM):
             ],
             temperature=self.temperature,
         )
-        token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
+        self._token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
         raw = response.content[0].text
         content = prefill + raw
         logger.info("[API] Claude response received (%d chars)", len(content))
@@ -1041,8 +1096,12 @@ class ApiLLM(BaseLLM):
 
             try:
                 parsed = json.loads(raw)
-                if not parsed and parsed != 0:
-                    raise ValueError("Empty JSON response")
+                # Fix #2: only reject a genuinely absent/null response, not a
+                # legitimately empty JSON object {} or array [].  The previous
+                # check `not parsed and parsed != 0` treated {} and [] as
+                # invalid because `not {}` is True, causing unnecessary retries.
+                if parsed is None:
+                    raise ValueError("Null JSON response")
                 if self._cache is not None:
                     self._cache.set(cache_key, raw)
                 return raw
@@ -1058,6 +1117,55 @@ class ApiLLM(BaseLLM):
                     continue
 
         raise ValueError(f"[API] {self.provider} returned invalid JSON after 2 attempts")
+
+    def generate(self, prompt: str) -> str:
+        """
+        Free-text completion — does NOT inject JSON instructions or an assistant
+        prefill.
+
+        BaseLLM.generate() simply delegates to ask(), which on the API backend
+        always injects "Respond with valid JSON only…" and (for Claude) a '{'
+        prefill.  That is wrong for callers that want unstructured plain-text
+        output.  This override sends the prompt verbatim so the model can reply
+        in natural language.
+        """
+        self._check_stop()
+        self._load()
+        logger.info("[API] generate() called  provider=%s  model=%s", self.provider, self.model)
+        logger.debug("[API] generate() prompt (first 200 chars): %.200s", prompt)
+
+        if self.provider == "openai":
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+            kwargs: dict[str, Any] = dict(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+            response = self._client.chat.completions.create(**kwargs)
+            if response.usage:
+                self._token_counter.add(
+                    response.usage.prompt_tokens, response.usage.completion_tokens
+                )
+            content = response.choices[0].message.content or ""
+            logger.info("[API] generate() OpenAI response received (%d chars)", len(content))
+            return content
+
+        else:  # claude
+            response = self._client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=self.system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.temperature,
+            )
+            self._token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
+            text = response.content[0].text
+            logger.info("[API] generate() Claude response received (%d chars)", len(text))
+            return text
 
     # ── Native tool-use API ───────────────────────────────────────────────────
 
@@ -1146,11 +1254,20 @@ class ApiLLM(BaseLLM):
         """
         Build a Claude-format message list from the task prompt and tool history.
 
-        Each history entry must have: name, args, result, tool_use_id.
-        Produces alternating assistant (tool_use) + user (tool_result) pairs.
+        Each history entry is one of:
+          - Normal tool call: {name, args, result, tool_use_id}
+            Produces alternating assistant (tool_use) + user (tool_result) pairs.
+          - Correction: {kind: "correction", content: str}
+            Fix #10: rendered as a plain user message so the executor can nudge
+            the model (e.g. "you must call write_file") without fabricating a
+            tool_use block with an ID the model never issued, which providers
+            reject with a 400 error.
         """
         messages: list[dict] = [{"role": "user", "content": task_prompt}]
         for entry in history:
+            if entry.get("kind") == "correction":
+                messages.append({"role": "user", "content": entry["content"]})
+                continue
             messages.append(
                 {
                     "role": "assistant",
@@ -1186,11 +1303,19 @@ class ApiLLM(BaseLLM):
         """
         Build an OpenAI-format message list from the task prompt and tool history.
 
-        Each history entry must have: name, args, result, tool_use_id.
-        Produces alternating assistant (tool_calls) + tool (tool_result) pairs.
+        Each history entry is one of:
+          - Normal tool call: {name, args, result, tool_use_id}
+            Produces alternating assistant (tool_calls) + tool (tool_result) pairs.
+          - Correction: {kind: "correction", content: str}
+            Fix #10: rendered as a plain user message so the executor can nudge
+            the model without fabricating a tool_calls block with an ID the model
+            never issued, which providers reject with a 400 error.
         """
         messages: list[dict] = [{"role": "user", "content": task_prompt}]
         for entry in history:
+            if entry.get("kind") == "correction":
+                messages.append({"role": "user", "content": entry["content"]})
+                continue
             messages.append(
                 {
                     "role": "assistant",
@@ -1280,7 +1405,7 @@ class ApiLLM(BaseLLM):
             messages=messages,
             temperature=self.temperature,
         )
-        token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
+        self._token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
         logger.info(
             "[API/Claude] ask_with_tools response: stop_reason=%s  content_blocks=%d",
             response.stop_reason,
@@ -1336,7 +1461,7 @@ class ApiLLM(BaseLLM):
             max_tokens=self.max_tokens,
         )
         if response.usage:
-            token_counter.add(response.usage.prompt_tokens, response.usage.completion_tokens)
+            self._token_counter.add(response.usage.prompt_tokens, response.usage.completion_tokens)
 
         msg = response.choices[0].message
         finish_reason = response.choices[0].finish_reason
