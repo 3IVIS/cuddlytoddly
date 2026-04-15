@@ -321,7 +321,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     # FIX #7: sanitise goal_id with the same alnum+underscore filter used in
     # make_run_dir so that special characters (quotes, backslashes, unicode…)
     # never leak into event-log node IDs and corrupt JSONL replay.
-    goal_id = "".join(c for c in goal_text.lower() if c.isalnum() or c == "_")[:60]
+    goal_id = "".join(c for c in goal_text.lower().replace(" ", "_") if c.isalnum() or c == "_")[:60]
     if not goal_id:
         goal_id = "goal"
 
@@ -406,6 +406,12 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
                 n.metadata.pop("retry_count", None)
                 n.metadata.pop("verification_failure", None)
                 n.metadata.pop("verified", None)
+                # FIX: also clear retry_after so a node that crashed while
+                # inside an exponential-backoff window is not silently skipped
+                # by _execution_pass() after restart.  Without this, the node
+                # would sit in "ready" status but never be launched until the
+                # stale timestamp expires (up to 60 s after the crash).
+                n.metadata.pop("retry_after", None)
 
         graph.recompute_readiness()
 

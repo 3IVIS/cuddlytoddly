@@ -163,6 +163,16 @@ class Orchestrator:
 
     def start(self):
         self._stop_event.clear()
+        # FIX: Recreate the thread pool if stop() was called previously.
+        # ThreadPoolExecutor.shutdown() is irreversible — any subsequent
+        # _pool.submit() raises RuntimeError: cannot schedule new futures after
+        # shutdown.  start() is documented as restartable, so we must replace
+        # the dead pool before launching the loop thread.  We use the private
+        # _shutdown attribute (stable across CPython 3.9-3.12) with a safe
+        # getattr fallback so this degrades gracefully on other runtimes.
+        if getattr(self._pool, "_shutdown", False):
+            self._pool = ThreadPoolExecutor(max_workers=self.max_workers)
+            logger.info("[ORCHESTRATOR] Thread pool recreated after previous shutdown")
         self._thread = threading.Thread(target=self._loop, daemon=True, name="simple-orchestrator")
         self._thread.start()
         logger.info("[ORCHESTRATOR] Started (background thread)")
@@ -780,10 +790,6 @@ class Orchestrator:
 
                 # ── Exponential backoff before retry ─────────────────────────
                 backoff_secs = min(2**retry, 60)  # 1s, 2s, 4s ... capped at 60s
-                node.metadata["verification_failure"] = reason
-                node.metadata["retry_count"] = retry + 1
-                node.metadata["retry_after"] = time.time() + backoff_secs
-                node.metadata.pop("verified", None)
                 logger.info(
                     "[EXEC] Node %s will retry in %.0fs (attempt %d/%d)",
                     node_id,
@@ -795,6 +801,18 @@ class Orchestrator:
                     reporter.expose_all()
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
                 self._apply(Event(RESET_NODE, {"node_id": node_id}))
+                # FIX: Write retry metadata AFTER RESET_NODE, not before.
+                # TaskNode.reset() now clears retry_count / retry_after /
+                # verification_failure so that user-triggered resets from the
+                # UI don't leave stale counts.  Writing the retry state here —
+                # after reset() has already run — means the orchestrator's own
+                # retry cycle still accumulates correctly while external resets
+                # start fresh.
+                n = self.graph.nodes.get(node_id)
+                if n is not None:
+                    n.metadata["verification_failure"] = reason
+                    n.metadata["retry_count"] = retry + 1
+                    n.metadata["retry_after"] = time.time() + backoff_secs
                 # Fix #3: pop the reporter on every retry, not only on final
                 # failure.  The next execution cycle creates a fresh reporter
                 # anyway; keeping the stale one risks accumulating dangling
@@ -1110,16 +1128,42 @@ class Orchestrator:
                 )
                 with self.graph_lock:
                     n = self.graph.nodes.get(node.id)
-                    if n:
-                        retry = n.metadata.get("retry_count", 0)
-                        self._apply(Event(RESET_NODE, {"node_id": node.id}))
-                        n = self.graph.nodes.get(node.id)
-                        if n:
-                            n.metadata["verification_failure"] = (
-                                f"declared file output(s) {missing_files} do not exist on disk"
-                            )
-                            n.metadata.pop("verified", None)
-                            n.metadata["retry_count"] = retry + 1
+                    if n is None:
+                        continue
+                    # FIX (issue 2): skip if any child is already running —
+                    # the orchestrator loop may have dispatched a child between
+                    # the snapshot above and this lock acquisition.  Resetting
+                    # a parent whose child is in-flight produces an inconsistent
+                    # graph state (running node with a pending parent).
+                    if any(
+                        self.graph.nodes.get(cid) is not None
+                        and self.graph.nodes[cid].status == "running"
+                        for cid in n.children
+                    ):
+                        logger.info(
+                            "[STARTUP] Node %s skipped — child already running",
+                            node.id,
+                        )
+                        continue
+                    retry = n.metadata.get("retry_count", 0)
+                    self._apply(Event(RESET_NODE, {"node_id": node.id}))
+                    # FIX (issue 4): route retry metadata through _apply so the
+                    # mutations are written to the event log (WAL).  Direct dict
+                    # writes bypass apply_event and are lost on the next restart.
+                    self._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": node.id,
+                                "metadata": {
+                                    "verification_failure": (
+                                        f"declared file output(s) {missing_files} do not exist on disk"
+                                    ),
+                                    "retry_count": retry + 1,
+                                },
+                            },
+                        )
+                    )
 
         # Pass 2: LLM verification for nodes never verified
         with self.graph_lock:
@@ -1164,20 +1208,44 @@ class Orchestrator:
             with self.graph_lock:
                 if node.id not in self.graph.nodes:
                     continue
+                live = self.graph.nodes[node.id]
+                # FIX (issue 2): re-check for running children under the lock.
+                # Between the LLM call and this lock acquisition the orchestrator
+                # loop may have dispatched a child of this node.  Resetting the
+                # parent while a child is running produces an inconsistent graph.
+                if not satisfied and any(
+                    self.graph.nodes.get(cid) is not None
+                    and self.graph.nodes[cid].status == "running"
+                    for cid in live.children
+                ):
+                    logger.warning(
+                        "[STARTUP] Node %s failed verification but a child is "
+                        "already running — deferring reset to avoid race",
+                        node.id,
+                    )
+                    continue
                 if not satisfied:
                     logger.warning(
                         "[STARTUP] Restored node %s failed verification: %s — resetting",
                         node.id,
                         reason,
                     )
-                    n = self.graph.nodes[node.id]
-                    retry = n.metadata.get("retry_count", 0)
+                    retry = live.metadata.get("retry_count", 0)
                     self._apply(Event(RESET_NODE, {"node_id": node.id}))
-                    n = self.graph.nodes.get(node.id)
-                    if n:
-                        n.metadata["verification_failure"] = reason
-                        n.metadata.pop("verified", None)
-                        n.metadata["retry_count"] = retry + 1
+                    # FIX (issue 4): persist via UPDATE_METADATA so these values
+                    # survive the next restart (direct dict writes are not WAL-logged).
+                    self._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": node.id,
+                                "metadata": {
+                                    "verification_failure": reason,
+                                    "retry_count": retry + 1,
+                                },
+                            },
+                        )
+                    )
                 else:
                     logger.info("[STARTUP] Restored node %s verified OK", node.id)
                     self._apply(

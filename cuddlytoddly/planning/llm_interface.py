@@ -1062,6 +1062,29 @@ class ApiLLM(BaseLLM):
         logger.debug("[API] Raw response:\n%s", content)
         return content
 
+    # ── Rate-limit detection ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception) -> bool:
+        """
+        Return True when *exc* signals an HTTP 429 / rate-limit condition.
+
+        Both the ``openai`` and ``anthropic`` SDKs raise a ``RateLimitError``
+        subclass for 429 responses, but the exact class path differs between
+        SDK versions and providers.  We therefore detect by name and message
+        text rather than by isinstance(), so this works across all versions
+        and also catches compatible third-party providers.
+        """
+        name = type(exc).__name__.lower()
+        msg = str(exc).lower()
+        return (
+            "ratelimit" in name  # openai.RateLimitError, anthropic.RateLimitError
+            or "rate_limit" in name  # some SDKs use underscored variant
+            or "429" in msg
+            or "rate limit" in msg
+            or "too many requests" in msg
+        )
+
     # ── Public interface ──────────────────────────────────────────────────────
 
     def ask(self, prompt: str, schema: dict | None = None) -> str:
@@ -1079,7 +1102,10 @@ class ApiLLM(BaseLLM):
                 logger.info("[API] Cache HIT")
                 return cached
 
-        for attempt in range(2):
+        # FIX: use 4 attempts (was 2) so rate-limit retries with backoff still
+        # leave room for a JSON-parse retry without exhausting all attempts.
+        _MAX_ATTEMPTS = 4
+        for attempt in range(_MAX_ATTEMPTS):
             try:
                 if self.provider == "openai":
                     raw = self._ask_openai(prompt, schema)
@@ -1088,6 +1114,22 @@ class ApiLLM(BaseLLM):
             except LLMStoppedError:
                 raise
             except Exception as e:
+                # FIX: rate-limit errors (HTTP 429) require exponential backoff
+                # before retrying.  The original code retried immediately on
+                # any exception, which turned a 429 into two back-to-back
+                # requests — the second also rate-limited — and then re-raised.
+                # Under concurrent execution with max_workers > 1, this caused
+                # a burst of fast-failing requests that worsened the situation.
+                if self._is_rate_limit_error(e):
+                    backoff = min(5 * (2**attempt), 60)  # 5s, 10s, 20s, 40s…
+                    logger.warning(
+                        "[API] Rate limit hit on attempt %d/%d — sleeping %.0fs before retry",
+                        attempt + 1,
+                        _MAX_ATTEMPTS,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                    continue
                 logger.error("[API] Request failed on attempt %d: %s", attempt + 1, e)
                 if attempt == 0:
                     logger.warning("[API] Retrying after request error...")
@@ -1112,11 +1154,13 @@ class ApiLLM(BaseLLM):
                     e,
                     raw,
                 )
-                if attempt == 0:
+                if attempt < _MAX_ATTEMPTS - 1:
                     logger.warning("[API] Retrying due to JSON parse failure...")
                     continue
 
-        raise ValueError(f"[API] {self.provider} returned invalid JSON after 2 attempts")
+        raise ValueError(
+            f"[API] {self.provider} returned invalid JSON after {_MAX_ATTEMPTS} attempts"
+        )
 
     def generate(self, prompt: str) -> str:
         """

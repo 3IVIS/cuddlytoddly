@@ -39,6 +39,7 @@
 
 
 import asyncio
+import concurrent.futures
 import json
 from typing import Any
 
@@ -48,6 +49,47 @@ from mcp.client.stdio import stdio_client
 from cuddlytoddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Async-safe runner
+# ---------------------------------------------------------------------------
+
+
+def _run_coroutine(coro) -> Any:
+    """
+    Run *coro* to completion and return its result, regardless of whether the
+    caller is already executing inside an event loop.
+
+    Problem
+    -------
+    ``asyncio.run()`` creates a *new* event loop, but raises
+    ``RuntimeError: This event loop is already running`` when called from a
+    thread that already owns a running loop — which is exactly what happens
+    when FastAPI/uvicorn dispatches tool execution via ``asyncio.to_thread``.
+    The thread inherits the uvicorn loop context, so a naked ``asyncio.run()``
+    inside the tool closure always crashes in web mode.
+
+    Fix
+    ---
+    * If there is **no** running loop in the current thread (terminal mode,
+      plain script): call ``asyncio.run()`` directly — cheapest path.
+    * If there **is** a running loop (web/async context): spin up a *new*
+      ``ThreadPoolExecutor`` thread that has its own fresh loop and block on
+      its result.  This is safe because the new thread is loop-free, so
+      ``asyncio.run()`` inside it succeeds without conflict.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop in this thread — asyncio.run() is safe.
+        return asyncio.run(coro)
+
+    # A loop is already running (e.g. we are inside asyncio.to_thread called
+    # from a FastAPI handler).  Delegate to a fresh thread that owns no loop.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, coro)
+        return future.result()
 
 
 # ---------------------------------------------------------------------------
@@ -128,14 +170,19 @@ class MCPAdapter:
 
         Each MCP tool becomes a callable Tool that synchronously calls back
         into the server via a fresh async session (one call per invocation).
+        Tool closures use _run_coroutine() instead of asyncio.run() so they
+        work correctly whether invoked from terminal mode or from an async
+        web-mode context (FastAPI / asyncio.to_thread).
         """
         try:
             import mcp  # noqa: F401
         except ImportError as e:
             raise ImportError("mcp is not installed. Run: pip install mcp") from e
 
-        # Discover available tools synchronously
-        tool_defs = asyncio.run(self._list_tools())
+        # Discover available tools.  build_registry() is always called from a
+        # non-async context (startup / __main__), so _run_coroutine falls
+        # through to the simple asyncio.run() path here.
+        tool_defs = _run_coroutine(self._list_tools())
         registry = ToolRegistry()
 
         for t in tool_defs:
@@ -144,7 +191,10 @@ class MCPAdapter:
 
             def make_fn(name):
                 def call_tool(input_data: dict) -> str:
-                    return asyncio.run(self._call_tool(name, input_data))
+                    # FIX: use _run_coroutine instead of asyncio.run so this
+                    # closure is safe when executed inside an already-running
+                    # event loop (e.g. via asyncio.to_thread in web mode).
+                    return _run_coroutine(self._call_tool(name, input_data))
 
                 return call_tool
 

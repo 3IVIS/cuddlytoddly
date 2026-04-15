@@ -24,9 +24,9 @@ class EventLog:
       - replay() skips and logs any lines that fail to parse rather than
         raising, so a single corrupt entry never blocks a full restore
 
-    Thread safety: a per-instance lock serializes all append() calls so
-    concurrent threads cannot interleave their writes (critical on Windows
-    where open-append-close from two threads can silently drop lines).
+    Thread safety: a per-instance lock serializes all append() AND clear()
+    calls so that no operation can observe a partially-written or partially-
+    truncated file.
     """
 
     def __init__(self, path="event_log.jsonl"):
@@ -67,4 +67,21 @@ class EventLog:
                     )
 
     def clear(self):
-        self.path.write_text("", encoding="utf-8")
+        # FIX: acquire the lock before truncating so that a concurrent append()
+        # call (which also holds self._lock while writing) cannot interleave with
+        # the truncation.  Without the lock, the two file-open calls race: on
+        # Linux, whichever open() wins determines whether the appended line lands
+        # before or after the truncation — potentially producing a corrupt log
+        # where a WAL entry exists in memory but not on disk.
+        #
+        # We use an atomic tmp-file + rename pattern rather than write_text("")
+        # so that a crash mid-clear leaves either the original file intact or an
+        # empty file — never a partially truncated one.
+        tmp = self.path.with_suffix(".clearing")
+        with self._lock:
+            try:
+                tmp.write_text("", encoding="utf-8")
+                tmp.replace(self.path)
+            except OSError:
+                tmp.unlink(missing_ok=True)
+                raise

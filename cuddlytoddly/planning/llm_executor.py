@@ -1,8 +1,6 @@
 # planning/llm_executor.py
 
 import json
-import os
-import threading
 import uuid
 from dataclasses import dataclass
 from dataclasses import field as _dc_field
@@ -32,11 +30,19 @@ from cuddlytoddly.planning.schemas import (
 
 logger = get_logger(__name__)
 
-# FIX #1: Process-wide lock that serializes all os.chdir() calls coming from
-# _run_tool().  This prevents concurrent executor threads (or concurrent web-
-# mode Orchestrators) from interleaving their CWD changes and corrupting each
-# other's relative-path file operations.
-_CWD_LOCK = threading.Lock()
+# FIX: _CWD_LOCK removed.  The original implementation called os.chdir() +
+# held a process-wide lock for the full duration of every tool call, which
+# serialised all tool execution across all concurrent runs and all thread-pool
+# workers.  A 30-second shell command blocked every other tool call in the
+# process.
+#
+# The replacement approach injects the working directory via a reserved
+# ``_cwd`` key in tool_args (see _run_tool below).  Each tool handles it
+# directly:
+#   • run_shell  — passes cwd= to subprocess.Popen; no process CWD mutation.
+#   • run_python — uses a per-module lock (_PYTHON_CWD_LOCK) held only during
+#                  in-process eval/exec, not for the full tool call.
+#   • file tools — use absolute paths from _safe_resolve(); ignore _cwd.
 
 
 @dataclass
@@ -85,10 +91,10 @@ class LLMExecutor:
     All numeric limits come from the application config (passed via __init__)
     so users can tune behaviour without editing source code.
 
-    FIX #1: accepts ``working_dir`` so file tools always run relative to the
-    run's output sandbox rather than whatever the process CWD happens to be.
-    The CWD is set immediately before each tool call and restored afterwards,
-    protected by a process-wide lock so concurrent threads don't race.
+    FIX: accepts ``working_dir`` so file tools always run relative to the
+    run's output sandbox.  The directory is forwarded to tools via the
+    reserved ``_cwd`` key in tool_args rather than via os.chdir(), so
+    concurrent executor threads never contend on a process-wide lock.
     """
 
     # File extensions that trigger "write_file" enforcement
@@ -126,36 +132,33 @@ class LLMExecutor:
         self.max_total_input_chars = max_total_input_chars
         self.max_tool_result_chars = max_tool_result_chars
         self.max_history_entries = max_history_entries
-        # FIX #1: store working_dir as explicit state instead of a global chdir
+        # store working_dir as explicit state; forwarded to tools via _cwd arg key
         self.working_dir: Path | None = Path(working_dir) if working_dir else None
 
     # ── Tool execution with CWD sandboxing ────────────────────────────────────
 
     def _run_tool(self, tool_name: str, tool_args: dict):
+        """Execute a registered tool, routing the working directory via args.
+
+        Instead of calling os.chdir() under a process-wide lock (which
+        serialised every tool call across all concurrent runs), we inject the
+        working directory via a reserved ``_cwd`` key in a *copy* of tool_args.
+        Each tool handles it without mutating the process CWD:
+
+          • run_shell  — pops ``_cwd`` and passes it as ``cwd=`` to
+                         subprocess.Popen.  No lock needed.
+          • run_python — pops ``_cwd`` and uses a per-module
+                         ``_PYTHON_CWD_LOCK`` held only for the duration of
+                         in-process eval/exec (typically milliseconds), not
+                         for the full tool-call lifetime.
+          • file tools — use absolute paths via _safe_resolve() and ignore
+                         ``_cwd`` entirely.
+
+        The original caller's dict is never mutated; we always copy.
         """
-        FIX #1: Execute a registered tool inside the run's working directory.
-
-        If ``self.working_dir`` is set:
-          1. Acquire the process-wide CWD lock so no concurrent thread can
-             change the CWD between our chdir and the tool's path resolution.
-          2. Save the current CWD, change to working_dir.
-          3. Run the tool.
-          4. Restore the original CWD in a finally block.
-
-        If ``self.working_dir`` is None the tool runs in whatever the current
-        process CWD is (preserving the original behaviour for callers that
-        don't set a working directory).
-        """
-        if self.working_dir is None:
-            return self.tools.execute(tool_name, tool_args)
-
-        with _CWD_LOCK:
-            prev_cwd = os.getcwd()
-            try:
-                os.chdir(self.working_dir)
-                return self.tools.execute(tool_name, tool_args)
-            finally:
-                os.chdir(prev_cwd)
+        if self.working_dir is not None:
+            tool_args = {**tool_args, "_cwd": str(self.working_dir)}
+        return self.tools.execute(tool_name, tool_args)
 
     # ──────────────────────────────────────────────────────────────────────────
 

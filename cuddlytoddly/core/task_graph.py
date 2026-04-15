@@ -102,6 +102,20 @@ class TaskGraph:
         def reset(self):
             self.status = "pending"
             self.result = None
+            # FIX: Clear retry metadata so that any RESET_NODE event — whether
+            # triggered by a user edit from the UI, an LLM-pause reset, or a
+            # subtree reset — does not leave stale counts behind.  Without this,
+            # a node that has already retried N-1 times and is then manually
+            # reset by the user would be permanently failed on its very next
+            # verification failure, bypassing all configured retries.
+            #
+            # The orchestrator's own retry path (in _on_node_done) writes these
+            # keys AFTER calling RESET_NODE, so they survive the reset and
+            # correctly track progress across genuine retry cycles.
+            self.metadata.pop("retry_count", None)
+            self.metadata.pop("retry_after", None)
+            self.metadata.pop("verification_failure", None)
+            self.metadata.pop("verified", None)
 
         def to_dict(self):
             return {
