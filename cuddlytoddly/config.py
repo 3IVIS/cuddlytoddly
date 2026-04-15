@@ -204,6 +204,13 @@ min_tasks_per_goal = 3
 # Set to false to skip scrutiny and use the raw plan directly (faster, cheaper).
 scrutinize_plan = true
 
+# Number of clarification fields the planner generates per goal.
+# These control how many context questions appear in the clarification node.
+# Intentionally separate from task count limits: a goal that needs 15 tasks
+# does not necessarily need 15 clarification questions.
+min_clarification_fields = 2
+max_clarification_fields = 6
+
 # ── File-based LLM (development / testing only) ───────────────────────────────
 [file_llm]
 
@@ -562,6 +569,10 @@ def get_planner_cfg(cfg: dict) -> dict:
         # API models handle larger, more complex plans reliably.
         "max_tasks_per_goal": _get(cfg, "max_tasks_per_goal", "planner", 15, 8),
         "scrutinize_plan": c.get("scrutinize_plan", False),
+        # Clarification-field limits are intentionally separate from task-count
+        # limits — see config.toml [planner] for rationale.
+        "min_clarification_fields": c.get("min_clarification_fields", 2),
+        "max_clarification_fields": c.get("max_clarification_fields", 6),
     }
 
 

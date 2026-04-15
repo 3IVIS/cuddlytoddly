@@ -43,11 +43,10 @@ def _clarification_node_id(goal_id: str) -> str:
 
 
 class LLMPlanner:
-    # Sensible defaults for clarification-field generation.  These are
-    # intentionally separate from the task planning limits: a goal that
-    # warrants 15 tasks does not need 15 clarification questions, and a
-    # simple goal with only 3 tasks may still benefit from several
-    # targeted questions.
+    # Clarification-field defaults are intentionally kept here as a documented
+    # fallback for callers that instantiate LLMPlanner directly without going
+    # through _init_system / get_planner_cfg().  The canonical values live in
+    # config.toml [planner] and are passed in by _init_system at runtime.
     _DEFAULT_MIN_CLARIFICATION_FIELDS: int = 2
     _DEFAULT_MAX_CLARIFICATION_FIELDS: int = 6
 

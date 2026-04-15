@@ -23,6 +23,11 @@ from pathlib import Path
 
 LOG_DIR = Path("logs")
 
+# Log rotation constants.  Exposed as module-level names so they can be
+# located and adjusted without hunting inside function signatures.
+_LOG_MAX_BYTES: int = 5 * 1024 * 1024  # 5 MB per log file before rotation
+_LOG_BACKUP_COUNT: int = 3  # within-session numbered backups (.1 .2 .3)
+
 # Named loggers used across the app (for documentation / discoverability)
 # dag                  - root, catches everything
 # dag.core             - TaskGraph, reducer, events
@@ -119,8 +124,8 @@ def setup_logging(
     log_level: int = logging.INFO,
     log_dir: Path | str | None = None,
     debug_modules: tuple[str, ...] = ("dag.engine", "dag.planning", "dag.skills"),
-    max_bytes: int = 5 * 1024 * 1024,  # 5 MB per file
-    backup_count: int = 3,  # keep .1 .2 .3 within a session
+    max_bytes: int = _LOG_MAX_BYTES,
+    backup_count: int = _LOG_BACKUP_COUNT,
 ) -> logging.Logger:
     """
     Configure the application root logger.

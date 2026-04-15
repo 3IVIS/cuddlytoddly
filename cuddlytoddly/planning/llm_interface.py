@@ -163,6 +163,13 @@ _DEFAULT_POLL_INTERVAL = 0.5
 _DEFAULT_TIMEOUT = 300
 _DEFAULT_PROGRESS_LOG_INTERVAL = 2
 
+# API retry / rate-limit backoff constants.
+# Exposed as module-level names so they are easy to find and adjust without
+# hunting for bare numbers inside ask().
+_API_MAX_ATTEMPTS: int = 4  # total attempts before raising
+_API_RATE_LIMIT_INITIAL_BACKOFF: int = 5  # seconds before first retry on 429
+_API_RATE_LIMIT_MAX_BACKOFF: int = 60  # ceiling for exponential backoff
+
 # FIX #5: module-level id_gen is kept as an in-memory-only fallback for
 # callers that don't pass an explicit id_gen.  It is NEVER replaced at
 # runtime, so concurrent web-mode runs can't race on it.
@@ -565,10 +572,10 @@ class LlamaCppLLM(BaseLLM):
     def __init__(
         self,
         model_path,
-        n_ctx: int = 4096,
+        n_ctx: int = 16384,  # matches config default for [llamacpp]
         n_gpu_layers: int = 0,
-        temperature: float = 0.2,
-        max_tokens: int = 2048,
+        temperature: float = 0.1,  # matches config default for [llamacpp]
+        max_tokens: int = 8192,  # matches config default for [llamacpp]
         schema=None,
         cache_path: Path | str | None = PROJECT_ROOT / "llamacpp_cache.json",
         token_counter_instance: "TokenCounter | None" = None,
@@ -894,8 +901,8 @@ class ApiLLM(BaseLLM):
         api_key: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
-        temperature: float = 0.2,
-        max_tokens: int = 4096,
+        temperature: float = 0.1,  # matches config default for [claude] and [openai]
+        max_tokens: int = 8192,  # matches config default for [claude] and [openai]
         system_prompt: str | None = None,
         cache_path: Path | str | None = None,
         token_counter_instance: "TokenCounter | None" = None,
@@ -1104,8 +1111,7 @@ class ApiLLM(BaseLLM):
 
         # FIX: use 4 attempts (was 2) so rate-limit retries with backoff still
         # leave room for a JSON-parse retry without exhausting all attempts.
-        _MAX_ATTEMPTS = 4
-        for attempt in range(_MAX_ATTEMPTS):
+        for attempt in range(_API_MAX_ATTEMPTS):
             try:
                 if self.provider == "openai":
                     raw = self._ask_openai(prompt, schema)
@@ -1121,11 +1127,14 @@ class ApiLLM(BaseLLM):
                 # Under concurrent execution with max_workers > 1, this caused
                 # a burst of fast-failing requests that worsened the situation.
                 if self._is_rate_limit_error(e):
-                    backoff = min(5 * (2**attempt), 60)  # 5s, 10s, 20s, 40s…
+                    backoff = min(
+                        _API_RATE_LIMIT_INITIAL_BACKOFF * (2**attempt),
+                        _API_RATE_LIMIT_MAX_BACKOFF,
+                    )  # e.g. 5s, 10s, 20s, 40s…
                     logger.warning(
                         "[API] Rate limit hit on attempt %d/%d — sleeping %.0fs before retry",
                         attempt + 1,
-                        _MAX_ATTEMPTS,
+                        _API_MAX_ATTEMPTS,
                         backoff,
                     )
                     time.sleep(backoff)
@@ -1154,12 +1163,12 @@ class ApiLLM(BaseLLM):
                     e,
                     raw,
                 )
-                if attempt < _MAX_ATTEMPTS - 1:
+                if attempt < _API_MAX_ATTEMPTS - 1:
                     logger.warning("[API] Retrying due to JSON parse failure...")
                     continue
 
         raise ValueError(
-            f"[API] {self.provider} returned invalid JSON after {_MAX_ATTEMPTS} attempts"
+            f"[API] {self.provider} returned invalid JSON after {_API_MAX_ATTEMPTS} attempts"
         )
 
     def generate(self, prompt: str) -> str:

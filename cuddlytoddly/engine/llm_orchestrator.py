@@ -35,6 +35,10 @@ from cuddlytoddly.planning.llm_interface import (
 
 logger = get_logger(__name__)
 
+# Maximum seconds the orchestrator waits before retrying a failed node.
+# The actual delay is min(2**retry_count, _MAX_NODE_RETRY_BACKOFF_SECS).
+_MAX_NODE_RETRY_BACKOFF_SECS: int = 60
+
 PlanningContext = namedtuple(
     "PlanningContext",
     ["snapshot", "goals", "skip_scrutiny"],
@@ -789,7 +793,7 @@ class Orchestrator:
                     return
 
                 # ── Exponential backoff before retry ─────────────────────────
-                backoff_secs = min(2**retry, 60)  # 1s, 2s, 4s ... capped at 60s
+                backoff_secs = min(2**retry, _MAX_NODE_RETRY_BACKOFF_SECS)  # 1s, 2s, 4s…
                 logger.info(
                     "[EXEC] Node %s will retry in %.0fs (attempt %d/%d)",
                     node_id,

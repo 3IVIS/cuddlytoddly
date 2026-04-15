@@ -321,7 +321,9 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     # FIX #7: sanitise goal_id with the same alnum+underscore filter used in
     # make_run_dir so that special characters (quotes, backslashes, unicode…)
     # never leak into event-log node IDs and corrupt JSONL replay.
-    goal_id = "".join(c for c in goal_text.lower().replace(" ", "_") if c.isalnum() or c == "_")[:60]
+    goal_id = "".join(c for c in goal_text.lower().replace(" ", "_") if c.isalnum() or c == "_")[
+        :60
+    ]
     if not goal_id:
         goal_id = "goal"
 
@@ -491,6 +493,8 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         min_tasks_per_goal=planner_cfg["min_tasks_per_goal"],
         max_tasks_per_goal=planner_cfg["max_tasks_per_goal"],
         scrutinize_plan=planner_cfg["scrutinize_plan"],
+        min_clarification_fields=planner_cfg["min_clarification_fields"],
+        max_clarification_fields=planner_cfg["max_clarification_fields"],
     )
 
     # FIX #1: pass working_dir to the executor so it can chdir/restore around
