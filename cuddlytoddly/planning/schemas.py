@@ -16,6 +16,38 @@
 # Used inside EVENT_LIST_SCHEMA (required_input / output arrays).
 # ---------------------------------------------------------------------------
 
+_EXECUTION_STEP_ITEM = {
+    "type": "object",
+    "required": ["execution_type", "description", "produces"],
+    "additionalProperties": False,
+    "properties": {
+        "execution_type": {
+            "type": "string",
+            "description": (
+                "Concrete verb-noun identifier for what this step does. "
+                "Use tool names for LLM-executable steps (search_web, fetch_url, "
+                "write_file, run_code, analyse_data, write_plan, write_document). "
+                "Use real-world action names for steps requiring user execution "
+                "(post_to_reddit, post_to_linkedin, send_email, send_newsletter, "
+                "publish_blog_post, run_terminal_command, deploy_service, "
+                "open_pull_request, schedule_meeting). "
+                "Be specific — not 'share' but 'post_to_reddit'."
+            ),
+        },
+        "description": {
+            "type": "string",
+            "description": "One sentence: exactly what this step does in this task context.",
+        },
+        "produces": {
+            "type": "string",
+            "description": (
+                "One sentence: what this step contributes toward the node's declared output. "
+                "E.g. 'Provides the list of target subreddits for the posting step.'"
+            ),
+        },
+    },
+}
+
 _IO_ITEM = {
     "type": "object",
     "required": ["name", "type", "description"],
@@ -73,6 +105,7 @@ EVENT_LIST_SCHEMA = {
                             },
                             "metadata": {
                                 "type": "object",
+                                "required": ["description", "output", "execution_steps"],
                                 "additionalProperties": False,
                                 "properties": {
                                     "description": {"type": "string"},
@@ -84,6 +117,17 @@ EVENT_LIST_SCHEMA = {
                                     "output": {
                                         "type": "array",
                                         "items": _IO_ITEM,
+                                    },
+                                    "execution_steps": {
+                                        "type": "array",
+                                        "description": (
+                                            "Ordered list of concrete steps the executor "
+                                            "must work through to complete this task. "
+                                            "Each step has a specific execution_type that "
+                                            "determines whether the LLM can perform it "
+                                            "or whether the user must act."
+                                        ),
+                                        "items": _EXECUTION_STEP_ITEM,
                                     },
                                     "reflection_notes": {
                                         "type": "array",
@@ -367,6 +411,7 @@ AWAITING_INPUT_CHECK_SCHEMA = {
         "broadened_description",
         "broadened_for_missing",
         "broadened_output",
+        "broadened_steps",
     ],
     "additionalProperties": False,
     "properties": {
@@ -469,6 +514,75 @@ AWAITING_INPUT_CHECK_SCHEMA = {
             ),
             "items": _IO_ITEM,
         },
+        "broadened_steps": {
+            "type": "array",
+            "description": (
+                "Revised execution_steps that match the broadened_description. "
+                "When blocked=true, produce a step list that works without the "
+                "missing context — e.g. replace 'post_to_reddit: post to r/{repo_name}' "
+                "with 'write_plan: draft a generic posting template for LLM repos'. "
+                "Preserve the same execution_type values where possible; only change "
+                "descriptions and produces text to reflect the generalised goal. "
+                "Leave empty when blocked=false."
+            ),
+            "items": _EXECUTION_STEP_ITEM,
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Step execution report schema — structured result emitted by the executor
+# ---------------------------------------------------------------------------
+
+STEP_EXECUTION_REPORT_SCHEMA = {
+    "type": "object",
+    "required": ["step_reports", "overall_result"],
+    "additionalProperties": False,
+    "properties": {
+        "step_reports": {
+            "type": "array",
+            "description": "One entry per execution step, in the order they were attempted.",
+            "items": {
+                "type": "object",
+                "required": ["execution_type", "status", "evidence"],
+                "additionalProperties": False,
+                "properties": {
+                    "execution_type": {
+                        "type": "string",
+                        "description": "The execution_type value from the step definition.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["completed", "awaiting_user", "worked_around", "failed"],
+                        "description": (
+                            "completed: the step was performed and evidence was recorded. "
+                            "awaiting_user: the LLM cannot perform this step; user must act. "
+                            "worked_around: step was approximated without the required tool. "
+                            "failed: step was attempted but produced an error."
+                        ),
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": (
+                            "For completed: brief note of what tool was called or what was produced. "
+                            "For awaiting_user: the handoff artifact (drafted text, instructions). "
+                            "For worked_around: explanation of the approximation used. "
+                            "For failed: the error message."
+                        ),
+                    },
+                },
+            },
+        },
+        "overall_result": {
+            "type": "string",
+            "description": (
+                "The combined substantive result of all completed steps, "
+                "formatted so downstream tasks can use it directly. "
+                "If some steps are awaiting_user, this contains only the "
+                "output of the completed steps so far."
+            ),
+        },
     },
 }
 
@@ -479,7 +593,7 @@ AWAITING_INPUT_CHECK_SCHEMA = {
 
 BROADENED_DESCRIPTION_SCHEMA = {
     "type": "object",
-    "required": ["broadened_description"],
+    "required": ["broadened_description", "broadened_steps"],
     "additionalProperties": False,
     "properties": {
         "broadened_description": {
@@ -490,6 +604,15 @@ BROADENED_DESCRIPTION_SCHEMA = {
                 "without depending on any unavailable inputs. Must be a direct "
                 "task instruction, not a meta-description of what was generalised."
             ),
+        },
+        "broadened_steps": {
+            "type": "array",
+            "description": (
+                "Revised execution_steps that match the broadened_description. "
+                "Adapt each step so it works without the missing context. "
+                "Use the same {execution_type, description, produces} shape."
+            ),
+            "items": _EXECUTION_STEP_ITEM,
         },
     },
 }

@@ -56,3 +56,16 @@ MARK_AWAITING_INPUT = "MARK_AWAITING_INPUT"
 # can recompute readiness and re-launch it.
 # Payload: { node_id }
 RESUME_NODE = "RESUME_NODE"
+
+# A task that has one or more execution steps that cannot be performed by the
+# LLM and require the user to act in the real world before downstream tasks
+# can proceed.
+# Payload: { node_id, handoff_artifact: str, pending_steps: list[str] }
+# handoff_artifact: human-readable instructions / drafted content for the user
+# pending_steps: execution_type values of the steps awaiting the user
+MARK_AWAITING_USER = "MARK_AWAITING_USER"
+
+# Transitions a node from awaiting_user back to done once the user confirms
+# the real-world steps are complete.
+# Payload: { node_id }
+CONFIRM_USER_DONE = "CONFIRM_USER_DONE"

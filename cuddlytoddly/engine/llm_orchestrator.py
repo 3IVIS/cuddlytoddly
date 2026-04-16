@@ -1,15 +1,23 @@
 # engine/llm_orchestrator.py
 
+from __future__ import annotations
+
 import json
 import re
 import threading
 import time
 from collections import deque, namedtuple
 from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cuddlytoddly.planning.llm_executor import AwaitingInputSignal
 
 from cuddlytoddly.core.events import (
     ADD_DEPENDENCY,
     ADD_NODE,
+    CONFIRM_USER_DONE,
+    MARK_AWAITING_USER,
     MARK_DONE,
     MARK_FAILED,
     MARK_RUNNING,
@@ -639,12 +647,84 @@ class Orchestrator:
                 logger.warning("[EXEC] Failed: %s", node_id)
             return
 
+        # ── Awaiting-user: executor completed its steps but some require user action
+        if isinstance(result, dict) and result.get("_awaiting_user"):
+            reporter = self._reporters.pop(node_id, None)
+            handoff_artifact = result.get("handoff_artifact", "")
+            pending_steps = result.get("pending_steps", [])
+            partial_result = result.get("partial_result", "")
+
+            # Write back broadened metadata before the early return — the normal
+            # broadening write-back block below is never reached in this path.
+            broadening_signal = reporter.pending_broadening if reporter else None
+
+            with self.graph_lock:
+                if node_id not in self.graph.nodes:
+                    return
+                if reporter:
+                    reporter.expose_all()
+
+                # Broadened metadata write-back (mirrors the done path below)
+                if broadening_signal:
+                    if broadening_signal.new_fields:
+                        self._patch_clarification_node(
+                            node_id,
+                            broadening_signal.new_fields,
+                            broadening_signal.clarification_node_id,
+                        )
+                    self._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": node_id,
+                                "metadata": {
+                                    "broadened_description": broadening_signal.broadened_description,
+                                    "broadened_for_missing": broadening_signal.broadened_for_missing,
+                                    "broadened_reason": broadening_signal.reason,
+                                    "broadened_output": broadening_signal.broadened_output,
+                                    "broadened_steps": broadening_signal.broadened_steps,
+                                },
+                            },
+                        )
+                    )
+                    logger.info(
+                        "[EXEC] Node %s (awaiting_user) broadened metadata written back",
+                        node_id,
+                    )
+
+                # Store the partial result so the user can see what was produced
+                if partial_result:
+                    self._apply(Event(SET_RESULT, {"node_id": node_id, "result": partial_result}))
+                self._apply(
+                    Event(
+                        MARK_AWAITING_USER,
+                        {
+                            "node_id": node_id,
+                            "handoff_artifact": handoff_artifact,
+                            "pending_steps": pending_steps,
+                        },
+                    )
+                )
+                logger.info(
+                    "[EXEC] Node %s awaiting user for %d step(s): %s",
+                    node_id,
+                    len(pending_steps),
+                    pending_steps,
+                )
+            return
+
         # ── Broadening metadata: write back if node ran with broadened description
         # Access _reporters under graph_lock: _on_node_done runs in a
         # ThreadPoolExecutor done-callback and concurrent callbacks could
         # otherwise race with the dict writes in _execution_pass.
         with self.graph_lock:
             reporter_for_broadening = self._reporters.get(node_id)
+        # Capture the broadening signal before the if/else so it remains
+        # accessible in the verified-OK block further below, where we need it
+        # to decide what produced_output to write.
+        _broadening_signal = (
+            reporter_for_broadening.pending_broadening if reporter_for_broadening else None
+        )
         if reporter_for_broadening and reporter_for_broadening.pending_broadening:
             signal = reporter_for_broadening.pending_broadening
             with self.graph_lock:
@@ -665,6 +745,7 @@ class Orchestrator:
                                     "broadened_for_missing": signal.broadened_for_missing,
                                     "broadened_reason": signal.reason,
                                     "broadened_output": signal.broadened_output,
+                                    "broadened_steps": signal.broadened_steps,
                                 },
                             },
                         )
@@ -674,6 +755,11 @@ class Orchestrator:
                         node_id,
                         signal.broadened_for_missing,
                     )
+                    # Propagate broadened context to direct downstream dependents.
+                    # Each dependent receives its own broadened_steps derived from
+                    # what this node is actually producing, so it can adapt its
+                    # execution if it also lacks the missing inputs.
+                    self._propagate_broadened_steps_to_dependents(node_id, signal)
         else:
             with self.graph_lock:
                 node = self.graph.nodes.get(node_id)
@@ -693,6 +779,7 @@ class Orchestrator:
                                     "broadened_for_missing": [],
                                     "broadened_reason": "",
                                     "broadened_output": [],
+                                    "broadened_steps": [],
                                 },
                             },
                         )
@@ -833,12 +920,27 @@ class Orchestrator:
                         },
                     )
                 )
+                # Write produced_output: reflects what this node actually
+                # delivered at runtime.  Downstream nodes read this (via
+                # _resolve_inputs) instead of the declared output metadata,
+                # so _select_goal_mode can correctly detect that an upstream
+                # node ran broadened and produced different output names than
+                # the original contract — which should trigger broadening
+                # downstream too.
+                _produced_output = (
+                    _broadening_signal.broadened_output
+                    if _broadening_signal and _broadening_signal.broadened_output
+                    else node.metadata.get("output", [])
+                )
                 self._apply(
                     Event(
                         UPDATE_METADATA,
                         {
                             "node_id": node_id,
-                            "metadata": {"verified": True},
+                            "metadata": {
+                                "verified": True,
+                                "produced_output": _produced_output,
+                            },
                         },
                     )
                 )
@@ -1032,6 +1134,68 @@ class Orchestrator:
             clar_id,
             [f.get("key") for f in fields_to_add],
         )
+
+    def _propagate_broadened_steps_to_dependents(
+        self, node_id: str, signal: AwaitingInputSignal
+    ) -> None:
+        """
+        When a node ran with a broadened goal, notify its direct downstream
+        dependents so they can also prepare broadened_steps.
+
+        For each pending/ready dependent whose required_input includes an output
+        from this node, we write the upstream node's broadened_output contract
+        into the dependent's metadata under ``upstream_broadened_outputs``.
+        The dependent's own _preflight_awaiting_input call will detect this on
+        its next execution attempt and generate appropriate broadened_steps.
+
+        Must be called with self.graph_lock held.
+        """
+        assert self.graph_lock._is_owned(), (  # noqa: SLF001
+            "_propagate_broadened_steps_to_dependents must be called with graph_lock held"
+        )
+        node = self.graph.nodes.get(node_id)
+        if not node:
+            return
+
+        # The names the upstream node will actually produce (broadened contract)
+        broadened_output_names = {
+            o.get("name") for o in signal.broadened_output if isinstance(o, dict) and o.get("name")
+        }
+        if not broadened_output_names:
+            return
+
+        for child_id in node.children:
+            child = self.graph.nodes.get(child_id)
+            if child is None or child.status in ("done", "running", "failed"):
+                continue
+
+            # Check whether this child declared any of the upstream outputs as required_input
+            child_required = {
+                r.get("name")
+                for r in child.metadata.get("required_input", [])
+                if isinstance(r, dict) and r.get("name")
+            }
+            if not child_required.intersection(broadened_output_names):
+                continue
+
+            # Store the broadened output contract from this upstream node so the
+            # child's preflight can detect it and generate matching broadened_steps.
+            existing = child.metadata.get("upstream_broadened_outputs", {})
+            existing[node_id] = signal.broadened_output
+            self._apply(
+                Event(
+                    UPDATE_METADATA,
+                    {
+                        "node_id": child_id,
+                        "metadata": {"upstream_broadened_outputs": existing},
+                    },
+                )
+            )
+            logger.info(
+                "[ORCHESTRATOR] Propagated broadened output contract from %s → %s",
+                node_id,
+                child_id,
+            )
 
     # ── Bridge node injection ─────────────────────────────────────────────────
 
@@ -1370,6 +1534,33 @@ class Orchestrator:
                 return False
             self._apply(Event(RESUME_NODE, {"node_id": node_id}))
             logger.info("[ORCHESTRATOR] Node %s manually resumed by user", node_id)
+            return True
+
+    def confirm_node(self, node_id: str) -> bool:
+        """
+        Confirm that the user has completed the real-world steps for an
+        awaiting_user node.
+
+        Emits CONFIRM_USER_DONE which transitions the node from awaiting_user
+        to done, unblocking all downstream dependents.  Returns True if the
+        node was in awaiting_user status, False otherwise.
+        """
+        with self.graph_lock:
+            node = self.graph.nodes.get(node_id)
+            if not node:
+                return False
+            if node.status != "awaiting_user":
+                logger.warning(
+                    "[ORCHESTRATOR] confirm_node called on %s "
+                    "which is not awaiting_user (status=%s)",
+                    node_id,
+                    node.status,
+                )
+                return False
+            self._apply(Event(CONFIRM_USER_DONE, {"node_id": node_id}))
+            # Recompute readiness so downstream nodes become ready immediately.
+            self.graph.recompute_readiness_for(node_id)
+            logger.info("[ORCHESTRATOR] Node %s confirmed done by user", node_id)
             return True
 
     def replan_goal(self, goal_id: str):

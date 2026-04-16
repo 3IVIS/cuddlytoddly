@@ -58,19 +58,10 @@ def build_executor_prompt(
     inputs_text: str,
     tools_text: str,
     history_text: str,
+    steps_text: str = "  (not specified)",
     max_inline_result_chars: int,
     turns_remaining: int = 0,
 ) -> str:
-    """
-    Build the prompt for a single executor turn.
-
-    Parameters are pre-computed by LLMExecutor._build_prompt() and injected
-    here so this file stays focused on text, not data wrangling.
-
-    turns_remaining: how many turns (including this one) are left in the
-    execution budget. Shown to the LLM so it knows when to stop searching
-    and synthesise rather than making another tool call.
-    """
     turns_line = (
         f"- Turns remaining (including this one): {turns_remaining}. "
         "If you have already made multiple searches, synthesise what you have "
@@ -91,6 +82,14 @@ ID:          {node_id}
 Description: {description}
 
 {outputs_block}
+
+════════════════════════════════════════
+EXECUTION STEPS
+════════════════════════════════════════
+Work through each of these steps in order. Only call tools that appear in the
+AVAILABLE TOOLS list below. Do not attempt steps that require external actions
+outside your tool capabilities — skip them and note they were skipped.
+{steps_text}
 
 ════════════════════════════════════════
 INPUTS FROM UPSTREAM TASKS
@@ -198,6 +197,7 @@ def build_executor_native_prompt(
     outputs_block: str,
     output_instruction: str,
     inputs_text: str,
+    steps_text: str = "  (not specified)",
     turns_remaining: int = 0,
 ) -> str:
     """
@@ -229,6 +229,12 @@ ID:          {node_id}
 Description: {description}
 
 {outputs_block}
+
+════════════════════════════════════════
+EXECUTION STEPS
+════════════════════════════════════════
+Work through each of these steps in order using the tools available to you.
+{steps_text}
 
 ════════════════════════════════════════
 INPUTS FROM UPSTREAM TASKS
@@ -338,12 +344,23 @@ Guidelines:
 
 Node types:
 - `task`: the only type you should emit for executable work. Every task must
-  be actionable and produce at least one concrete output. If a task requires
-  personal or company-specific information that may not be available, still
-  emit it as a `task` — the executor will detect at runtime whether the
-  required context is present and will surface a clarification request to the
-  user automatically if not. Do not attempt to pre-classify tasks as needing
-  user input; that is the executor's responsibility.
+  be actionable and produce at least one concrete output through research,
+  analysis, writing, or real-world action — NOT by asking the user for
+  information.
+
+  CRITICAL — never create a task whose sole purpose is to collect information
+  from the user. If a piece of information can only come from the user (e.g.
+  their repo name, their budget, their personal goals), it belongs as a
+  Category B required_input field on the task that actually needs it — not as
+  a separate task node. The clarification node handles collecting that input
+  automatically. Creating a task like "Determine_GitHub_Repository" or
+  "Identify_User_Goal" that just asks the user for a value is always wrong.
+
+  If a task requires personal or company-specific information that may not be
+  available, still emit it as a `task` — declare the missing information as a
+  Category B required_input and let the executor handle the missing context at
+  runtime. Do not attempt to pre-classify tasks as needing user input by
+  creating wrapper tasks around that input collection.
 
 - For each task, specify:
     - `required_input`: list of typed objects {{name, type, description}} describing what this task consumes.
@@ -376,6 +393,31 @@ Node types:
     - `output`: list of typed objects {{name, type, description}} describing what this task produces
       - type must be one of: file, document, data, list, url, text, json, code
       - description must be one full sentence explaining the content (not just restating the name)
+    - `execution_steps`: ordered list of concrete steps the executor must work through.
+      Each step has:
+        - `execution_type`: a specific verb-noun identifier. Use tool names for steps the
+          LLM can perform (search_web, fetch_url, write_file, write_plan, write_document,
+          write_analysis, analyse_data, run_code). Use real-world action names for steps
+          that require the user to act outside the LLM (post_to_reddit, post_to_linkedin,
+          send_email, send_newsletter, publish_blog_post, run_terminal_command,
+          deploy_service, open_pull_request, schedule_meeting).
+          Be specific — not "share" but "post_to_reddit".
+          NEVER use "user_input" as an execution_type. If a step is blocked on user-
+          supplied information, declare that information as a Category B required_input
+          instead and let the executor handle it. The clarification node collects user
+          input — task execution steps must not duplicate this.
+        - `description`: one sentence — exactly what this step does in this task context.
+        - `produces`: one sentence — what this step contributes toward the node's output.
+      Rules for execution_steps:
+        - Steps must be in the order they should be performed.
+        - Every task must have at least one execution step.
+        - The planner does NOT decide whether the LLM can perform a step — that is the
+          executor's job at runtime. Declare all intended actions, including real-world ones.
+        - Steps must be concrete enough that a human or tool can execute them without
+          further clarification.
+        - NEVER produce a task where ALL steps are real-world user actions with no LLM
+          steps at all. If the only work is collecting user input, use Category B
+          required_input instead of creating a task.
     - `skill`: which skill to use (if any of the above skills apply)
     - `tools`: which specific tools from that skill are needed
 - Category A required_input and dependencies must be fully consistent:
@@ -428,6 +470,23 @@ Example of valid output:
               "description": "Markdown report listing 5-10 high-return investment options with risk level and expected return for each"
             }}
           ],
+          "execution_steps": [
+            {{
+              "execution_type": "search_web",
+              "description": "Search for high-return investment options with risk profiles.",
+              "produces": "Raw search results listing investment vehicles and their expected returns."
+            }},
+            {{
+              "execution_type": "fetch_url",
+              "description": "Fetch the top financial reference pages for detailed data.",
+              "produces": "Detailed investment option data including historical performance."
+            }},
+            {{
+              "execution_type": "write_analysis",
+              "description": "Synthesise search and page data into a ranked investment options report.",
+              "produces": "The investment_options_report document passed to the downstream task."
+            }}
+          ],
           "parallel_group": "Research",
           "skill": "web_research",
           "tools": ["web_search", "fetch_url"]
@@ -454,6 +513,13 @@ Example of valid output:
               "name": "investment_report.md",
               "type": "file",
               "description": "Final formatted markdown file containing the complete investment analysis, saved to disk"
+            }}
+          ],
+          "execution_steps": [
+            {{
+              "execution_type": "write_file",
+              "description": "Write the formatted investment report markdown file to disk.",
+              "produces": "The investment_report.md file saved to the outputs directory."
             }}
           ],
           "skill": "file_ops",
@@ -1147,6 +1213,37 @@ DECISION RULES
    - If broadened_description produces research findings → use type "document"
    - If broadened_description produces general advice text → use type "text"
 
+   Also produce broadened_steps: a revised execution_steps list that matches the
+   broadened_description. This is REQUIRED when blocked=true — never leave it empty.
+   Each step must use the same {{execution_type, description, produces}} shape.
+
+   Rules for broadened_steps:
+   - Adapt each original step so it works without the missing context. Keep the same
+     execution_type values where possible; only change description and produces text
+     to reflect the generalised goal.
+   - If the original task had a search_web step for a specific entity that is now
+     unknown, change it to search for general information on that topic instead.
+   - The steps must be coherent with broadened_description — they are the concrete
+     actions needed to produce the broadened_output.
+   - Must have at least one step. A broadened_description with no steps is invalid.
+
+   Examples of matching broadened_description + broadened_steps:
+   - Original desc:   "Research Acme Corp's GitHub repositories."
+     Original steps:  [{{execution_type: "search_web", description: "Search GitHub for Acme Corp repos"}}]
+     Missing: company_name
+     Broadened desc:  "Research general best practices for evaluating open-source GitHub repositories."
+     Broadened steps: [{{execution_type: "search_web",
+                         description: "Search for criteria used to evaluate open-source GitHub repositories.",
+                         produces: "List of evaluation criteria and metrics for assessing repo quality."}}]
+
+   - Original desc:   "Identify the user's key achievements."
+     Original steps:  [{{execution_type: "write_plan", description: "Extract achievements from user history"}}]
+     Missing: personal history
+     Broadened desc:  "Produce a structured template to help a user identify their achievements."
+     Broadened steps: [{{execution_type: "write_document",
+                         description: "Write a structured achievements template with guided prompts.",
+                         produces: "Template document the user can fill in with their own achievements."}}]
+
    Examples of matching broadened_description + broadened_output:
    - Original desc:   "Identify the user's key achievements."
      Original output: [{{name: "personal_achievements_list", type: "list", ...}}]
@@ -1167,8 +1264,8 @@ DECISION RULES
                          raise feasibility signals, and culture indicators relevant
                          to salary negotiation."}}]
 
-   When blocked=false, set broadened_description, broadened_for_missing, and
-   broadened_output to empty strings/arrays.
+   When blocked=false, set broadened_description, broadened_for_missing,
+   broadened_output, and broadened_steps to empty strings/arrays.
 
 Respond only in JSON matching the schema.
 """
@@ -1185,13 +1282,14 @@ def build_broadened_description_prompt(
     original_description: str,
     missing_keys: list,
     known_fields_text: str,
+    original_steps: list | None = None,
 ) -> str:
     """
     Focused prompt used as a fallback when the preflight LLM call returned
     blocked=true but an empty broadened_description.
 
-    Asks the model for a single self-contained rephrasing of the task goal
-    that works with only the currently known context.
+    Asks the model for a self-contained rephrasing of the task goal and
+    adapted execution steps that work with only the currently known context.
 
     Parameters
     ----------
@@ -1200,6 +1298,8 @@ def build_broadened_description_prompt(
     missing_keys         : List of field keys that are unavailable.
     known_fields_text    : Clarification fields with user-provided values,
                            formatted as  key (label): value
+    original_steps       : The task's original execution_steps list, used
+                           as the basis for generating broadened_steps.
     """
     missing_text = ", ".join(missing_keys) if missing_keys else "(none listed)"
     known_section = (
@@ -1207,27 +1307,45 @@ def build_broadened_description_prompt(
         if known_fields_text
         else "  (no context is currently available)"
     )
+    steps = original_steps or []
+    if steps:
+        steps_lines = "\n".join(
+            f"  {i + 1}. [{s.get('execution_type', '?')}] {s.get('description', '')} → {s.get('produces', '')}"
+            for i, s in enumerate(steps)
+        )
+        steps_section = f"ORIGINAL EXECUTION STEPS:\n{steps_lines}"
+    else:
+        steps_section = "ORIGINAL EXECUTION STEPS: (none declared)"
+
     return f"""A task needs to be rephrased so it can execute without certain unavailable inputs.
 
 ORIGINAL TASK
   ID:          {node_id}
   Description: {original_description}
 
+{steps_section}
+
 UNAVAILABLE INPUTS: {missing_text}
 
 {known_section}
 
-Write a broadened_description: a complete, standalone rephrasing of this task
-that produces genuinely useful output using ONLY the known context above.
+Produce two things:
 
-Rules:
-- Write a direct task instruction, not a description of what you are doing.
-- Do not mention the unavailable inputs by name.
-- Incorporate any known context to make the goal as specific as possible.
-- If the task requires personal information the user must supply (achievements,
-  history, preferences), produce a template or structured guide instead —
-  something that helps the user articulate that information themselves.
-- The result must be useful to downstream tasks even without the missing data.
+1. broadened_description: a complete, standalone rephrasing of this task
+   that produces genuinely useful output using ONLY the known context above.
+   Rules:
+   - Write a direct task instruction, not a description of what you are doing.
+   - Do not mention the unavailable inputs by name.
+   - Incorporate any known context to make the goal as specific as possible.
+   - If the task requires personal information the user must supply, produce a
+     template or structured guide instead.
+   - The result must be useful to downstream tasks even without the missing data.
+
+2. broadened_steps: a revised execution_steps list that matches the
+   broadened_description. Adapt each original step so it works without
+   the missing context. Keep the same execution_type values where possible;
+   only change the description and produces text.
+   Each step: {{execution_type, description, produces}}
 
 Respond only in JSON matching the schema.
 """

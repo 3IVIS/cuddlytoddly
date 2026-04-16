@@ -28,14 +28,16 @@ const REPLAY_EVENTS  = "REPLAY_EVENTS_PLACEHOLDER";
   --text-muted: #6b7078;
   --text-dim:   #8a9099;
   --accent:     #4f6df5;
-  --s-pending:  #9aa0aa;
-  --s-ready:    #3b82f6;
-  --s-running:  #d89a3c;
-  --s-done:     #2f9e6f;
-  --s-failed:   #d35a5a;
-  --s-expanded: #8b5cf6;
-  --s-awaiting: #e879f9;
-  --toolbar-h:  52px;
+  --s-pending:    #9aa0aa;
+  --s-ready:      #3b82f6;
+  --s-running:    #d89a3c;
+  --s-done:       #2f9e6f;
+  --s-failed:     #d35a5a;
+  --s-expanded:   #8b5cf6;
+  --s-awaiting:   #e879f9;
+  --border-subtle:#e2e4e8;
+  --bg-card:      #f8f9fb;
+  --toolbar-h:    52px;
   --panel-w:    340px;
   --radius:     8px;
 }
@@ -172,6 +174,15 @@ body {
   transition: all 0.15s;
 }
 .zoom-btn:hover { background: var(--surface2); color: var(--text); }
+.zoom-btn-fit   { font-size: 11px; }
+
+/* Status dot colour helpers (replaces per-element inline styles) */
+.dot-done     { background: var(--s-done); }
+.dot-failed   { background: var(--s-failed); }
+.dot-awaiting { background: var(--s-awaiting); }
+.dot-pending  { background: var(--s-pending); }
+.dot-border   { background: var(--border2); }
+.pill-init-hidden { display: none; }
 
 /* ── Info Panel ──────────────────────────────────────────────────────── */
 #info-panel {
@@ -297,7 +308,7 @@ body {
   border-bottom: 1px solid var(--border);
   font-size: 11px;
 }
-.step-item:last-child { border-bottom: none; }
+.step-item:last-child { border-bottom: none; padding-bottom: 8px; }
 .step-icon { flex-shrink: 0; padding-top: 1px; }
 .step-desc { color: var(--text-dim); line-height: 1.4; }
 .step-result { color: var(--text-muted); font-size: 10px; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
@@ -396,23 +407,23 @@ body {
 
   <div id="toolbar-counts">
     <div class="count-pill" id="pill-done">
-      <div class="dot" style="background:var(--s-done)"></div>
+      <div class="dot dot-done"></div>
       <span id="cnt-done">0</span> done
     </div>
     <div class="count-pill" id="pill-failed">
-      <div class="dot" style="background:var(--s-failed)"></div>
+      <div class="dot dot-failed"></div>
       <span id="cnt-failed">0</span> failed
     </div>
-    <div class="count-pill" id="pill-awaiting" style="display:none">
-      <div class="dot" style="background:var(--s-awaiting)"></div>
+    <div class="count-pill pill-init-hidden" id="pill-awaiting">
+      <div class="dot dot-awaiting"></div>
       <span id="cnt-awaiting">0</span> awaiting
     </div>
     <div class="count-pill" id="pill-pending">
-      <div class="dot" style="background:var(--s-pending)"></div>
+      <div class="dot dot-pending"></div>
       <span id="cnt-pending">0</span> pending
     </div>
     <div class="count-pill">
-      <div class="dot" style="background:var(--border2)"></div>
+      <div class="dot dot-border"></div>
       <span id="cnt-total">0</span> total
     </div>
   </div>
@@ -434,7 +445,7 @@ body {
 
   <div id="zoom-controls">
     <button class="zoom-btn" onclick="zoomIn()" title="Zoom in">+</button>
-    <button class="zoom-btn" onclick="zoomReset()" title="Fit to screen" style="font-size:11px">⊡</button>
+    <button class="zoom-btn zoom-btn-fit" onclick="zoomReset()" title="Fit to screen">⊡</button>
     <button class="zoom-btn" onclick="zoomOut()" title="Zoom out">−</button>
   </div>
 </div>
@@ -460,7 +471,7 @@ const meta  = EXPORT_META;
 const STATUS_COLOR_HEX = {
   pending: '#475569', ready: '#3b82f6', running: '#f59e0b',
   done: '#10b981', failed: '#ef4444', to_be_expanded: '#8b5cf6',
-  awaiting_input: '#e879f9',
+  awaiting_input: '#e879f9', awaiting_user: '#f97316',
 };
 const TYPE_ICON  = { goal: '◎', task: '▣', reflection: '◈', execution_step: '·', clarification: '?' };
 const TYPE_COLOR = { goal: '#a78bfa', task: '#7dd3fc', reflection: '#86efac', execution_step: '#475569', clarification: '#f9a825' };
@@ -716,30 +727,235 @@ function updatePanel() {
     return;
   }
 
-  if (desc) html += row('Description', `<span class="info-value prominent">${esc(desc)}</span>`);
+  if (desc && !isBroadened) html += row('Description', `<span class="info-value prominent">${esc(desc)}</span>`);
 
-  // ── Broadened description indicator ──────────────────────────────────────
-  const broadDesc   = node.metadata?.broadened_description || '';
-  const broadReason = node.metadata?.broadened_reason || '';
-  const broadMissing = node.metadata?.broadened_for_missing || [];
-  if (broadDesc) {
-    const missingText = broadMissing.length
-      ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">` +
-        `Missing inputs: ${esc(broadMissing.join(', '))}</div>`
-      : '';
-    const reasonText = broadReason
-      ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic;margin-top:2px">` +
-        `${esc(broadReason)}</div>`
-      : '';
-    html += row('Running as', `
-      <div style="background:var(--bg-raised);border:1px solid var(--s-running)30;border-left:3px solid var(--s-running);border-radius:4px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--s-running);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">
-          ⟳ Broadened goal
+  // ── Plan / Broadened tabs ─────────────────────────────────────────────────
+  const LLM_TYPES = new Set([
+    'search_web','fetch_url','write_file','write_plan','write_document',
+    'write_analysis','write_code','analyse_data','summarise','synthesise',
+    'run_code','append_file','read_file','list_dir',
+  ]);
+
+  const pendingUserSteps  = new Set(node.metadata?.pending_steps || []);
+  const isDone            = node.status === 'done';
+  const isAwaitingUser    = node.status === 'awaiting_user';
+  const broadenedIsActive = isBroadened;
+
+  const missingSet      = new Set(broadMissing);
+  const broadenedReqIn  = reqIn.filter(i => !missingSet.has(i.name));
+  const broadenedOutput = node.metadata?.broadened_output || [];
+
+  function renderStepList(steps, isActive) {
+    if (!steps.length) return '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No steps defined.</div>';
+    const legendItems = (isDone || isAwaitingUser) && isActive
+      ? `<span><span style="color:#10b981">✓</span> done</span>` +
+        (isAwaitingUser ? ` <span><span style="color:#f97316">⏳</span> awaiting you</span>` : '')
+      : `<span><span style="color:#2dd4bf">⚙</span> LLM</span>` +
+        `<span><span style="color:#f97316">👤</span> You</span>`;
+    const items = steps.map((s, i) => {
+      const etype     = s.execution_type || '?';
+      const isLLM     = LLM_TYPES.has(etype);
+      const isPending = pendingUserSteps.has(etype);
+      let stateIcon, stateColor, stateTip;
+      if (isActive && isAwaitingUser && isPending) {
+        stateIcon = '⏳'; stateColor = '#f97316'; stateTip = 'Waiting for you';
+      } else if (isActive && (isDone || (isAwaitingUser && !isPending))) {
+        stateIcon = '✓'; stateColor = '#10b981'; stateTip = 'Completed';
+      } else {
+        stateIcon = isLLM ? '⚙' : '👤';
+        stateColor = isLLM ? '#2dd4bf' : '#f97316';
+        stateTip = isLLM ? 'LLM will handle this' : 'You will need to do this';
+      }
+      const rowOpacity = (isActive && isAwaitingUser && !isPending) ? 'opacity:0.55;' : '';
+      return `<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid var(--border-subtle);${rowOpacity}">
+        <div style="min-width:18px;color:var(--text-dim);font-size:10px;padding-top:2px">${i + 1}.</div>
+        <div style="flex:1">
+          <div style="display:flex;align-items:center;gap:5px;margin-bottom:2px">
+            <span title="${stateTip}" style="font-size:10px;font-weight:600;color:${stateColor};background:${stateColor}18;border:1px solid ${stateColor}40;border-radius:3px;padding:1px 5px">
+              ${stateIcon} ${esc(etype)}
+            </span>
+          </div>
+          <div style="font-size:11px;color:var(--text);margin-bottom:2px">${esc(s.description || '')}</div>
+          ${s.produces ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic">→ ${esc(s.produces)}</div>` : ''}
         </div>
-        <span class="info-value">${esc(broadDesc)}</span>
-        ${missingText}
-        ${reasonText}
+      </div>`;
+    }).join('');
+    return `<div style="display:flex;gap:8px;margin-bottom:6px;font-size:10px;color:var(--text-dim)">${legendItems}</div>${items}`;
+  }
+
+  function renderInlineRequires(inputs) {
+    return inputs.map(i => `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
+      <span style="color:var(--text-dim)">${esc(i.name)}</span>
+      <span style="color:var(--s-pending);font-size:10px"> [${esc(i.type)}]</span>
+      — ${esc(i.description || '')}
+    </div>`).join('');
+  }
+
+  function renderInlineOutputs(outputs) {
+    return outputs.map(o => `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
+      <span style="color:var(--text-dim)">${esc(o.name)}</span>
+      <span style="color:var(--s-ready);font-size:10px"> [${esc(o.type)}]</span>
+      — ${esc(o.description || '')}
+    </div>`).join('');
+  }
+
+  if (isBroadened) {
+    const nodeKey = node.id.replace(/[^a-z0-9]/gi, '_');
+    const tipId   = 'pt-' + nodeKey + '-tip';
+    const missingLabels = broadMissing.map(k =>
+      k.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())
+    );
+    const tooltipReason = broadReason
+      ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.4">${esc(broadReason)}</div>` : '';
+    const tooltipMissing = missingLabels.length
+      ? `<div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px">Missing for original goal</div>` +
+        missingLabels.map(l =>
+          `<div style="display:flex;gap:5px;align-items:flex-start;font-size:11px;color:var(--text-muted);margin-bottom:2px">` +
+          `<span style="color:var(--s-running);margin-top:1px">•</span><span>${esc(l)}</span></div>`
+        ).join('') : '';
+
+    const tabBtnBase    = 'font-size:11px;padding:4px 10px;border:none;background:transparent;cursor:pointer;margin-bottom:-1px;';
+    const activeStyle   = tabBtnBase + 'border-bottom:2px solid var(--text);color:var(--text);font-weight:600;';
+    const inactiveStyle = tabBtnBase + 'border-bottom:2px solid transparent;color:var(--text-muted);font-weight:400;';
+    const switchFn      = 'ptSwitch_' + nodeKey;
+
+    // 1. TAB HEADER — define the tab-switch function on window (script tags injected
+    // via innerHTML are silently ignored by browsers and never executed).
+    window[switchFn] = function(tab) {
+      const isOrig = tab === 'orig';
+      const a = activeStyle;
+      const ia = inactiveStyle;
+      document.getElementById('pt-' + nodeKey + '-bo').style.cssText = isOrig ? a : ia;
+      document.getElementById('pt-' + nodeKey + '-bb').style.cssText = isOrig ? ia : a;
+      ['desc','steps','req','out'].forEach(k => {
+        const eo = document.getElementById('pt-' + nodeKey + '-o-' + k);
+        const eb = document.getElementById('pt-' + nodeKey + '-b-' + k);
+        if (eo) eo.style.display = isOrig ? '' : 'none';
+        if (eb) eb.style.display = isOrig ? 'none' : '';
+      });
+    };
+
+    html += `
+        <button id="pt-${nodeKey}-bo" style="${inactiveStyle}"
+          onclick="${switchFn}('orig')">Original</button>
+        <div style="position:relative;display:inline-block">
+          <button id="pt-${nodeKey}-bb" style="${activeStyle}"
+            onclick="${switchFn}('broad')"
+            onmouseenter="document.getElementById('${tipId}').style.display='block'"
+            onmouseleave="document.getElementById('${tipId}').style.display='none'">
+            ⟳ Broadened
+          </button>
+          <div id="${tipId}" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px;min-width:220px;max-width:280px;box-shadow:0 4px 12px rgba(0,0,0,0.15);pointer-events:none">
+            <div style="font-size:10px;font-weight:600;color:var(--s-running);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">⟳ Why this goal was generalised</div>
+            ${tooltipReason}${tooltipMissing}
+          </div>
+        </div>
+      </div>`;
+
+    // 2. DESCRIPTION
+    html += row('Description', `
+      <div id="pt-${nodeKey}-o-desc" style="display:none"><span class="info-value prominent">${esc(desc)}</span></div>
+      <div id="pt-${nodeKey}-b-desc" style="display:block"><span class="info-value prominent">${esc(broadDesc)}</span></div>`);
+
+    // 3. STATUS — rendered once outside both branches (see below)
+
+    // 4. PLAN / STEPS
+    html += row('Plan', `
+      <div id="pt-${nodeKey}-o-steps" style="display:none">
+        ${origSteps.length ? renderStepList(origSteps, false) : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No steps defined.</div>'}
+      </div>
+      <div id="pt-${nodeKey}-b-steps" style="display:block">
+        ${hasBroadSteps ? renderStepList(broadSteps, true) : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No broadened steps available.</div>'}
       </div>`);
+
+    // 5. DEPENDENCIES
+    if (deps.length) {
+      html += row('Dependencies', deps.map(d =>
+        `<span class="dep-tag" onclick="selectNode('${esc(d)}')">${esc(d)}</span>`
+      ).join(''));
+    }
+
+    // 6. REQUIRES
+    if (reqIn.length || broadenedReqIn.length) {
+      html += row('Requires', `
+        <div id="pt-${nodeKey}-o-req" style="display:none">${renderInlineRequires(reqIn)}</div>
+        <div id="pt-${nodeKey}-b-req" style="display:block">${
+          broadenedReqIn.length ? renderInlineRequires(broadenedReqIn)
+          : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No inputs required for broadened goal.</div>'
+        }</div>`);
+    }
+
+    // 7. OUTPUTS
+    const effectiveBroadOutput = broadenedOutput.length ? broadenedOutput : output;
+    if (output.length || effectiveBroadOutput.length) {
+      html += row('Outputs', `
+        <div id="pt-${nodeKey}-o-out" style="display:none">${renderInlineOutputs(output)}</div>
+        <div id="pt-${nodeKey}-b-out" style="display:block">${renderInlineOutputs(effectiveBroadOutput)}</div>`);
+    }
+
+  } else {
+    // ── Non-broadened: fixed order ───────────────────────────────────────────
+    // 3. STATUS — rendered once outside both branches (see below)
+
+    // 4. PLAN / STEPS
+    if (origSteps.length) {
+      html += row('Plan', `<div style="margin-top:2px">${renderStepList(origSteps, true)}</div>`);
+    }
+
+    // 5. DEPENDENCIES
+    if (deps.length) {
+      html += row('Dependencies', deps.map(d =>
+        `<span class="dep-tag" onclick="selectNode('${esc(d)}')">${esc(d)}</span>`
+      ).join(''));
+    }
+
+    // 6. REQUIRES
+    if (reqIn.length) html += row('Requires', renderInlineRequires(reqIn));
+
+    // 7. OUTPUTS
+    if (output.length) html += row('Outputs', renderInlineOutputs(output));
+  }
+
+  // ── 3. STATUS + 5. DEPENDENCIES — rendered once, outside both branches ────
+  // Uses string concatenation (not template literals) so no ${...} appears
+  // inside HTML attribute values, avoiding linter false positives.
+  // Spliced before the Plan row so ordering is always:
+  //   description → status → plan → dependencies → requires → outputs
+  {
+    const sColor = STATUS_COLOR_HEX[node.status] || '#475569';
+    const tColor = TYPE_COLOR[node.node_type] || '#94a3b8';
+    const statusBadge =
+      '<span class="badge" style="color:' + sColor + ';border-color:' + sColor + '30">' +
+        '<span style="width:6px;height:6px;border-radius:50%;background:' + sColor + ';display:inline-block"></span> ' +
+        esc(node.status) +
+      '</span>' +
+      '&nbsp;' +
+      '<span class="badge" style="color:' + tColor + '">' +
+        (TYPE_ICON[node.node_type] || '') + ' ' + esc(node.node_type) +
+      '</span>';
+    const statusRow = row('Status &amp; Type', statusBadge);
+    const depsRow = deps.length
+      ? row('Dependencies', deps.map(d =>
+          '<span class="dep-tag" onclick="selectNode(\'' + esc(d) + '\')">' + esc(d) + '</span>'
+        ).join(''))
+      : '';
+
+    const planMarker = '<div class="info-label">Plan</div>';
+    const planIdx = html.indexOf(planMarker);
+    if (planIdx !== -1) {
+      // Find the start of the wrapping <div class="info-row"> that contains the Plan label.
+      // lastIndexOf handles the newline+indent between the wrapper and the label safely.
+      const rowStart = html.lastIndexOf('<div class="info-row">', planIdx);
+      if (rowStart !== -1) {
+        html = html.slice(0, rowStart) + statusRow + depsRow + html.slice(rowStart);
+      } else {
+        html = html.slice(0, planIdx) + statusRow + depsRow + html.slice(planIdx);
+      }
+    } else {
+      // No Plan row (no steps) — append Status then Deps at current position
+      html += statusRow;
+      if (deps.length) html += depsRow;
+    }
   }
 
   // ── Awaiting input indicator ──────────────────────────────────────────────
@@ -747,57 +963,29 @@ function updatePanel() {
     const awaitReason  = node.metadata?.awaiting_input_reason || '';
     const awaitMissing = node.metadata?.missing_fields || [];
     const missingList  = awaitMissing.length
-      ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">` +
-        `Waiting for: ${esc(awaitMissing.join(', '))}</div>`
-      : '';
+      ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">Waiting for: ${esc(awaitMissing.join(', '))}</div>` : '';
     const reasonLine = awaitReason
-      ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic;margin-top:2px">${esc(awaitReason)}</div>`
-      : '';
+      ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic;margin-top:2px">${esc(awaitReason)}</div>` : '';
     html += row('Awaiting input', `
       <div style="border:1px solid var(--s-awaiting)40;border-left:3px solid var(--s-awaiting);border-radius:4px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--s-awaiting);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">
-          ⏳ Waiting for user input
-        </div>
-        ${missingList}
-        ${reasonLine}
+        <div style="font-size:10px;color:var(--s-awaiting);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">⏳ Waiting for user input</div>
+        ${missingList}${reasonLine}
       </div>`);
   }
 
-  html += row('Status &amp; Type', `
-    <span class="badge" style="color:${STATUS_COLOR_HEX[node.status]};border-color:${STATUS_COLOR_HEX[node.status]}30">
-      <span style="width:6px;height:6px;border-radius:50%;background:${STATUS_COLOR_HEX[node.status]};display:inline-block"></span>
-      ${esc(node.status)}
-    </span>
-    &nbsp;
-    <span class="badge" style="color:${TYPE_COLOR[node.node_type] || '#94a3b8'}">
-      ${TYPE_ICON[node.node_type]} ${esc(node.node_type)}
-    </span>
-  `);
-
-  if (deps.length) {
-    html += row('Dependencies', deps.map(d =>
-      `<span class="dep-tag" onclick="selectNode('${esc(d)}')">${esc(d)}</span>`
-    ).join(''));
-  }
-
-  if (reqIn.length) {
-    html += row('Requires', reqIn.map(i =>
-      `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
-        <span style="color:var(--text-dim)">${esc(i.name)}</span>
-        <span style="color:var(--s-pending);font-size:10px"> [${esc(i.type)}]</span>
-        — ${esc(i.description || '')}
-      </div>`
-    ).join(''));
-  }
-
-  if (output.length) {
-    html += row('Outputs', output.map(o =>
-      `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
-        <span style="color:var(--text-dim)">${esc(o.name)}</span>
-        <span style="color:var(--s-ready);font-size:10px"> [${esc(o.type)}]</span>
-        — ${esc(o.description || '')}
-      </div>`
-    ).join(''));
+  // ── Awaiting user action indicator ───────────────────────────────────────
+  if (node.status === 'awaiting_user') {
+    const artifact     = node.metadata?.handoff_artifact || '';
+    const pendingSteps = node.metadata?.pending_steps || [];
+    const stepsHtml    = pendingSteps.length
+      ? `<div style="font-size:10px;color:#f97316;margin-top:4px">Pending steps: ${esc(pendingSteps.join(', '))}</div>` : '';
+    const artifactHtml = artifact
+      ? `<pre style="font-size:10px;color:var(--text-muted);white-space:pre-wrap;margin-top:6px;max-height:160px;overflow-y:auto;background:var(--bg-card);padding:6px;border-radius:4px">${esc(artifact)}</pre>` : '';
+    html += row('Action required', `
+      <div style="border:1px solid #f9741640;border-left:3px solid #f97316;border-radius:4px;padding:8px 10px">
+        <div style="font-size:10px;color:#f97316;font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">🙋 Action required (return to live UI to confirm)</div>
+        ${stepsHtml}${artifactHtml}
+      </div>`);
   }
 
   if (result != null) {

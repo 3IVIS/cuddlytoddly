@@ -69,6 +69,10 @@ class QualityGate:
         if getattr(self.llm, "is_stopped", False):
             return True, "verification skipped — LLM paused"
 
+        # Nodes awaiting user action are not failures — they are correctly surfaced.
+        if node.status == "awaiting_user":
+            return True, "node is awaiting user action — verification not applicable"
+
         declared_outputs = node.metadata.get("output", [])
         if not declared_outputs:
             return True, "no declared outputs to verify"

@@ -43,7 +43,7 @@ class TaskGraph:
             self.children = set()
             self.node_type = node_type
 
-            self.status = "pending"  # pending / ready / running / done / failed / awaiting_input
+            self.status = "pending"  # pending / ready / running / done / failed / awaiting_input / awaiting_user
             self.result = None
 
             self.origin = origin or "user"
@@ -56,6 +56,8 @@ class TaskGraph:
             self.metadata.setdefault("required_input", [])
             # List of data/resources this node produces for downstream tasks
             self.metadata.setdefault("output", [])
+            # Concrete execution steps the LLM executor should work through
+            self.metadata.setdefault("execution_steps", [])
             # Optional: group for parallel execution
             self.metadata.setdefault("parallel_group", None)
             # Optional: description / notes
@@ -116,6 +118,11 @@ class TaskGraph:
             self.metadata.pop("retry_after", None)
             self.metadata.pop("verification_failure", None)
             self.metadata.pop("verified", None)
+            # Clear produced_output so a stale value from a previous broadened
+            # run never leaks into the next execution cycle.  The field is
+            # re-populated in _on_node_done once the node actually completes
+            # and passes verification.
+            self.metadata.pop("produced_output", None)
 
         def to_dict(self):
             return {
@@ -226,9 +233,10 @@ class TaskGraph:
                 "failed",
                 "to_be_expanded",
                 "awaiting_input",
+                "awaiting_user",
             ):
                 continue
-            # awaiting_input deps are treated like failed — not satisfied
+            # awaiting_input / awaiting_user deps are treated like failed — not satisfied
             if all(
                 dep in self.nodes and self.nodes[dep].status == "done" for dep in node.dependencies
             ):
@@ -251,7 +259,9 @@ class TaskGraph:
 
         Falls back gracefully when the node is not present (already removed).
         """
-        _SKIP = frozenset(("done", "running", "failed", "to_be_expanded", "awaiting_input"))
+        _SKIP = frozenset(
+            ("done", "running", "failed", "to_be_expanded", "awaiting_input", "awaiting_user")
+        )
 
         node = self.nodes.get(node_id)
         if node is None:
@@ -403,6 +413,7 @@ class TaskGraph:
             "failed",
             "to_be_expanded",
             "awaiting_input",
+            "awaiting_user",
         )
         if status not in valid:
             logger.warning("Invalid status '%s' for node %s", status, node_id)

@@ -73,6 +73,7 @@ class AwaitingInputSignal:
     broadened_description: str = ""
     broadened_for_missing: list = _dc_field(default_factory=list)
     broadened_output: list = _dc_field(default_factory=list)
+    broadened_steps: list = _dc_field(default_factory=list)
 
 
 class LLMExecutor:
@@ -259,9 +260,17 @@ class LLMExecutor:
                     "description": dep.metadata.get("description", dep_id),
                     "declared_output": _format_output_list(dep.metadata.get("output", [])),
                     "result": dep.result,
+                    # Use produced_output when available — it reflects what the
+                    # upstream node actually delivered at runtime (which may be
+                    # a broadened output contract if it ran without its full
+                    # required inputs).  Fall back to the declared output
+                    # metadata when produced_output is absent (e.g. the node
+                    # has not yet completed, or it predates this field).
                     "_output_names": [
                         o["name"]
-                        for o in dep.metadata.get("output", [])
+                        for o in (
+                            dep.metadata.get("produced_output") or dep.metadata.get("output", [])
+                        )
                         if isinstance(o, dict) and "name" in o
                     ],
                 }
@@ -301,6 +310,7 @@ class LLMExecutor:
         turns_remaining=0,
         description_override="",
         output_override=None,
+        steps_override=None,
     ):
         def _fmt_output(o):
             if isinstance(o, dict):
@@ -371,16 +381,35 @@ class LLMExecutor:
         )
         outputs_block = build_executor_outputs_block(outputs_text)
 
+        # Build execution steps block
+        steps = (
+            steps_override
+            if steps_override is not None
+            else node.metadata.get("execution_steps", [])
+        )
+        if steps:
+            steps_lines = []
+            for i, s in enumerate(steps, 1):
+                steps_lines.append(
+                    f"  {i}. [{s.get('execution_type', '?')}] {s.get('description', '')}"
+                )
+                if s.get("produces"):
+                    steps_lines.append(f"     → {s['produces']}")
+            steps_text = "\n".join(steps_lines)
+        else:
+            steps_text = "  (not specified — use your best judgement)"
+
         logger.info(
             "[EXECUTOR] Prompt sections for %s — "
             "retry=%d chars, outputs=%d chars, inputs=%d chars, "
-            "tools=%d chars, history=%d chars",
+            "tools=%d chars, history=%d chars, steps=%d",
             node.id,
             len(retry_notice),
             len(outputs_text),
             len(inputs_text),
             len(tools_text),
             len(history_text),
+            len(steps),
         )
 
         return build_executor_prompt(
@@ -393,6 +422,7 @@ class LLMExecutor:
             inputs_text=inputs_text,
             tools_text=tools_text,
             history_text=history_text,
+            steps_text=steps_text,
             max_inline_result_chars=self.max_inline_result_chars,
             turns_remaining=turns_remaining,
         )
@@ -410,26 +440,36 @@ class LLMExecutor:
 
     def _generate_broadened_description(
         self, node, missing_keys: list, known_fields_text: str
-    ) -> str:
+    ) -> tuple[str, list]:
+        """
+        Fallback broadening call when the preflight returned blocked=true but
+        an empty broadened_description.
+
+        Returns (broadened_description, broadened_steps).  Both will be empty
+        on failure so the caller can detect and abort.
+        """
         if getattr(self.llm, "is_stopped", False):
-            return ""
+            return "", []
         prompt = build_broadened_description_prompt(
             node_id=node.id,
             original_description=node.metadata.get("description", node.id),
             missing_keys=missing_keys,
             known_fields_text=known_fields_text,
+            original_steps=node.metadata.get("execution_steps", []),
         )
         try:
             raw = self.llm.ask(prompt, schema=BROADENED_DESCRIPTION_SCHEMA)
             parsed = json.loads(raw)
-            return parsed.get("broadened_description", "").strip()
+            desc = parsed.get("broadened_description", "").strip()
+            steps = parsed.get("broadened_steps", [])
+            return desc, steps
         except Exception as e:
             logger.warning(
                 "[EXECUTOR] Broadened description fallback call failed for %s: %s",
                 node.id,
                 e,
             )
-            return ""
+            return "", []
 
     def _preflight_awaiting_input(self, node, resolved_inputs) -> "AwaitingInputSignal | None":
         """
@@ -510,6 +550,7 @@ class LLMExecutor:
                 broadened_description=stored_broadened,
                 broadened_for_missing=stored_for_missing,
                 broadened_output=node.metadata.get("broadened_output", []),
+                broadened_steps=node.metadata.get("broadened_steps", []),
             )
 
         if previous_failure:
@@ -598,6 +639,38 @@ class LLMExecutor:
                 node.id,
             )
 
+        broadened_steps = parsed.get("broadened_steps", [])
+
+        # Safety net: if the LLM produced a broadened_description but returned
+        # empty broadened_steps, derive a minimal step from the description so
+        # the UI always has something concrete to show.
+        if broadened_description and not broadened_steps:
+            logger.warning(
+                "[EXECUTOR] Node %s: broadened_description present but broadened_steps "
+                "is empty — deriving minimal steps from original execution_steps",
+                node.id,
+            )
+            original_steps = node.metadata.get("execution_steps", [])
+            if original_steps:
+                # Reuse original steps with a note that they apply to the broadened goal
+                broadened_steps = [
+                    {
+                        "execution_type": s.get("execution_type", "write_analysis"),
+                        "description": s.get("description", broadened_description),
+                        "produces": s.get("produces", "Output for the broadened goal."),
+                    }
+                    for s in original_steps
+                ]
+            else:
+                # No original steps to adapt — create a single generic step
+                broadened_steps = [
+                    {
+                        "execution_type": "write_analysis",
+                        "description": broadened_description,
+                        "produces": "Output for the broadened goal.",
+                    }
+                ]
+
         return AwaitingInputSignal(
             reason=parsed.get("reason", "task requires user input"),
             missing_fields=merged_missing,
@@ -606,7 +679,87 @@ class LLMExecutor:
             broadened_description=broadened_description,
             broadened_for_missing=broadened_for_missing,
             broadened_output=parsed.get("broadened_output", []),
+            broadened_steps=broadened_steps,
         )
+
+    def _select_goal_mode(self, node, resolved_inputs, signal):
+        """
+        Decide whether to run the original plan or the broadened plan.
+
+        Returns (effective_description, effective_outputs, effective_steps).
+
+        Logic:
+        - If signal is None (all required inputs present) → original.
+        - If signal is not None (broadened) → broadened.
+        - Exception: if a broadened signal exists but the actual resolved input
+          names all match the originally declared required_input names, the
+          upstream nodes provided correctly-named outputs (they resolved back to
+          their original goal), so we fall back to the original plan as well.
+        """
+        original_desc = node.metadata.get("description", node.id)
+        original_outputs = node.metadata.get("output", [])
+        original_steps = node.metadata.get("execution_steps", [])
+
+        if signal is None:
+            return original_desc, original_outputs, original_steps
+
+        # Check if upstream inputs match the original required_input contract
+        required_names = {
+            r.get("name")
+            for r in node.metadata.get("required_input", [])
+            if r.get("name")
+            and r.get("name")
+            not in {
+                f.get("key") for entry in resolved_inputs for f in entry.get("_unknown_fields", [])
+            }
+        }
+        upstream_names: set[str] = set()
+        for entry in resolved_inputs:
+            if "_unknown_fields" in entry:
+                continue
+            upstream_names.update(entry.get("_output_names", []))
+
+        inputs_match_original = required_names and required_names.issubset(upstream_names)
+
+        if inputs_match_original:
+            logger.info(
+                "[EXECUTOR] Node %s: upstream inputs match original contract "
+                "(%s) — using original goal despite broadened signal",
+                node.id,
+                sorted(required_names),
+            )
+            return original_desc, original_outputs, original_steps
+
+        # Use the broadened plan
+        broadened_desc = signal.broadened_description or original_desc
+        broadened_outputs = signal.broadened_output if signal.broadened_output else original_outputs
+        broadened_steps = signal.broadened_steps if signal.broadened_steps else original_steps
+        return broadened_desc, broadened_outputs, broadened_steps
+
+    def _llm_executable_types(self) -> frozenset:
+        """
+        Return the set of execution_type values the LLM can perform given the
+        currently registered tools.  Always includes LLM-native types (write_*,
+        analyse_*, search_web, fetch_url) when the matching tool is registered.
+        """
+        native = {
+            "write_plan",
+            "write_document",
+            "write_analysis",
+            "write_code",
+            "analyse_data",
+            "summarise",
+            "synthesise",
+        }
+        if self.tools:
+            for name in self.tools.tools:
+                if name == "web_search":
+                    native.add("search_web")
+                elif name == "fetch_url":
+                    native.add("fetch_url")
+                else:
+                    native.add(name)
+        return frozenset(native)
 
     def execute(self, node, snapshot, reporter=None):
         resolved_inputs = self._resolve_inputs(node, snapshot)
@@ -615,19 +768,15 @@ class LLMExecutor:
 
         if signal is not None:
             if signal.broadened_description:
-                effective_description = signal.broadened_description
-                logger.info(
-                    "[EXECUTOR] Node %s: running with broadened description (missing: %s)",
-                    node.id,
-                    signal.broadened_for_missing,
-                )
+                if reporter:
+                    reporter.on_broadened_execution(signal)
             else:
                 logger.warning(
                     "[EXECUTOR] Node %s: preflight returned no broadened_description "
                     "— making focused fallback call",
                     node.id,
                 )
-                effective_description = self._generate_broadened_description(
+                effective_description, fallback_steps = self._generate_broadened_description(
                     node=node,
                     missing_keys=signal.broadened_for_missing or signal.missing_fields,
                     known_fields_text=self._fmt_known_fields(resolved_inputs),
@@ -647,16 +796,15 @@ class LLMExecutor:
                     broadened_description=effective_description,
                     broadened_for_missing=signal.broadened_for_missing,
                     broadened_output=signal.broadened_output,
+                    # Use fallback steps if available, otherwise fall back to
+                    # whatever the primary preflight returned (may be empty).
+                    broadened_steps=fallback_steps or signal.broadened_steps,
                 )
-            if reporter:
-                reporter.on_broadened_execution(signal)
-        else:
-            effective_description = node.metadata.get("description", node.id)
+                if reporter:
+                    reporter.on_broadened_execution(signal)
 
-        effective_outputs = (
-            signal.broadened_output
-            if signal is not None and signal.broadened_output
-            else node.metadata.get("output", [])
+        effective_description, effective_outputs, effective_steps = self._select_goal_mode(
+            node, resolved_inputs, signal
         )
 
         use_native = (
@@ -676,6 +824,7 @@ class LLMExecutor:
                 resolved_inputs,
                 effective_description,
                 effective_outputs,
+                effective_steps,
                 reporter,
             )
         else:
@@ -684,6 +833,7 @@ class LLMExecutor:
                 resolved_inputs,
                 effective_description,
                 effective_outputs,
+                effective_steps,
                 reporter,
             )
 
@@ -751,6 +901,7 @@ class LLMExecutor:
         resolved_inputs,
         effective_description: str,
         effective_outputs: list,
+        effective_steps: list,
         reporter,
     ):
         def _output_name(o):
@@ -766,6 +917,53 @@ class LLMExecutor:
         expected_files = [_output_name(o) for o in effective_outputs if _is_file(o)]
         history: list[dict] = []
         tool_not_found_count = 0
+
+        # ── Step capability pre-check ─────────────────────────────────────────
+        # Partition the declared execution steps into those the LLM can handle
+        # and those that require real-world user action.
+        executable_types = self._llm_executable_types()
+        awaiting_steps = []  # steps the user must perform
+        llm_steps = []  # steps the LLM can perform
+
+        for step in effective_steps:
+            etype = step.get("execution_type", "")
+            if etype in executable_types or not etype:
+                llm_steps.append(step)
+            else:
+                awaiting_steps.append(step)
+
+        if awaiting_steps:
+            logger.info(
+                "[EXECUTOR] Node %s: %d step(s) require user action: %s",
+                node.id,
+                len(awaiting_steps),
+                [s.get("execution_type") for s in awaiting_steps],
+            )
+
+        # ── Early exit: all steps require user action — skip the LLM loop ────
+        # If there are no LLM-executable steps at all, there is nothing for the
+        # model to do. Build the handoff artifact immediately without making any
+        # LLM or tool calls.
+        if awaiting_steps and not llm_steps:
+            logger.info(
+                "[EXECUTOR] Node %s: all %d step(s) require user action — "
+                "surfacing immediately without LLM calls",
+                node.id,
+                len(awaiting_steps),
+            )
+            handoff_lines = [
+                "The following steps require your action before this task is complete:",
+                "",
+            ]
+            for s in awaiting_steps:
+                handoff_lines.append(f"• [{s.get('execution_type')}] {s.get('description', '')}")
+                handoff_lines.append(f"  Purpose: {s.get('produces', '')}")
+            return {
+                "_awaiting_user": True,
+                "handoff_artifact": "\n".join(handoff_lines),
+                "pending_steps": [s.get("execution_type") for s in awaiting_steps],
+                "partial_result": "",
+            }
 
         for turn in range(self.max_turns):
             turns_remaining = self.max_turns - turn
@@ -785,6 +983,7 @@ class LLMExecutor:
                 turns_remaining=turns_remaining,
                 description_override=effective_description,
                 output_override=effective_outputs,
+                steps_override=llm_steps if llm_steps else effective_steps,
             )
 
             try:
@@ -831,6 +1030,37 @@ class LLMExecutor:
                         },
                     )
                     continue
+
+                # ── Surface awaiting_user steps ───────────────────────────────
+                # If some steps required user action, build handoff artifact and
+                # return a sentinel so the orchestrator emits MARK_AWAITING_USER.
+                if awaiting_steps:
+                    handoff_lines = [
+                        "The following steps require your action before this task is complete:",
+                        "",
+                    ]
+                    for s in awaiting_steps:
+                        handoff_lines.append(
+                            f"• [{s.get('execution_type')}] {s.get('description', '')}"
+                        )
+                        handoff_lines.append(f"  Purpose: {s.get('produces', '')}")
+                    if result:
+                        handoff_lines += ["", "Prepared content for your use:", "", result]
+                    handoff_artifact = "\n".join(handoff_lines)
+
+                    logger.info(
+                        "[EXECUTOR] Node %s: %d step(s) awaiting user — surfacing",
+                        node.id,
+                        len(awaiting_steps),
+                    )
+                    # Return a special dict; _on_node_done detects this and emits
+                    # MARK_AWAITING_USER instead of MARK_DONE.
+                    return {
+                        "_awaiting_user": True,
+                        "handoff_artifact": handoff_artifact,
+                        "pending_steps": [s.get("execution_type") for s in awaiting_steps],
+                        "partial_result": result,
+                    }
 
                 logger.info("[EXECUTOR] Node %s completed. Result: %.120s", node.id, result)
                 return result
@@ -912,6 +1142,7 @@ class LLMExecutor:
         resolved_inputs,
         effective_description: str,
         effective_outputs: list,
+        effective_steps: list,
         reporter,
     ):
         def _output_name(o):
@@ -929,12 +1160,201 @@ class LLMExecutor:
         history: list[dict] = []
         tool_not_found_count = 0
 
+        # ── Step capability pre-check (same logic as legacy path) ────────────
+        executable_types = self._llm_executable_types()
+        awaiting_steps = [
+            s
+            for s in effective_steps
+            if s.get("execution_type") and s.get("execution_type") not in executable_types
+        ]
+        llm_steps = [
+            s
+            for s in effective_steps
+            if not s.get("execution_type") or s.get("execution_type") in executable_types
+        ]
+
+        if awaiting_steps:
+            logger.info(
+                "[EXECUTOR] Node %s (native): %d step(s) require user action: %s",
+                node.id,
+                len(awaiting_steps),
+                [s.get("execution_type") for s in awaiting_steps],
+            )
+
+        # ── Early exit: all steps require user action — skip the LLM loop ────
+        if awaiting_steps and not llm_steps:
+            logger.info(
+                "[EXECUTOR] Node %s (native): all %d step(s) require user action — "
+                "surfacing immediately without LLM calls",
+                node.id,
+                len(awaiting_steps),
+            )
+            handoff_lines = [
+                "The following steps require your action before this task is complete:",
+                "",
+            ]
+            for s in awaiting_steps:
+                handoff_lines.append(f"• [{s.get('execution_type')}] {s.get('description', '')}")
+                handoff_lines.append(f"  Purpose: {s.get('produces', '')}")
+            return {
+                "_awaiting_user": True,
+                "handoff_artifact": "\n".join(handoff_lines),
+                "pending_steps": [s.get("execution_type") for s in awaiting_steps],
+                "partial_result": "",
+            }
+
         task_prompt = self._build_native_task_prompt(
             node=node,
             resolved_inputs=resolved_inputs,
             effective_description=effective_description,
             effective_outputs=effective_outputs,
+            effective_steps=llm_steps if llm_steps else effective_steps,
         )
+
+        for turn in range(self.max_turns):
+            turns_remaining = self.max_turns - turn
+
+            extra_reminder = ""
+            if expected_files and "write_file" not in {h["name"] for h in history}:
+                extra_reminder = build_executor_native_file_reminder(
+                    expected_files, turns_remaining
+                )
+
+            current_prompt = task_prompt + "\n" + extra_reminder if extra_reminder else task_prompt
+
+            if reporter:
+                reporter.on_llm_turn(turn)
+
+            try:
+                response: NativeToolResponse = self.llm.ask_with_tools(
+                    current_prompt, tools, history
+                )
+            except LLMStoppedError:
+                logger.warning("[EXECUTOR] LLM stopped during native execution of %s", node.id)
+                return None
+            except Exception as e:
+                logger.error("[EXECUTOR] LLM error during native execution of %s: %s", node.id, e)
+                if reporter:
+                    reporter.on_llm_error(turn, str(e))
+                return None
+
+            if response.kind == "text":
+                result = response.text
+
+                if expected_files and "write_file" not in {h["name"] for h in history}:
+                    logger.warning(
+                        "[EXECUTOR] Node %s gave final answer without calling write_file "
+                        "— injecting correction turn",
+                        node.id,
+                    )
+                    history = self._append_to_history(
+                        history,
+                        {
+                            "kind": "correction",
+                            "content": (
+                                f"Your previous response was a text answer, but this task "
+                                f"requires you to call write_file to produce "
+                                f"{expected_files[0]}. "
+                                f"Do not give a final text answer — call write_file with the "
+                                f"actual file content now."
+                            ),
+                        },
+                    )
+                    continue
+
+                # ── Surface awaiting_user steps ───────────────────────────────
+                if awaiting_steps:
+                    handoff_lines = [
+                        "The following steps require your action before this task is complete:",
+                        "",
+                    ]
+                    for s in awaiting_steps:
+                        handoff_lines.append(
+                            f"• [{s.get('execution_type')}] {s.get('description', '')}"
+                        )
+                        handoff_lines.append(f"  Purpose: {s.get('produces', '')}")
+                    if result:
+                        handoff_lines += ["", "Prepared content for your use:", "", result]
+                    handoff_artifact = "\n".join(handoff_lines)
+                    logger.info(
+                        "[EXECUTOR] Node %s (native): %d step(s) awaiting user — surfacing",
+                        node.id,
+                        len(awaiting_steps),
+                    )
+                    return {
+                        "_awaiting_user": True,
+                        "handoff_artifact": handoff_artifact,
+                        "pending_steps": [s.get("execution_type") for s in awaiting_steps],
+                        "partial_result": result,
+                    }
+
+                logger.info(
+                    "[EXECUTOR] Node %s completed (native). Result: %.120s",
+                    node.id,
+                    result,
+                )
+                return result
+
+            tool_name = response.tool_name
+            tool_args = response.tool_args
+            tool_use_id = response.tool_use_id or f"toolu_{uuid.uuid4().hex[:12]}"
+
+            if tool_name not in self.tools.tools:
+                logger.warning("[EXECUTOR] Node %s requested unknown tool '%s'", node.id, tool_name)
+                if reporter:
+                    step_id = reporter.on_tool_start(tool_name, tool_args)
+                    reporter.on_tool_done(
+                        step_id,
+                        tool_name,
+                        tool_args,
+                        f"ERROR: tool '{tool_name}' not found",
+                        error=True,
+                    )
+                history = self._append_to_history(
+                    history,
+                    {
+                        "name": tool_name,
+                        "args": tool_args,
+                        "result": (
+                            f"ERROR: tool '{tool_name}' is not available. "
+                            "Use only the tools listed in the system prompt."
+                        ),
+                        "tool_use_id": tool_use_id,
+                    },
+                )
+                tool_not_found_count += 1
+                if tool_not_found_count >= 2:
+                    logger.error(
+                        "[EXECUTOR] Node %s: %d consecutive tool-not-found errors — aborting",
+                        node.id,
+                        tool_not_found_count,
+                    )
+                    return None
+                continue
+
+            logger.info("[EXECUTOR] Node %s calling tool '%s' (native)", node.id, tool_name)
+            tool_not_found_count = 0
+            step_id = reporter.on_tool_start(tool_name, tool_args) if reporter else None
+
+            tool_result_str, _ = self._dispatch_tool(
+                node.id, tool_name, tool_args, reporter, step_id
+            )
+            history = self._append_to_history(
+                history,
+                {
+                    "name": tool_name,
+                    "args": tool_args,
+                    "result": tool_result_str,
+                    "tool_use_id": tool_use_id,
+                },
+            )
+
+        logger.error(
+            "[EXECUTOR] Node %s did not complete within %d turns (native)",
+            node.id,
+            self.max_turns,
+        )
+        return None
 
         for turn in range(self.max_turns):
             turns_remaining = self.max_turns - turn
@@ -1068,6 +1488,7 @@ class LLMExecutor:
         resolved_inputs: list,
         effective_description: str,
         effective_outputs: list,
+        effective_steps: list | None = None,
     ) -> str:
         def _fmt_output(o):
             if isinstance(o, dict):
@@ -1121,6 +1542,23 @@ class LLMExecutor:
                 self.max_inline_result_chars
             )
 
+        steps = (
+            effective_steps
+            if effective_steps is not None
+            else node.metadata.get("execution_steps", [])
+        )
+        if steps:
+            steps_lines = []
+            for i, s in enumerate(steps, 1):
+                steps_lines.append(
+                    f"  {i}. [{s.get('execution_type', '?')}] {s.get('description', '')}"
+                )
+                if s.get("produces"):
+                    steps_lines.append(f"     → {s['produces']}")
+            steps_text = "\n".join(steps_lines)
+        else:
+            steps_text = "  (not specified — use your best judgement)"
+
         return build_executor_native_prompt(
             node_id=node.id,
             description=effective_description,
@@ -1129,5 +1567,6 @@ class LLMExecutor:
             outputs_block=outputs_block,
             output_instruction=output_instruction,
             inputs_text=inputs_text,
+            steps_text=steps_text,
             turns_remaining=self.max_turns,
         )

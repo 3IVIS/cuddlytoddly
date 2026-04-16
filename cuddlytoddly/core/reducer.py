@@ -3,8 +3,10 @@ from copy import deepcopy
 from cuddlytoddly.core.events import (
     ADD_DEPENDENCY,
     ADD_NODE,
+    CONFIRM_USER_DONE,
     DETACH_NODE,
     MARK_AWAITING_INPUT,
+    MARK_AWAITING_USER,
     MARK_DONE,
     MARK_FAILED,
     MARK_RUNNING,
@@ -44,6 +46,8 @@ EXECUTION_EVENTS = {
     SET_RESULT,
     RESET_SUBTREE,
     MARK_AWAITING_INPUT,
+    MARK_AWAITING_USER,
+    CONFIRM_USER_DONE,
     RESUME_NODE,
 }
 
@@ -148,6 +152,24 @@ def apply_event(graph: TaskGraph, event: Event, event_log=None):
             node.metadata.pop("retry_count", None)
             node.metadata.pop("retry_after", None)
             node.metadata.pop("verification_failure", None)
+
+    elif t == MARK_AWAITING_USER:
+        # A node that has produced what it can but has steps requiring user
+        # action before downstream tasks can proceed.
+        node = graph.nodes.get(p["node_id"])
+        if node:
+            node.status = "awaiting_user"
+            node.metadata["handoff_artifact"] = p.get("handoff_artifact", "")
+            node.metadata["pending_steps"] = p.get("pending_steps", [])
+
+    elif t == CONFIRM_USER_DONE:
+        # User has confirmed the real-world steps are complete; transition to done
+        # so downstream nodes become ready.
+        node = graph.nodes.get(p["node_id"])
+        if node and node.status == "awaiting_user":
+            node.status = "done"
+            node.metadata.pop("handoff_artifact", None)
+            node.metadata.pop("pending_steps", None)
 
     # FIX #1: RESET_SUBTREE was imported, listed in EXECUTION_EVENTS, but had
     # no handler branch — any emitted event silently did nothing to the graph

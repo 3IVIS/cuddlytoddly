@@ -22,6 +22,7 @@ class LLMOutputValidator:
         "parallel_group",
         "required_input",
         "output",
+        "execution_steps",
         "description",
         "reflection_notes",
         "skill",

@@ -25,14 +25,18 @@
   --accent:     #4f6df5;
   --accent-glow:#4f6df522;
 
-  --s-pending:  #9aa0aa;
-  --s-ready:    #3b82f6;
-  --s-running:  #d89a3c;
-  --s-done:     #2f9e6f;
-  --s-failed:   #d35a5a;
-  --s-expanded: #8b5cf6;
-  --s-awaiting: #e879f9;
-
+  --s-pending:    #9aa0aa;
+  --s-ready:      #3b82f6;
+  --s-running:    #d89a3c;
+  --s-done:       #2f9e6f;
+  --s-failed:     #d35a5a;
+  --s-expanded:   #8b5cf6;
+  --s-awaiting:   #e879f9;
+  --border-subtle:#e2e4e8;
+  --bg-card:      #f8f9fb;
+  --bg-code:      #1e2533;
+  --amber:        #d89a3c;
+  --mono:         'SF Mono', 'Fira Code', monospace;
   --t-goal:     #7b61d9;
   --t-task:     #4db7e5;
   --t-reflect:  #5fbf8f;
@@ -224,6 +228,25 @@ body {
   transition: all 0.15s;
 }
 .zoom-btn:hover { background: var(--surface2); color: var(--text); }
+.zoom-btn-fit   { font-size: 11px; }
+
+/* Status dot colour helpers (replaces per-element inline styles) */
+.dot-pending  { background: var(--s-pending); }
+.dot-ready    { background: var(--s-ready); }
+.dot-running  { background: var(--s-running); }
+.dot-awaiting { background: var(--s-awaiting); }
+.dot-done     { background: var(--s-done); }
+.dot-failed   { background: var(--s-failed); }
+.dot-accent   { background: var(--accent); }
+.pill-init-hidden { display: none; }
+
+/* Misc helpers */
+#activity-text      { color: var(--text-muted); }
+.form-hint-inline   { display: inline; margin-left: 6px; }
+.form-textarea-code { font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; }
+.form-input-code    { background: var(--bg-code); font-family: 'SF Mono', 'Fira Code', monospace; }
+.form-label-amber   { color: var(--amber); }
+.form-label-required { color: var(--s-failed); }
 
 /* ── Info Panel ──────────────────────────────────────────────────────── */
 #info-panel {
@@ -377,7 +400,7 @@ body {
   border-bottom: 1px solid var(--border);
   font-size: 11px;
 }
-.step-item:last-child { border-bottom: none; }
+.step-item:last-child { border-bottom: none; padding-bottom: 8px; }
 .step-icon { flex-shrink: 0; padding-top: 1px; }
 .step-desc { color: var(--text-dim); line-height: 1.4; }
 .step-result { color: var(--text-muted); font-size: 10px; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
@@ -710,6 +733,7 @@ body {
 }
 .sw-textarea:focus { border-color: #6366f1; }
 .sw-hint { font-size: 11px; color: #64748b; margin-top: 5px; line-height: 1.5; }
+.sw-hint code { background: #263350; padding: 1px 4px; border-radius: 3px; }
 .sw-error { color: #ef4444; font-size: 12px; margin-top: 8px; min-height: 16px; }
 
 .sw-footer {
@@ -794,35 +818,35 @@ body {
   <button id="toolbar-goal" onclick="openSwitchModal()" title="Switch goal"></button>
   <div id="toolbar-counts">
     <div class="count-pill" id="pill-pending">
-      <div class="dot" style="background:var(--s-pending)"></div>
+      <div class="dot dot-pending"></div>
       <span id="cnt-pending">0</span> pending
     </div>
     <div class="count-pill" id="pill-ready">
-      <div class="dot" style="background:var(--s-ready)"></div>
+      <div class="dot dot-ready"></div>
       <span id="cnt-ready">0</span> ready
     </div>
     <div class="count-pill" id="pill-running">
-      <div class="dot" style="background:var(--s-running)"></div>
+      <div class="dot dot-running"></div>
       <span id="cnt-running">0</span> running
     </div>
-    <div class="count-pill" id="pill-awaiting" style="display:none">
-      <div class="dot" style="background:var(--s-awaiting)"></div>
+    <div class="count-pill pill-init-hidden" id="pill-awaiting">
+      <div class="dot dot-awaiting"></div>
       <span id="cnt-awaiting">0</span> awaiting
     </div>
     <div class="count-pill" id="pill-done">
-      <div class="dot" style="background:var(--s-done)"></div>
+      <div class="dot dot-done"></div>
       <span id="cnt-done">0</span> done
     </div>
     <div class="count-pill" id="pill-failed">
-      <div class="dot" style="background:var(--s-failed)"></div>
+      <div class="dot dot-failed"></div>
       <span id="cnt-failed">0</span> failed
     </div>
   </div>
   <div class="count-pill" id="pill-tokens">
-    <div class="dot" style="background:var(--accent)"></div>
+    <div class="dot dot-accent"></div>
     <span id="cnt-tokens">0</span> tokens
   </div>
-  <div id="toolbar-activity"><span id="activity-text" style="color:var(--text-muted)">idle</span></div>
+  <div id="toolbar-activity"><span id="activity-text">idle</span></div>
 
   <button class="toolbar-btn" id="btn-llm-toggle" onclick="toggleLLM()">⏸ Pause</button>
   <button class="toolbar-btn" onclick="addNodePrompt()">＋ Add Node</button>
@@ -848,7 +872,7 @@ body {
 
   <div id="zoom-controls">
     <button class="zoom-btn" onclick="zoomIn()" title="Zoom in">+</button>
-    <button class="zoom-btn" onclick="zoomReset()" title="Fit to screen" style="font-size:11px">⊡</button>
+    <button class="zoom-btn zoom-btn-fit" onclick="zoomReset()" title="Fit to screen">⊡</button>
     <button class="zoom-btn" onclick="zoomOut()" title="Zoom out">−</button>
   </div>
 </div>
@@ -890,11 +914,12 @@ const STATUS_COLOR = {
   failed:         'var(--s-failed)',
   to_be_expanded: 'var(--s-expanded)',
   awaiting_input: 'var(--s-awaiting)',
+  awaiting_user:  'var(--s-awaiting)',
 };
 const STATUS_COLOR_HEX = {
   pending: '#475569', ready: '#3b82f6', running: '#f59e0b',
   done: '#10b981', failed: '#ef4444', to_be_expanded: '#8b5cf6',
-  awaiting_input: '#e879f9',
+  awaiting_input: '#e879f9', awaiting_user: '#f97316',
 };
 const TYPE_ICON  = { goal: '◎', task: '▣', reflection: '◈', execution_step: '·', clarification: '?' };
 const TYPE_COLOR = { goal: '#a78bfa', task: '#7dd3fc', reflection: '#86efac', execution_step: '#475569', clarification: '#f9a825' };
@@ -910,6 +935,7 @@ let currentG = null;   // last dagre graph
 let ws, reconnectTimer;
 let modalSubmitFn = null;
 let modalMode = null;
+let _stepsDraft = [];  // mutable copy of execution_steps while the edit modal is open
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
 
@@ -1231,90 +1257,286 @@ function updatePanel() {
 
   let html = '';
 
-  if (desc) {
-    html += row('Description', `<span class="info-value prominent">${esc(desc)}</span>`);
-  }
+  // ── Helper: render a step list ────────────────────────────────────────────
+  const LLM_TYPES = new Set([
+    'search_web','fetch_url','write_file','write_plan','write_document',
+    'write_analysis','write_code','analyse_data','summarise','synthesise',
+    'run_code','append_file','read_file','list_dir',
+  ]);
+  const isBroadened    = !!(node.metadata?.broadened_description);
+  const hasBroadSteps  = !!(node.metadata?.broadened_steps?.length);
+  const broadDesc      = node.metadata?.broadened_description || '';
+  const broadReason    = node.metadata?.broadened_reason || '';
+  const broadMissing   = node.metadata?.broadened_for_missing || [];
+  const origSteps      = node.metadata?.execution_steps || [];
+  const broadSteps     = node.metadata?.broadened_steps || [];
+  const pendingUserSteps = new Set(node.metadata?.pending_steps || []);
+  const isAwaitingUser   = node.status === 'awaiting_user';
+  const broadenedIsActive = isBroadened;
 
-  // ── Broadened description indicator ──────────────────────────────────────
-  const broadDesc   = node.metadata?.broadened_description || '';
-  const broadReason = node.metadata?.broadened_reason || '';
-  const broadMissing = node.metadata?.broadened_for_missing || [];
-  if (broadDesc) {
-    const missingText = broadMissing.length
-      ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">` +
-        `Missing inputs: ${esc(broadMissing.join(', '))}</div>`
-      : '';
-    const reasonText = broadReason
-      ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic;margin-top:2px">` +
-        `${esc(broadReason)}</div>`
-      : '';
-    html += row('Running as', `
-      <div style="background:var(--bg-raised);border:1px solid var(--s-running)30;border-left:3px solid var(--s-running);border-radius:4px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--s-running);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">
-          ⟳ Broadened goal
+  // Broadened requires = original minus the missing fields; broadened outputs from metadata
+  const missingSet      = new Set(broadMissing);
+  const broadenedReqIn  = reqIn.filter(i => !missingSet.has(i.name));
+  const broadenedOutput = node.metadata?.broadened_output || [];
+
+  function renderStepList(steps, isActive) {
+    if (!steps.length) return '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No steps defined.</div>';
+    const legendItems = (isDone || isAwaitingUser) && isActive
+      ? `<span><span style="color:#10b981">✓</span> done</span>` +
+        (isAwaitingUser ? ` <span><span style="color:#f97316">⏳</span> awaiting you</span>` : '')
+      : `<span><span style="color:#2dd4bf">⚙</span> LLM</span>` +
+        `<span><span style="color:#f97316">👤</span> You</span>`;
+    const items = steps.map((s, i) => {
+      const etype     = s.execution_type || '?';
+      const isLLM     = LLM_TYPES.has(etype);
+      const isPending = pendingUserSteps.has(etype);
+      let stateIcon, stateColor, stateTip;
+      if (isActive && isAwaitingUser && isPending) {
+        stateIcon = '⏳'; stateColor = '#f97316'; stateTip = 'Waiting for you to complete this step';
+      } else if (isActive && (isDone || (isAwaitingUser && !isPending))) {
+        stateIcon = '✓'; stateColor = '#10b981'; stateTip = 'Completed';
+      } else {
+        stateIcon = isLLM ? '⚙' : '👤';
+        stateColor = isLLM ? '#2dd4bf' : '#f97316';
+        stateTip = isLLM ? 'LLM will handle this step' : 'You will need to do this step';
+      }
+      const rowOpacity = (isActive && isAwaitingUser && !isPending) ? 'opacity:0.55;' : '';
+      return `<div style="display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid var(--border-subtle);${rowOpacity}">
+        <div style="min-width:18px;color:var(--text-dim);font-size:10px;padding-top:2px">${i + 1}.</div>
+        <div style="flex:1">
+          <div style="display:flex;align-items:center;gap:5px;margin-bottom:2px">
+            <span title="${stateTip}" style="font-size:10px;font-weight:600;color:${stateColor};background:${stateColor}18;border:1px solid ${stateColor}40;border-radius:3px;padding:1px 5px;cursor:default">
+              ${stateIcon} ${esc(etype)}
+            </span>
+          </div>
+          <div style="font-size:11px;color:var(--text);margin-bottom:2px">${esc(s.description || '')}</div>
+          ${s.produces ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic">→ ${esc(s.produces)}</div>` : ''}
         </div>
-        <span class="info-value">${esc(broadDesc)}</span>
-        ${missingText}
-        ${reasonText}
-      </div>`);
+      </div>`;
+    }).join('');
+    return `<div style="display:flex;gap:8px;margin-bottom:6px;font-size:10px;color:var(--text-dim)">${legendItems}</div>${items}`;
   }
 
-  // ── Awaiting input indicator ──────────────────────────────────────────────
+  function renderInlineRequires(inputs) {
+    return inputs.map(i => `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
+      <span style="color:var(--text-dim)">${esc(i.name)}</span>
+      <span style="color:var(--s-pending);font-size:10px"> [${esc(i.type)}]</span>
+      — ${esc(i.description || '')}
+    </div>`).join('');
+  }
+
+  function renderInlineOutputs(outputs) {
+    return outputs.map(o => `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
+      <span style="color:var(--text-dim)">${esc(o.name)}</span>
+      <span style="color:var(--s-ready);font-size:10px"> [${esc(o.type)}]</span>
+      — ${esc(o.description || '')}
+    </div>`).join('');
+  }
+
+  // ── 1. TAB HEADER (broadened nodes only) ─────────────────────────────────
+  if (isBroadened) {
+    const tabId     = 'plan-tabs-' + selectedId.replace(/[^a-z0-9]/gi, '_');
+    const tooltipId = tabId + '-tip';
+    const missingLabels = broadMissing.map(k =>
+      k.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())
+    );
+    const tooltipReason = broadReason
+      ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.4">${esc(broadReason)}</div>` : '';
+    const tooltipMissing = missingLabels.length
+      ? `<div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px">Missing for original goal</div>` +
+        missingLabels.map(l =>
+          `<div style="display:flex;gap:5px;align-items:flex-start;font-size:11px;color:var(--text-muted);margin-bottom:2px">` +
+          `<span style="color:var(--s-running);margin-top:1px">•</span><span>${esc(l)}</span></div>`
+        ).join('') : '';
+
+    // Tab switch function name (safe for use in onclick)
+    const switchFn = `switchTab_${tabId.replace(/-/g, '_')}`;
+
+    // Define on window now — script tags injected via innerHTML are never executed by browsers.
+    const _activeCSS   = 'font-size:11px;padding:4px 10px;border:none;border-bottom:2px solid var(--text);background:transparent;color:var(--text);cursor:pointer;font-weight:600;margin-bottom:-1px';
+    const _inactiveCSS = 'font-size:11px;padding:4px 10px;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--text-muted);cursor:pointer;font-weight:400;margin-bottom:-1px';
+    window[switchFn] = (function(tid, activeCSS, inactiveCSS) {
+      return function(tab) {
+        const isOrig = tab === 'orig';
+        document.getElementById(tid + '-btn-orig').style.cssText  = isOrig ? activeCSS : inactiveCSS;
+        document.getElementById(tid + '-btn-broad').style.cssText = isOrig ? inactiveCSS : activeCSS;
+        ['desc','steps','req','out'].forEach(k => {
+          const eo = document.getElementById(tid + '-orig-' + k);
+          const eb = document.getElementById(tid + '-broad-' + k);
+          if (eo) eo.style.display = isOrig ? 'block' : 'none';
+          if (eb) eb.style.display = isOrig ? 'none' : 'block';
+        });
+      };
+    })(tabId, _activeCSS, _inactiveCSS);
+
+    html += `
+      <div style="display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border-subtle);padding-bottom:0">
+        <button id="${tabId}-btn-orig"
+          onclick="${switchFn}('orig')"
+          style="font-size:11px;padding:4px 10px;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--text-muted);cursor:pointer;font-weight:400;margin-bottom:-1px">
+          Original
+        </button>
+        <div style="position:relative;display:inline-block">
+          <button id="${tabId}-btn-broad"
+            onclick="${switchFn}('broad')"
+            onmouseenter="document.getElementById('${tooltipId}').style.display='block'"
+            onmouseleave="document.getElementById('${tooltipId}').style.display='none'"
+            style="font-size:11px;padding:4px 10px;border:none;border-bottom:2px solid var(--text);background:transparent;color:var(--text);cursor:pointer;font-weight:600;margin-bottom:-1px">
+            ⟳ Broadened
+          </button>
+          <div id="${tooltipId}" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px;min-width:220px;max-width:280px;box-shadow:0 4px 12px rgba(0,0,0,0.15);pointer-events:none">
+            <div style="font-size:10px;font-weight:600;color:var(--s-running);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">⟳ Why this goal was generalised</div>
+            ${tooltipReason}${tooltipMissing}
+          </div>
+        </div>
+      </div>`;
+
+    // ── 2. DESCRIPTION (tab-aware) ──────────────────────────────────────────
+    html += row('Description', `
+      <div id="${tabId}-orig-desc" style="display:none">
+        <span class="info-value prominent">${esc(desc)}</span>
+      </div>
+      <div id="${tabId}-broad-desc" style="display:block">
+        <span class="info-value prominent">${esc(broadDesc)}</span>
+      </div>`);
+
+    // ── 3. STATUS — rendered once, same for both tabs (below) ───────────────
+
+    // ── 4. PLAN / STEPS (tab-aware) ─────────────────────────────────────────
+    html += row('Plan', `
+      <div id="${tabId}-orig-steps" style="display:none">
+        ${origSteps.length ? renderStepList(origSteps, false) : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No steps defined.</div>'}
+      </div>
+      <div id="${tabId}-broad-steps" style="display:block">
+        ${hasBroadSteps ? renderStepList(broadSteps, true) : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No broadened steps available.</div>'}
+      </div>`);
+
+    // ── 6. REQUIRES (tab-aware) ─────────────────────────────────────────────
+    if (reqIn.length || broadenedReqIn.length) {
+      html += row('Requires', `
+        <div id="${tabId}-orig-req" style="display:none">${renderInlineRequires(reqIn)}</div>
+        <div id="${tabId}-broad-req" style="display:block">${
+          broadenedReqIn.length ? renderInlineRequires(broadenedReqIn)
+          : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No inputs required for broadened goal.</div>'
+        }</div>`);
+    }
+
+    // ── 7. OUTPUTS (tab-aware) ──────────────────────────────────────────────
+    const effectiveBroadOutput = broadenedOutput.length ? broadenedOutput : output;
+    if (output.length || effectiveBroadOutput.length) {
+      html += row('Outputs', `
+        <div id="${tabId}-orig-out" style="display:none">${renderInlineOutputs(output)}</div>
+        <div id="${tabId}-broad-out" style="display:block">${renderInlineOutputs(effectiveBroadOutput)}</div>`);
+    }
+
+  } else {
+    // ── Non-broadened: fixed order ──────────────────────────────────────────
+    // 2. DESCRIPTION
+    if (desc) html += row('Description', `<span class="info-value prominent">${esc(desc)}</span>`);
+
+    // 3. STATUS — rendered once, same block used for both paths (below)
+
+    // 4. PLAN / STEPS
+    if (origSteps.length) {
+      html += row('Plan', `<div style="margin-top:2px">${renderStepList(origSteps, true)}</div>`);
+    }
+
+    // 6. REQUIRES
+    if (reqIn.length) {
+      html += row('Requires', renderInlineRequires(reqIn));
+    }
+
+    // 7. OUTPUTS
+    if (output.length) {
+      html += row('Outputs', renderInlineOutputs(output));
+    }
+  }
+
+  // ── 3. STATUS — rendered once outside both branches (same for all tabs) ──
+  // Insert after Description but before Plan by inserting before the Plan row.
+  // We use a sentinel approach: build the status HTML and splice it in.
+  // Actually, since html is a string we build linearly, we render Status here
+  // and rely on the fact that for broadened nodes the Plan/Req/Out rows were
+  // appended AFTER Description inside the isBroadened block above, so Status
+  // will appear after Description but the visual order in the DOM will be:
+  //   tab-header → description → [status injected here] → plan → deps → req → out
+  // To achieve strict ordering we build status separately and insert after desc.
+  {
+    const sColor = STATUS_COLOR_HEX[node.status] || '#475569';
+    const tColor = TYPE_COLOR[node.node_type] || '#94a3b8';
+    const statusBadge =
+      '<span class="badge" style="color:' + sColor + ';border-color:' + sColor + '30">' +
+        '<span style="width:6px;height:6px;border-radius:50%;background:' + sColor + ';display:inline-block"></span> ' +
+        esc(node.status) +
+      '</span>' +
+      '&nbsp;' +
+      '<span class="badge" style="color:' + tColor + '">' +
+        (TYPE_ICON[node.node_type] || '') + ' ' + esc(node.node_type) +
+      '</span>';
+
+    // For broadened nodes Description was already appended; insert Status+Deps
+    // before Plan. Find the Plan row's position in html and splice.
+    const planMarker = '<div class="info-label">Plan</div>';
+    const statusRow = row('Status &amp; Type', statusBadge);
+    const depsRow = deps.length
+      ? row('Dependencies', deps.map(d =>
+          '<span class="dep-tag" onclick="selectNode(\'' + esc(d) + '\')">' + esc(d) + '</span>'
+        ).join(''))
+      : '';
+
+    const planIdx = html.indexOf(planMarker);
+    if (planIdx !== -1) {
+      // Find the start of the wrapping <div class="info-row"> that contains the Plan label.
+      // lastIndexOf handles the newline+indent between the wrapper and the label safely.
+      const rowStart = html.lastIndexOf('<div class="info-row">', planIdx);
+      if (rowStart !== -1) {
+        html = html.slice(0, rowStart) + statusRow + depsRow + html.slice(rowStart);
+      } else {
+        html = html.slice(0, planIdx) + statusRow + depsRow + html.slice(planIdx);
+      }
+    } else {
+      // Non-broadened path: append Status after Description, then Deps after Plan
+      // Description was last appended; just add Status now, then Deps after Plan
+      // Find where to insert Deps (after Plan row)
+      const planEndMarker = '</div>\n  ';
+      html += statusRow;
+      if (deps.length) html += depsRow;
+    }
+  }
+
+  // ── AWAITING INPUT indicator ──────────────────────────────────────────────
   if (node.status === 'awaiting_input') {
     const awaitReason  = node.metadata?.awaiting_input_reason || '';
     const awaitMissing = node.metadata?.missing_fields || [];
     const missingList  = awaitMissing.length
-      ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">` +
-        `Waiting for: ${esc(awaitMissing.join(', '))}</div>`
-      : '';
+      ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">Waiting for: ${esc(awaitMissing.join(', '))}</div>` : '';
     const reasonLine = awaitReason
-      ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic;margin-top:2px">${esc(awaitReason)}</div>`
-      : '';
+      ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic;margin-top:2px">${esc(awaitReason)}</div>` : '';
     html += row('Awaiting input', `
       <div style="border:1px solid var(--s-awaiting)40;border-left:3px solid var(--s-awaiting);border-radius:4px;padding:8px 10px">
-        <div style="font-size:10px;color:var(--s-awaiting);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">
-          ⏳ Waiting for user input
-        </div>
-        ${missingList}
-        ${reasonLine}
+        <div style="font-size:10px;color:var(--s-awaiting);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">⏳ Waiting for user input</div>
+        ${missingList}${reasonLine}
       </div>`);
   }
 
-  html += row('Status &amp; Type', `
-    <span class="badge" style="color:${STATUS_COLOR_HEX[node.status]};border-color:${STATUS_COLOR_HEX[node.status]}30">
-      <span style="width:6px;height:6px;border-radius:50%;background:${STATUS_COLOR_HEX[node.status]};display:inline-block"></span>
-      ${esc(node.status)}
-    </span>
-    &nbsp;
-    <span class="badge" style="color:${TYPE_COLOR[node.node_type] || '#94a3b8'}">
-      ${TYPE_ICON[node.node_type]} ${esc(node.node_type)}
-    </span>
-  `);
-
-  if (deps.length) {
-    html += row('Dependencies', deps.map(d =>
-      `<span class="dep-tag" onclick="selectNode('${esc(d)}')">${esc(d)}</span>`
-    ).join(''));
-  }
-
-  if (reqIn.length) {
-    html += row('Requires', reqIn.map(i =>
-      `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
-        <span style="color:var(--text-dim)">${esc(i.name)}</span>
-        <span style="color:var(--s-pending);font-size:10px"> [${esc(i.type)}]</span>
-        — ${esc(i.description || '')}
-      </div>`
-    ).join(''));
-  }
-
-  if (output.length) {
-    html += row('Outputs', output.map(o =>
-      `<div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">
-        <span style="color:var(--text-dim)">${esc(o.name)}</span>
-        <span style="color:var(--s-ready);font-size:10px"> [${esc(o.type)}]</span>
-        — ${esc(o.description || '')}
-      </div>`
-    ).join(''));
+  // ── AWAITING USER indicator ───────────────────────────────────────────────
+  if (node.status === 'awaiting_user') {
+    const artifact     = node.metadata?.handoff_artifact || '';
+    const pendingSteps = node.metadata?.pending_steps || [];
+    const stepsHtml    = pendingSteps.length
+      ? `<div style="font-size:10px;color:#f97316;margin-top:4px">Pending steps: ${esc(pendingSteps.join(', '))}</div>` : '';
+    const artifactHtml = artifact
+      ? `<pre style="font-size:10px;color:var(--text-muted);white-space:pre-wrap;margin-top:6px;max-height:160px;overflow-y:auto;background:var(--bg-card);padding:6px;border-radius:4px">${esc(artifact)}</pre>` : '';
+    html += row('Action required', `
+      <div style="border:1px solid #f9741640;border-left:3px solid #f97316;border-radius:4px;padding:8px 10px">
+        <div style="font-size:10px;color:#f97316;font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">🙋 Waiting for you to act</div>
+        ${stepsHtml}${artifactHtml}
+        <button
+          onclick="api('POST', '/api/node/' + encodeURIComponent(selectedId) + '/confirm').then(() => {})"
+          style="margin-top:8px;padding:4px 12px;font-size:11px;background:#f97316;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">
+          ✓ Mark as done
+        </button>
+      </div>`);
   }
 
   if (result != null) {
@@ -1383,6 +1605,85 @@ function closePanel() {
 
 // ── Modals ────────────────────────────────────────────────────────────────────
 
+// ── Steps editor ─────────────────────────────────────────────────────────────
+// Manages the _stepsDraft array that backs the execution_steps editor inside
+// the edit modal.  Re-renders the step list on structural mutations (add /
+// remove / reorder); individual field edits update _stepsDraft in-place via
+// oninput without triggering a full re-render so the cursor is never lost.
+
+function _stepsRender() {
+  const container = document.getElementById('f-steps-container');
+  if (!container) return;
+  if (!_stepsDraft.length) {
+    container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);font-style:italic;padding:4px 0 8px">No steps defined.</div>';
+    return;
+  }
+  const btnBase = 'background:none;border:1px solid var(--border2);border-radius:4px;color:var(--text-dim);cursor:pointer;font-size:11px;padding:2px 6px;line-height:1.4;transition:all 0.12s';
+  container.innerHTML = _stepsDraft.map((s, i) => `
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted)">Step ${i + 1}</span>
+        <div style="display:flex;gap:4px">
+          <button type="button" style="${btnBase}" title="Move up"
+                  onclick="_stepsMoveUp(${i})" ${i === 0 ? 'disabled style="' + btnBase + ';opacity:0.35;cursor:not-allowed"' : ''}>↑</button>
+          <button type="button" style="${btnBase}" title="Move down"
+                  onclick="_stepsMoveDown(${i})" ${i === _stepsDraft.length - 1 ? 'disabled style="' + btnBase + ';opacity:0.35;cursor:not-allowed"' : ''}>↓</button>
+          <button type="button" style="${btnBase};color:#fca5a5;border-color:#7f1d1d" title="Remove step"
+                  onclick="_stepsRemoveRow(${i})">×</button>
+        </div>
+      </div>
+      <div style="margin-bottom:6px">
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);display:block;margin-bottom:3px">Type</label>
+        <input class="form-input" style="font-size:11px;font-family:'SF Mono','Fira Code',monospace"
+               value="${esc(s.execution_type || '')}"
+               placeholder="e.g. search_web, write_analysis, post_to_reddit"
+               oninput="_stepsDraft[${i}].execution_type=this.value">
+      </div>
+      <div style="margin-bottom:6px">
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);display:block;margin-bottom:3px">Description</label>
+        <input class="form-input" style="font-size:12px"
+               value="${esc(s.description || '')}"
+               placeholder="What this step does"
+               oninput="_stepsDraft[${i}].description=this.value">
+      </div>
+      <div>
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);display:block;margin-bottom:3px">Produces</label>
+        <input class="form-input" style="font-size:12px"
+               value="${esc(s.produces || '')}"
+               placeholder="What this step contributes toward the output"
+               oninput="_stepsDraft[${i}].produces=this.value">
+      </div>
+    </div>
+  `).join('');
+}
+
+function _stepsAddRow() {
+  _stepsDraft.push({ execution_type: '', description: '', produces: '' });
+  _stepsRender();
+  // Focus the type field of the new step
+  const inputs = document.querySelectorAll('#f-steps-container input');
+  if (inputs.length) inputs[inputs.length - 3]?.focus();
+}
+
+function _stepsMoveUp(i) {
+  if (i <= 0) return;
+  // Flush any pending oninput before swapping (defensive — JS is single-threaded
+  // but keeps the draft consistent with what is displayed after re-render)
+  [_stepsDraft[i - 1], _stepsDraft[i]] = [_stepsDraft[i], _stepsDraft[i - 1]];
+  _stepsRender();
+}
+
+function _stepsMoveDown(i) {
+  if (i >= _stepsDraft.length - 1) return;
+  [_stepsDraft[i], _stepsDraft[i + 1]] = [_stepsDraft[i + 1], _stepsDraft[i]];
+  _stepsRender();
+}
+
+function _stepsRemoveRow(i) {
+  _stepsDraft.splice(i, 1);
+  _stepsRender();
+}
+
 function openEditModal() {
   const node = nodes[selectedId];
   if (!node) return;
@@ -1395,6 +1696,9 @@ function openEditModal() {
   const curDependents = Object.entries(nodes)
     .filter(([, n]) => (n.dependencies || []).includes(selectedId))
     .map(([id]) => id);
+
+  // Initialise the steps draft from the node's current execution_steps
+  _stepsDraft = (node.metadata?.execution_steps || []).map(s => ({ ...s }));
 
   document.getElementById('modal-body').innerHTML = `
     <div class="form-group">
@@ -1411,24 +1715,36 @@ function openEditModal() {
     </div>
     <div class="form-group">
       <label class="form-label">Dependencies
-        <span class="form-hint" style="display:inline;margin-left:6px">nodes this node waits for</span>
+        <span class="form-hint form-hint-inline">nodes this node waits for</span>
       </label>
       ${tagPickerHTML('edit-deps', curDeps, allIds)}
     </div>
     <div class="form-group">
       <label class="form-label">Dependents
-        <span class="form-hint" style="display:inline;margin-left:6px">nodes that wait for this one</span>
+        <span class="form-hint form-hint-inline">nodes that wait for this one</span>
       </label>
       ${tagPickerHTML('edit-dependents', curDependents, allIds)}
     </div>
     <div class="form-group">
-      <label class="form-label">Result
-        <span class="form-hint" style="display:inline;margin-left:6px">editing this will rerun dependent nodes</span>
+      <label class="form-label">Steps
+        <span class="form-hint form-hint-inline">execution steps the task works through — changes trigger a node reset</span>
       </label>
-      <textarea class="form-textarea" id="f-result" rows="5" style="font-size:11px;font-family:monospace">${esc(node.result != null ? String(node.result) : '')}</textarea>
+      <div id="f-steps-container"></div>
+      <button type="button"
+              onclick="_stepsAddRow()"
+              style="width:100%;padding:7px 10px;background:var(--surface2);border:1px dashed var(--border2);border-radius:5px;color:var(--text-dim);font-size:12px;cursor:pointer;transition:background 0.15s;text-align:center"
+              onmouseover="this.style.background='var(--surface3)'"
+              onmouseout="this.style.background='var(--surface2)'">＋ Add step</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Result
+        <span class="form-hint form-hint-inline">editing this will rerun dependent nodes</span>
+      </label>
+      <textarea class="form-textarea form-textarea-code" id="f-result" rows="5">${esc(node.result != null ? String(node.result) : '')}</textarea>
     </div>
   `;
   initTagPickers();
+  _stepsRender();
 
   document.getElementById('modal-footer').innerHTML = `
     <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -1445,8 +1761,18 @@ function submitEdit() {
   const dependents = getTagPickerValues('edit-dependents');
   const result     = document.getElementById('f-result').value;
 
+  // Collect the current steps draft — filter out completely blank rows
+  const steps = _stepsDraft
+    .map(s => ({
+      execution_type: (s.execution_type || '').trim(),
+      description:    (s.description    || '').trim(),
+      produces:       (s.produces       || '').trim(),
+    }))
+    .filter(s => s.execution_type || s.description);
+
   api('PUT', `/api/node/${encodeURIComponent(selectedId)}`, {
     description: desc, status, dependencies: deps, dependents, result,
+    execution_steps: steps,
   });
   closeModal();
 }
@@ -1481,15 +1807,14 @@ function _renderClarificationFields() {
     const isUnknown = !f.value || f.value === 'unknown';
     return `
       <div class="form-group" style="border-bottom:1px solid var(--border-subtle);padding-bottom:12px;margin-bottom:12px">
-        <label class="form-label" style="color:var(--amber)">${esc(f.label || f.key)}</label>
+        <label class="form-label form-label-amber">${esc(f.label || f.key)}</label>
         ${f.rationale ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;font-style:italic">${esc(f.rationale)}</div>` : ''}
         <input
-          class="form-input"
+          class="form-input form-input-code"
           id="clarif-field-${i}"
           type="text"
           value="${esc(isUnknown ? '' : f.value)}"
           placeholder="unknown"
-          style="width:100%;background:var(--bg-code);border:1px solid var(--border);border-radius:4px;padding:6px 8px;color:var(--text);font-size:13px;font-family:var(--mono)"
           oninput="_clarificationDraft[${i}].value = this.value || 'unknown'"
         >
       </div>`;
@@ -1584,7 +1909,7 @@ function addNodePrompt() {
 
   document.getElementById('modal-body').innerHTML = `
     <div class="form-group">
-      <label class="form-label">Node ID <span style="color:var(--s-failed)">*</span></label>
+      <label class="form-label">Node ID <span class="form-label-required">*</span></label>
       <input class="form-input" id="f-node-id" placeholder="e.g. Research_Market" autocomplete="off">
     </div>
     <div class="form-group">
@@ -1600,13 +1925,13 @@ function addNodePrompt() {
     </div>
     <div class="form-group">
       <label class="form-label">Dependencies
-        <span class="form-hint" style="display:inline;margin-left:6px">nodes this node waits for</span>
+        <span class="form-hint form-hint-inline">nodes this node waits for</span>
       </label>
       ${tagPickerHTML('add-deps', preselectedDep, allIds)}
     </div>
     <div class="form-group">
       <label class="form-label">Dependents
-        <span class="form-hint" style="display:inline;margin-left:6px">nodes that will wait for this one</span>
+        <span class="form-hint form-hint-inline">nodes that will wait for this one</span>
       </label>
       ${tagPickerHTML('add-dependents', [], allIds)}
     </div>
@@ -2132,7 +2457,7 @@ connect();
         <label class="sw-label">Your plan</label>
         <textarea class="sw-textarea" id="sw-plan-input"
           placeholder="First line = goal description&#10;- Task: description [depends: Other_Task]&#10;- Another_Task: does something else"></textarea>
-        <div class="sw-hint">First non-bullet line is the goal. Lines starting with <code style="background:#263350;padding:1px 4px;border-radius:3px">-</code> are tasks.</div>
+        <div class="sw-hint">First non-bullet line is the goal. Lines starting with <code>-</code> are tasks.</div>
         <div class="sw-error" id="swerr-plan"></div>
       </div>
 

@@ -262,15 +262,18 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
         node = snap.get(node_id)
         if not node:
             raise HTTPException(404, "node not found")
+        _meta_update = {
+            "description": body.get("description", node.metadata.get("description", ""))
+        }
+        if "execution_steps" in body:
+            _meta_update["execution_steps"] = body["execution_steps"]
         orchestrator.event_queue.put(
             Event(
                 UPDATE_METADATA,
                 {
                     "node_id": node_id,
                     "origin": "user",
-                    "metadata": {
-                        "description": body.get("description", node.metadata.get("description", ""))
-                    },
+                    "metadata": _meta_update,
                 },
             )
         )
@@ -342,6 +345,9 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
         deps_changed = "dependencies" in body and set(body["dependencies"]) != set(
             node.dependencies
         )
+        steps_changed = "execution_steps" in body and body["execution_steps"] != node.metadata.get(
+            "execution_steps", []
+        )
 
         if result_changed:
             orchestrator.event_queue.put(
@@ -357,7 +363,7 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
                 child = snap.get(child_id)
                 if child and child.status == "done":
                     orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
-        elif desc_changed or deps_changed:
+        elif desc_changed or deps_changed or steps_changed:
             orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": node_id}))
 
         return {"ok": True}
@@ -483,7 +489,24 @@ def create_app(orchestrator, run_dir: Path) -> FastAPI:
             )
         return {"ok": True}
 
-    # ── Goal mutations ────────────────────────────────────────────────────────
+    @app.post("/api/node/{node_id:path}/confirm")
+    async def confirm_node(node_id: str):
+        """
+        Confirm that the user has completed the real-world steps for an
+        awaiting_user node, transitioning it to done and unblocking downstream
+        dependents.
+        """
+        confirmed = orchestrator.confirm_node(node_id)
+        if not confirmed:
+            snap = orchestrator.get_snapshot()
+            node = snap.get(node_id)
+            if not node:
+                raise HTTPException(404, f"node '{node_id}' not found")
+            raise HTTPException(
+                400,
+                f"node '{node_id}' is not awaiting_user (status={node.status})",
+            )
+        return {"ok": True}
 
     @app.post("/api/goal/{goal_id:path}/replan")
     async def replan_goal(goal_id: str):
@@ -1000,15 +1023,18 @@ def _create_unified_app(
         node = snap.get(node_id)
         if not node:
             raise HTTPException(404, "node not found")
+        _meta_update = {
+            "description": body.get("description", node.metadata.get("description", ""))
+        }
+        if "execution_steps" in body:
+            _meta_update["execution_steps"] = body["execution_steps"]
         orch.event_queue.put(
             Event(
                 UPDATE_METADATA,
                 {
                     "node_id": node_id,
                     "origin": "user",
-                    "metadata": {
-                        "description": body.get("description", node.metadata.get("description", ""))
-                    },
+                    "metadata": _meta_update,
                 },
             )
         )
@@ -1060,6 +1086,25 @@ def _create_unified_app(
     @app.post("/api/node/{node_id:path}/retry")
     async def retry_node(node_id: str):
         _orch().retry_node(node_id)
+        return {"ok": True}
+
+    @app.post("/api/node/{node_id:path}/confirm")
+    async def confirm_node(node_id: str):
+        """
+        Confirm that the user has completed the real-world steps for an
+        awaiting_user node, transitioning it to done and unblocking downstream
+        dependents.
+        """
+        confirmed = _orch().confirm_node(node_id)
+        if not confirmed:
+            snap = _orch().get_snapshot()
+            node = snap.get(node_id)
+            if not node:
+                raise HTTPException(404, f"node '{node_id}' not found")
+            raise HTTPException(
+                400,
+                f"node '{node_id}' is not awaiting_user (status={node.status})",
+            )
         return {"ok": True}
 
     @app.post("/api/node/{node_id:path}/clarification/confirm")
