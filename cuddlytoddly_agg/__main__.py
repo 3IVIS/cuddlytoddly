@@ -2,19 +2,42 @@
 
 import argparse
 import json
+import secrets
 import sys
 import threading
+import time
 from pathlib import Path
 
+import cuddlytoddly.skills.file_ops.tools as file_ops_tools
+from cuddlytoddly.core.events import ADD_NODE, Event
+from cuddlytoddly.core.id_generator import StableIDGenerator
+from cuddlytoddly.core.reducer import apply_event
+from cuddlytoddly.core.task_graph import TaskGraph
+from cuddlytoddly.engine.llm_orchestrator import Orchestrator
+from cuddlytoddly.engine.quality_gate import QualityGate
+from cuddlytoddly.infra.event_log import EventLog
+from cuddlytoddly.infra.event_queue import EventQueue
+from cuddlytoddly.infra.logging import get_logger, setup_logging
+from cuddlytoddly.infra.replay import rebuild_graph_from_log
+from cuddlytoddly.planning.llm_interface import (
+    _DEFAULT_CLAUDE_MODEL,
+    _DEFAULT_OPENAI_MODEL,
+    TokenCounter,
+    create_llm_client,
+    token_counter,
+)
+from cuddlytoddly.skills.skill_loader import SkillLoader
+
 import cuddlytoddly.ui.git_projection as git_proj
-import toddly.skills.file_ops.tools as file_ops_tools
 from cuddlytoddly.config import (
     DATA_DIR,
     get_executor_cfg,
+    get_file_llm_cfg,
     get_orchestrator_cfg,
     get_planner_cfg,
     load_config,
     preflight_check,
+    resolve_model_path,
 )
 from cuddlytoddly.planning.llm_executor import LLMExecutor
 from cuddlytoddly.planning.llm_planner import LLMPlanner
@@ -22,23 +45,6 @@ from cuddlytoddly.ui.curses_ui import run_ui
 from cuddlytoddly.ui.startup import StartupChoice, run_startup_curses
 from cuddlytoddly.ui.ui_config import make_cuddlytoddly_config
 from cuddlytoddly.ui.web_server import run_web_ui
-from toddly.core.events import ADD_NODE, Event
-from toddly.core.id_generator import StableIDGenerator
-from toddly.core.reducer import apply_event
-from toddly.core.task_graph import TaskGraph
-from toddly.engine.orchestrator import Orchestrator
-from toddly.engine.quality_gate import QualityGate
-from toddly.infra.event_log import EventLog
-from toddly.infra.event_queue import EventQueue
-from toddly.infra.logging import get_logger, setup_logging
-from toddly.infra.replay import rebuild_graph_from_log
-from toddly.planning.llm_interface import (
-    TokenCounter,
-    token_counter,
-)
-from toddly.skills.skill_loader import SkillLoader
-from toddly.utils.build_llm_client import build_llm_client as _build_llm_client_impl
-from toddly.utils.make_run_dir import make_run_dir as _make_run_dir_impl
 
 REPO_ROOT = Path(__file__).resolve().parent  # package code location
 
@@ -98,7 +104,7 @@ class _DeferredLLM:
             real.resume()
 
     def ask(self, prompt: str, schema=None) -> str:
-        from toddly.planning.llm_interface import LLMStoppedError
+        from cuddlytoddly.planning.llm_interface import LLMStoppedError
 
         with self._lock:
             real = self._real
@@ -112,7 +118,7 @@ class _DeferredLLM:
         # semantics (ask() always accepts a schema kwarg; generate() is a
         # simpler text-completion call without structured output).  Before
         # attachment we raise LLMStoppedError consistent with ask().
-        from toddly.planning.llm_interface import LLMStoppedError
+        from cuddlytoddly.planning.llm_interface import LLMStoppedError
 
         with self._lock:
             real = self._real
@@ -131,8 +137,32 @@ class _DeferredLLM:
 
 
 def make_run_dir(goal_text: str) -> Path:
-    """Create a timestamped run directory under DATA_DIR/runs/."""
-    return _make_run_dir_impl(goal_text, base_dir=DATA_DIR)
+    # FIX #2: the original suffix used only the last 8 digits of the Unix
+    # timestamp, which is not unique within the same second.  Two runs for the
+    # same goal started within the same second would share an identical
+    # directory name; mkdir(exist_ok=True) would silently succeed, causing both
+    # runs to write to the same events.jsonl and corrupt each other's replay.
+    #
+    # The fix appends a cryptographically random 8-character hex suffix in
+    # addition to the full timestamp, making directory collisions effectively
+    # impossible without sacrificing the human-readable goal slug.
+    #
+    # FIX: mkdir now uses exist_ok=False so that any (vanishingly unlikely)
+    # collision raises immediately rather than silently sharing the directory.
+    #
+    # Fix #7 (new): if after filtering all characters the slug is empty (e.g.
+    # goal text was pure unicode/emoji), fall back to "goal" so the directory
+    # name is never just "_{ts}_{rand}" which is confusing to humans.
+    safe = goal_text.lower().replace(" ", "_")
+    safe = "".join(c for c in safe if c.isalnum() or c == "_")[:60]
+    if not safe:
+        safe = "goal"
+    ts = str(int(time.time()))
+    rand = secrets.token_hex(4)  # 8 random hex chars
+    run_dir = DATA_DIR / "runs" / f"{safe}_{ts}_{rand}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    (run_dir / "outputs").mkdir(exist_ok=True)
+    return run_dir
 
 
 def _print_preflight_issues(issues: list[dict]) -> None:
@@ -565,7 +595,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
                 # imported inside a try/except because it didn't exist there,
                 # so failures were always silently swallowed).  Import at the
                 # top of the except block — no defensive try needed.
-                from toddly.infra.event_queue import StatusEvent
+                from cuddlytoddly.infra.event_queue import StatusEvent
 
                 orchestrator.event_queue.put(
                     StatusEvent(
@@ -595,14 +625,82 @@ def _build_llm_client(
     id_gen: "StableIDGenerator | None" = None,
     run_token_counter: "TokenCounter | None" = None,
 ):
-    """Delegate to cuddly.utils.build_llm_client, supplying DATA_DIR."""
-    return _build_llm_client_impl(
-        cfg,
-        run_dir=run_dir,
-        data_dir=DATA_DIR,
-        id_gen=id_gen,
-        run_token_counter=run_token_counter,
-    )
+    """
+    Construct and return the correct BaseLLM from the loaded config.
+    Extracted so it can be unit-tested independently of the full startup.
+
+    ``id_gen`` is forwarded to the file backend so each run owns its own
+    StableIDGenerator instead of overwriting the module-level global.
+    """
+    backend = cfg["llm"]["backend"]  # already validated by load_config()
+    llm_cfg = cfg.get(backend, {})
+
+    _logger = get_logger(__name__)
+    _logger.info("[LLM] Backend: %s", backend)
+
+    if backend == "llamacpp":
+        model_path = resolve_model_path(cfg)
+        cache_path = (
+            str(run_dir / "llamacpp_cache.json") if llm_cfg.get("cache_enabled", True) else None
+        )
+        return create_llm_client(
+            "llamacpp",
+            model_path=model_path,
+            n_gpu_layers=llm_cfg.get("n_gpu_layers", -1),
+            n_ctx=llm_cfg.get("n_ctx", 16384),
+            max_tokens=llm_cfg.get("max_tokens", 8192),
+            temperature=llm_cfg.get("temperature", 0.1),
+            cache_path=cache_path,
+            token_counter_instance=run_token_counter,
+        )
+
+    if backend == "claude":
+        cache_path = str(run_dir / "api_cache.json") if llm_cfg.get("cache_enabled", True) else None
+        return create_llm_client(
+            "claude",
+            # FIX #14: use named constant instead of bare string literal
+            model=llm_cfg.get("model", _DEFAULT_CLAUDE_MODEL),
+            temperature=llm_cfg.get("temperature", 0.1),
+            max_tokens=llm_cfg.get("max_tokens", 8192),
+            cache_path=cache_path,
+            token_counter_instance=run_token_counter,
+        )
+
+    if backend == "openai":
+        cache_path = str(run_dir / "api_cache.json") if llm_cfg.get("cache_enabled", True) else None
+        kwargs: dict = dict(
+            # FIX #14: use named constant instead of bare string literal
+            model=llm_cfg.get("model", _DEFAULT_OPENAI_MODEL),
+            temperature=llm_cfg.get("temperature", 0.1),
+            max_tokens=llm_cfg.get("max_tokens", 8192),
+            cache_path=cache_path,
+        )
+        if "base_url" in llm_cfg:
+            kwargs["base_url"] = llm_cfg["base_url"]
+        if "api_key" in llm_cfg:
+            kwargs["api_key"] = llm_cfg["api_key"]
+        kwargs["token_counter_instance"] = run_token_counter
+        return create_llm_client("openai", **kwargs)
+
+    if backend == "file":
+        file_cfg = get_file_llm_cfg(cfg)
+        cache_path = (
+            str(run_dir / "file_llm_cache.json") if file_cfg.get("cache_enabled", True) else None
+        )
+        # FIX #5: pass the per-run id_gen so the file backend never touches the
+        # module-level singleton.
+        return create_llm_client(
+            "file",
+            poll_interval=file_cfg["poll_interval"],
+            timeout=file_cfg["timeout"],
+            progress_log_interval=file_cfg["progress_log_interval"],
+            cache_path=cache_path,
+            id_gen=id_gen,
+            token_counter_instance=run_token_counter,
+        )
+
+    # Should never reach here — _validate() in load_config() guards this.
+    raise ValueError(f"Unknown backend: {backend!r}")
 
 
 if __name__ == "__main__":

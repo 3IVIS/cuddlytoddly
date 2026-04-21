@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cuddlytoddly — startup</title>
+<!-- Preload DAG libraries so they are already cached when the browser
+     navigates to /dag after init completes. -->
+<link rel="preload" as="script" crossorigin
+      href="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js">
+<link rel="preload" as="script" crossorigin
+      href="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:       #0b1120;
+  --surface:  #111827;
+  --surface2: #1e2a3d;
+  --surface3: #263350;
+  --border:   #1f2d42;
+  --border2:  #2e3f58;
+  --text:     #e2e8f0;
+  --muted:    #64748b;
+  --dim:      #94a3b8;
+  --accent:   #6366f1;
+  --done:     #10b981;
+  --warn:     #f59e0b;
+  --fail:     #ef4444;
+  --radius:   10px;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Shell ─────────────────────────────────────────── */
+.shell {
+  width: 640px;
+  max-width: calc(100vw - 32px);
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+  overflow: hidden;
+}
+.shell-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+.brand {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.4px;
+}
+.tagline {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+/* ── Preflight banner ──────────────────────────────── */
+.preflight-banner {
+  display: none;
+  padding: 12px 20px;
+  background: color-mix(in srgb, var(--fail) 8%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--fail) 30%, var(--border));
+}
+.preflight-banner.has-issues { display: block; }
+.preflight-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fail);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.preflight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.preflight-issue {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.preflight-msg {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+.preflight-icon { flex-shrink: 0; }
+.preflight-icon.error { color: var(--fail); }
+.preflight-icon.warning { color: var(--warn); }
+.preflight-text.error { color: #fca5a5; }
+.preflight-text.warning { color: #fde68a; }
+.preflight-fix {
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: 18px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.preflight-fix::before { content: "→ "; }
+
+/* ── Tabs ──────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+.tab {
+  flex: 1;
+  padding: 11px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  text-align: center;
+  user-select: none;
+}
+.tab:hover { color: var(--dim); }
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--surface);
+}
+
+/* ── Tab panes ─────────────────────────────────────── */
+.pane { display: none; padding: 24px; }
+.pane.active { display: block; }
+
+/* ── Runs list ─────────────────────────────────────── */
+.runs-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.runs-list::-webkit-scrollbar { width: 4px; }
+.runs-list::-webkit-scrollbar-thumb { background: var(--border2); }
+.run-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.run-item:last-child { border-bottom: none; }
+.run-item:hover { background: var(--surface2); }
+.run-item.selected { background: var(--surface3); }
+.run-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0;
+}
+.run-goal {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-meta {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.empty-runs {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ── Form elements ─────────────────────────────────── */
+.form-group { margin-bottom: 16px; }
+.form-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.form-input {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.form-input:focus { border-color: var(--accent); }
+.form-textarea {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  line-height: 1.6;
+  outline: none;
+  resize: vertical;
+  min-height: 180px;
+  transition: border-color 0.15s;
+}
+.form-textarea:focus { border-color: var(--accent); }
+.form-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 5px;
+  line-height: 1.5;
+}
+
+/* ── Example block ─────────────────────────────────── */
+.example {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 5px;
+  padding: 10px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.7;
+  margin-bottom: 14px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* ── Footer ────────────────────────────────────────── */
+.shell-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  background: var(--surface);
+}
+.btn {
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+.btn-ghost {
+  background: var(--surface2);
+  border-color: var(--border2);
+  color: var(--dim);
+}
+.btn-ghost:hover { background: var(--surface3); color: var(--text); }
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-primary:hover { filter: brightness(1.1); }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
+
+/* ── Error / loading ───────────────────────────────── */
+.error-msg {
+  color: var(--fail);
+  font-size: 12px;
+  margin-top: 8px;
+}
+.loading-overlay {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 48px 24px;
+}
+.loading-overlay.show { display: flex; }
+.spinner {
+  width: 28px; height: 28px;
+  border: 3px solid var(--border2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-msg { color: var(--dim); font-size: 13px; }
+.loading-sub { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div class="shell" id="shell">
+
+  <!-- Header -->
+  <div class="shell-header">
+    <div class="brand">cuddlytoddly</div>
+    <div class="tagline">Choose a run or start something new</div>
+  </div>
+
+  <!-- Preflight banner (hidden until issues are loaded) -->
+  <div class="preflight-banner" id="preflight-banner">
+    <div class="preflight-title">
+      <span>⚠</span> Configuration issues detected
+    </div>
+    <div class="preflight-list" id="preflight-list"></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" id="tab-existing" onclick="switchTab('existing')">
+      📂 Existing runs
+    </div>
+    <div class="tab" id="tab-goal" onclick="switchTab('goal')">
+      ✦ New goal
+    </div>
+    <div class="tab" id="tab-plan" onclick="switchTab('plan')">
+      ✎ Manual plan
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div id="main-content">
+
+    <!-- Existing runs -->
+    <div class="pane active" id="pane-existing">
+      <div id="runs-container">
+        <div class="empty-runs">Loading runs…</div>
+      </div>
+      <p class="error-msg" id="err-existing"></p>
+    </div>
+
+    <!-- New goal -->
+    <div class="pane" id="pane-goal">
+      <div class="form-group">
+        <label class="form-label">What do you want to achieve?</label>
+        <input class="form-input" id="f-goal"
+          placeholder="e.g. Build an MVP for my educational toy and bring it to market"
+          autocomplete="off">
+        <p class="form-hint">
+          The planner will break this down into tasks automatically.
+        </p>
+      </div>
+      <p class="error-msg" id="err-goal"></p>
+    </div>
+
+    <!-- Manual plan -->
+    <div class="pane" id="pane-plan">
+      <div class="example">Build an MVP for my educational toy
+
+- Research_Market: Research competitors and pricing
+- Design_Hardware: Design PCB and enclosure  [depends: Research_Market]
+- Develop_Software: Build the firmware       [depends: Research_Market]
+- Integrate: Combine hardware and software   [depends: Design_Hardware, Develop_Software]
+- User_Testing: Run pilot with 5 kids        [depends: Integrate]</div>
+      <div class="form-group">
+        <label class="form-label">Your plan</label>
+        <textarea class="form-textarea" id="f-plan"
+          placeholder="First line = goal description&#10;- Task: description [depends: Other_Task]&#10;- Another_Task: does something else"></textarea>
+        <p class="form-hint">
+          First non-bullet line is the goal. Lines starting with
+          <code style="background:var(--surface3);padding:1px 4px;border-radius:3px">-</code>
+          are tasks. Add
+          <code style="background:var(--surface3);padding:1px 4px;border-radius:3px">[depends: Task_A, Task_B]</code>
+          to specify dependencies. The system will run tasks without dependencies in parallel.
+        </p>
+      </div>
+      <p class="error-msg" id="err-plan"></p>
+    </div>
+
+    <!-- Loading state -->
+    <div class="loading-overlay" id="loading-overlay">
+      <div class="spinner"></div>
+      <div class="loading-msg" id="loading-msg">Initialising…</div>
+      <div class="loading-sub" id="loading-sub">Loading model and setting up the graph</div>
+    </div>
+
+  </div>
+
+  <!-- Footer -->
+  <div class="shell-footer" id="footer">
+    <button class="btn btn-primary" id="btn-start" onclick="submit()">
+      Start →
+    </button>
+  </div>
+
+</div>
+
+<script>
+let activeTab   = 'existing';
+let selectedRun = null;
+let polling     = false;
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab').forEach(el =>
+    el.classList.toggle('active', el.id === `tab-${tab}`)
+  );
+  document.querySelectorAll('.pane').forEach(el =>
+    el.classList.toggle('active', el.id === `pane-${tab}`)
+  );
+  clearErrors();
+}
+
+function clearErrors() {
+  document.querySelectorAll('.error-msg').forEach(el => el.textContent = '');
+}
+
+// ── Preflight banner ──────────────────────────────────────────────────────────
+async function loadPreflight() {
+  try {
+    const data   = await (await fetch('/api/preflight')).json();
+    const issues = data.issues || [];
+    if (!issues.length) return;
+
+    const banner = document.getElementById('preflight-banner');
+    const list   = document.getElementById('preflight-list');
+
+    list.innerHTML = issues.map(issue => {
+      const isErr  = issue.level === 'error';
+      const icon   = isErr ? '✗' : '⚠';
+      const cls    = isErr ? 'error' : 'warning';
+      const fix    = issue.fix
+        ? `<div class="preflight-fix">${esc(issue.fix)}</div>`
+        : '';
+      return `
+        <div class="preflight-issue">
+          <div class="preflight-msg">
+            <span class="preflight-icon ${cls}">${icon}</span>
+            <span class="preflight-text ${cls}">${esc(issue.message)}</span>
+          </div>
+          ${fix}
+        </div>`;
+    }).join('');
+
+    // Colour the banner border based on worst level
+    const hasError = issues.some(i => i.level === 'error');
+    if (!hasError) {
+      banner.style.background =
+        'color-mix(in srgb, var(--warn) 8%, var(--surface))';
+      banner.style.borderBottomColor =
+        'color-mix(in srgb, var(--warn) 30%, var(--border))';
+      banner.querySelector('.preflight-title').style.color = 'var(--warn)';
+      banner.querySelector('.preflight-title span').textContent = '⚠';
+    }
+
+    banner.classList.add('has-issues');
+  } catch (_) {
+    // Silently ignore — preflight is best-effort
+  }
+}
+
+// ── Load runs ─────────────────────────────────────────────────────────────────
+async function loadRuns() {
+  try {
+    const data = await (await fetch('/api/runs')).json();
+    const runs = data.runs || [];
+    const container = document.getElementById('runs-container');
+
+    if (!runs.length) {
+      container.innerHTML = `<div class="empty-runs">
+        No existing runs found.<br>Start a new goal below.
+      </div>`;
+      switchTab('goal');
+      return;
+    }
+
+    container.innerHTML = `<div class="runs-list" id="runs-list">
+      ${runs.map((r, i) => `
+        <div class="run-item" id="run-${i}" onclick="selectRun(${i})"
+             data-path="${esc(r.path)}" data-goal="${esc(r.goal)}">
+          <div class="run-dot"></div>
+          <div class="run-goal" title="${esc(r.goal)}">${esc(r.goal)}</div>
+          <div class="run-meta">
+            <span>${esc(r.age)}</span>
+            <span style="color:var(--border2)">${r.node_count} nodes</span>
+          </div>
+        </div>
+      `).join('')}
+    </div>`;
+
+    selectRun(0);
+  } catch (e) {
+    document.getElementById('runs-container').innerHTML =
+      `<div class="empty-runs">Could not load runs: ${esc(String(e))}</div>`;
+  }
+}
+
+function selectRun(i) {
+  selectedRun = i;
+  document.querySelectorAll('.run-item').forEach((el, j) =>
+    el.classList.toggle('selected', j === i)
+  );
+}
+
+// ── Submit ────────────────────────────────────────────────────────────────────
+async function submit() {
+  clearErrors();
+  let body;
+
+  if (activeTab === 'existing') {
+    if (selectedRun === null) {
+      document.getElementById('err-existing').textContent = 'Select a run first.';
+      return;
+    }
+    const item = document.querySelector(`#run-${selectedRun}`);
+    body = {
+      mode:      'existing',
+      run_dir:   item.dataset.path,
+      goal_text: item.dataset.goal,
+    };
+
+  } else if (activeTab === 'goal') {
+    const goal = document.getElementById('f-goal').value.trim();
+    if (!goal) {
+      document.getElementById('err-goal').textContent = 'Please enter a goal.';
+      return;
+    }
+    body = { mode: 'new_goal', goal_text: goal };
+
+  } else {
+    const plan = document.getElementById('f-plan').value.trim();
+    if (!plan) {
+      document.getElementById('err-plan').textContent = 'Please enter a plan.';
+      return;
+    }
+    body = { mode: 'manual_plan', plan_text: plan };
+  }
+
+  // Show loading
+  document.getElementById('main-content').querySelectorAll('.pane')
+    .forEach(el => el.classList.remove('active'));
+  const overlay = document.getElementById('loading-overlay');
+  overlay.classList.add('show');
+  document.getElementById('footer').style.display = 'none';
+
+  try {
+    const res  = await fetch('/api/startup', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      showLoadError(data.error || 'Unknown error');
+      return;
+    }
+    if (data.already_initialized) {
+      window.location.href = '/dag';
+      return;
+    }
+    pollReady();
+  } catch (e) {
+    showLoadError(String(e));
+  }
+}
+
+function pollReady() {
+  if (polling) return;
+  polling = true;
+  const msgs = [
+    'Loading model…',
+    'Setting up the graph…',
+    'Almost ready…',
+  ];
+  let tick = 0;
+
+  const interval = setInterval(async () => {
+    tick++;
+    document.getElementById('loading-msg').textContent =
+      msgs[Math.floor(tick / 4) % msgs.length];
+
+    try {
+      const data = await (await fetch('/api/status')).json();
+      if (data.error) {
+        clearInterval(interval);
+        showLoadError(data.error);
+        return;
+      }
+      if (data.initialized) {
+        clearInterval(interval);
+        window.location.href = '/dag';
+      }
+    } catch (_) { /* keep polling */ }
+  }, 500);
+}
+
+function showLoadError(msg) {
+  polling = false;
+  document.getElementById('loading-overlay').classList.remove('show');
+  document.getElementById('footer').style.display = '';
+  document.getElementById(`pane-${activeTab}`).classList.add('active');
+  document.getElementById(`err-${activeTab}`).textContent = 'Error: ' + msg;
+}
+
+// ── Utility ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Enter key submits ─────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && activeTab !== 'plan') submit();
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadPreflight();   // fetch config issues and show banner if any
+loadRuns();
+
+// If already initialized (server restarted), go straight to DAG
+fetch('/api/status').then(r => r.json()).then(d => {
+  if (d.initialized) window.location.href = '/dag';
+  else if (d.loading) pollReady();
+}).catch(() => {});
+</script>
+</body>
+</html>

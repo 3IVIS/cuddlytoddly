@@ -22,13 +22,7 @@ import time
 from collections import defaultdict, deque
 from pathlib import Path
 
-import cuddlytoddly.ui.git_projection as git_proj
-from cuddlytoddly.ui.git_projection import (
-    graph_to_dag,
-    rebuild_repo_from_graph,
-)
-from cuddlytoddly.ui.ui_config import UIConfig
-from toddly.core.events import (
+from cuddlytoddly.core.events import (
     ADD_DEPENDENCY,
     ADD_NODE,
     REMOVE_DEPENDENCY,
@@ -39,7 +33,14 @@ from toddly.core.events import (
     UPDATE_STATUS,
     Event,
 )
-from toddly.infra.logging import get_logger
+from cuddlytoddly.infra.logging import get_logger
+
+import cuddlytoddly.ui.git_projection as git_proj
+from cuddlytoddly.ui.git_projection import (
+    graph_to_dag,
+    rebuild_repo_from_graph,
+)
+from cuddlytoddly.ui.ui_config import UIConfig
 
 logger = get_logger(__name__)
 

@@ -20,29 +20,13 @@ import sys
 import tomllib
 from pathlib import Path
 
-from platformdirs import user_data_dir
-
-from toddly.infra.logging import get_logger
+from cuddlytoddly.infra.logging import get_logger
 
 # FIX #8: import model name constants so the config template uses the same
 # single source of truth as the LLM backends, rather than hard-coded strings
 # that go stale when default models are updated.
-from toddly.planning.llm_interface import _DEFAULT_CLAUDE_MODEL, _DEFAULT_OPENAI_MODEL
-from toddly.utils.config_utils import (
-    detect_backend as _detect_backend,
-)
-from toddly.utils.config_utils import (
-    llama_has_gpu_support as _llama_has_gpu_support,
-)
-from toddly.utils.config_utils import (
-    model_size_hint as _model_size_hint,
-)
-from toddly.utils.config_utils import (
-    resolve_model_path as _resolve_model_path_generic,
-)
-from toddly.utils.config_utils import (
-    validate_config as _validate,
-)
+from cuddlytoddly.planning.llm_interface import _DEFAULT_CLAUDE_MODEL, _DEFAULT_OPENAI_MODEL
+from platformdirs import user_data_dir
 
 logger = get_logger(__name__)
 
@@ -51,6 +35,19 @@ logger = get_logger(__name__)
 DATA_DIR = Path(user_data_dir("cuddlytoddly", "3IVIS"))
 CONFIG_PATH = DATA_DIR / "config.toml"
 
+# ── Approximate download sizes for known model size classes ───────────────────
+
+_MODEL_SIZES: dict[str, str] = {
+    "70B": "~40 GB",
+    "72B": "~43 GB",
+    "65B": "~35 GB",
+    "34B": "~19 GB",
+    "13B": "~7 GB",
+    "8B": "~5 GB",
+    "7B": "~4 GB",
+    "3B": "~2 GB",
+    "1B": "~1 GB",
+}
 
 # ── Default config template ───────────────────────────────────────────────────
 # {backend} is substituted at first-run time from _detect_backend().
@@ -308,12 +305,57 @@ def resolve_model_path(cfg: dict) -> str:
     """
     Return the absolute path to the GGUF model file specified in *cfg*.
 
-    Thin wrapper around cuddly.utils.config_utils.resolve_model_path
-    that supplies the application-specific DATA_DIR and CONFIG_PATH so
-    all existing callers (preflight_check, __main__) continue to work
-    without any changes.
+    Search order
+    ------------
+    1. ``CUDDLYTODDLY_MODEL_PATH`` env var
+    2. ``LLAMA_CACHE`` / ``~/.cache/llama.cpp/``
+    3. ``HF_HOME`` / ``~/.cache/huggingface/hub/``
+    4. ``DATA_DIR/models/<model_filename>``
+
+    Raises ``FileNotFoundError`` with a download command and size hint.
     """
-    return _resolve_model_path_generic(cfg, data_dir=DATA_DIR, config_path=CONFIG_PATH)
+    filename = cfg.get("llamacpp", {}).get("model_filename", "Llama-3.3-70B-Instruct-Q4_K_M.gguf")
+
+    env_override = os.environ.get("CUDDLYTODDLY_MODEL_PATH")
+    if env_override:
+        p = Path(env_override).expanduser().resolve()
+        if p.exists():
+            logger.info("[MODEL] Using CUDDLYTODDLY_MODEL_PATH: %s", p)
+            return str(p)
+        logger.warning("[MODEL] CUDDLYTODDLY_MODEL_PATH set but not found: %s", p)
+
+    candidates: list[Path] = []
+
+    llama_cache = Path(os.environ.get("LLAMA_CACHE", Path.home() / ".cache" / "llama.cpp"))
+    candidates.append(llama_cache / filename)
+
+    hf_hub = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    if hf_hub.exists():
+        candidates.extend(sorted(hf_hub.glob(f"**/snapshots/**/{filename}"), reverse=True))
+
+    own_models = DATA_DIR / "models"
+    candidates.append(own_models / filename)
+
+    for candidate in candidates:
+        if candidate.exists():
+            logger.info("[MODEL] Found model: %s", candidate)
+            return str(candidate)
+
+    size_hint = _model_size_hint(filename)
+    size_note = f"  (approx. {size_hint} download)\n" if size_hint else ""
+
+    raise FileNotFoundError(
+        f"\nModel '{filename}' not found in any standard location.\n"
+        f"{size_note}\n"
+        f"Option 1 — download into cuddlytoddly's models folder:\n"
+        f"  pip install huggingface-hub\n"
+        f"  huggingface-cli download bartowski/Llama-3.3-70B-Instruct-GGUF"
+        f" {filename} --local-dir {own_models}\n\n"
+        f"Option 2 — point to an existing file:\n"
+        f"  export CUDDLYTODDLY_MODEL_PATH=/path/to/{filename}\n\n"
+        f"Option 3 — change the filename in the config:\n"
+        f'  {CONFIG_PATH}  →  [llamacpp] model_filename = "your-model.gguf"\n'
+    )
 
 
 def preflight_check(cfg: dict) -> list[dict]:
@@ -457,6 +499,138 @@ def preflight_check(cfg: dict) -> list[dict]:
     return issues
 
 
+# ── Config section accessors ──────────────────────────────────────────────────
+# Convenience helpers used by __main__.py to read config values with sensible
+# fallbacks (so configs written before any section was added continue to work).
+#
+# Lookup order for per-backend parameters:
+#   1. cfg[active_backend][key]   — explicit per-backend value (wins)
+#   2. cfg[shared_section][key]   — legacy shared-section value (compat)
+#   3. hardcoded default          — last resort
+#
+# Parameters that are the same regardless of backend (gap-fill limits, retry
+# counts, flags) are read from their shared section only.
+
+
+def get_backend(cfg: dict) -> str:
+    """Return the configured backend name, lower-cased."""
+    return cfg.get("llm", {}).get("backend", "llamacpp").lower()
+
+
+def _is_api_backend(cfg: dict) -> bool:
+    """Return True when the configured backend is a remote API provider."""
+    return get_backend(cfg) in _API_BACKENDS
+
+
+def _get(cfg: dict, key: str, shared_section: str, api_default, local_default):
+    """
+    Resolve a per-backend parameter with graceful fallback.
+
+    Checks the active backend's config section first, then the shared
+    section for backward compatibility with pre-restructured configs,
+    then falls back to a hardcoded default chosen by backend tier.
+    """
+    backend = get_backend(cfg)
+    # 1. Per-backend section (new-style config)
+    val = cfg.get(backend, {}).get(key)
+    if val is not None:
+        return val
+    # 2. Shared section (old-style config — backward compat)
+    val = cfg.get(shared_section, {}).get(key)
+    if val is not None:
+        return val
+    # 3. Hardcoded default — tiered by backend type
+    return api_default if _is_api_backend(cfg) else local_default
+
+
+def get_executor_cfg(cfg: dict) -> dict:
+    """Return executor parameters, resolved from the active backend's section."""
+    return {
+        # Characters a result may contain before the LLM is asked to write
+        # it to a file.  API models handle larger inline payloads comfortably.
+        "max_inline_result_chars": _get(cfg, "max_inline_result_chars", "executor", 12_000, 3_000),
+        # Total character budget shared across all upstream results injected
+        # into a single execution prompt.
+        "max_total_input_chars": _get(cfg, "max_total_input_chars", "executor", 12_000, 3_000),
+        # Characters from a single tool-call result before truncation.
+        # Web search / fetch results need room to be genuinely useful.
+        "max_tool_result_chars": _get(cfg, "max_tool_result_chars", "executor", 8_000, 2_000),
+        # Tool-call history entries kept in context per turn.
+        "max_history_entries": _get(cfg, "max_history_entries", "executor", 10, 3),
+    }
+
+
+def get_planner_cfg(cfg: dict) -> dict:
+    """Return planner parameters, with max_tasks_per_goal resolved per-backend."""
+    c = cfg.get("planner", {})
+    return {
+        "min_tasks_per_goal": c.get("min_tasks_per_goal", 3),
+        # API models handle larger, more complex plans reliably.
+        "max_tasks_per_goal": _get(cfg, "max_tasks_per_goal", "planner", 15, 8),
+        "scrutinize_plan": c.get("scrutinize_plan", False),
+        # Clarification-field limits are intentionally separate from task-count
+        # limits — see config.toml [planner] for rationale.
+        "min_clarification_fields": c.get("min_clarification_fields", 2),
+        "max_clarification_fields": c.get("max_clarification_fields", 6),
+    }
+
+
+def get_orchestrator_cfg(cfg: dict) -> dict:
+    """Return orchestrator parameters, with backend-sensitive values resolved per-backend."""
+    c = cfg.get("orchestrator", {})
+    return {
+        # API calls are independent and parallelisable.  llama.cpp is not
+        # thread-safe and must stay at 1.
+        "max_workers": _get(cfg, "max_workers", "orchestrator", 4, 1),
+        # API models sustain longer research loops without context degradation.
+        "max_turns": _get(cfg, "max_turns", "orchestrator", 10, 5),
+        # The remaining params don't vary meaningfully by backend.
+        "max_gap_fill_attempts": c.get("max_gap_fill_attempts", 2),
+        "max_retries": c.get("max_retries", 5),
+        "idle_sleep": c.get("idle_sleep", 0.5),
+    }
+
+
+def get_file_llm_cfg(cfg: dict) -> dict:
+    """Return the [file_llm] section with defaults filled in."""
+    c = cfg.get("file_llm", {})
+    return {
+        "poll_interval": c.get("poll_interval", 0.5),
+        "timeout": c.get("timeout", 300),
+        "progress_log_interval": c.get("progress_log_interval", 2),
+        "cache_enabled": c.get("cache_enabled", True),
+    }
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+
+def _detect_backend() -> str:
+    """Return the best default backend based on set environment variables."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "claude"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    return "llamacpp"
+
+
+def _model_size_hint(filename: str) -> str:
+    upper = filename.upper()
+    for tag, size in _MODEL_SIZES.items():
+        if tag in upper:
+            return size
+    return ""
+
+
+def _llama_has_gpu_support() -> bool:
+    try:
+        from llama_cpp import llama_supports_gpu_offload
+
+        return bool(llama_supports_gpu_offload())
+    except (ImportError, AttributeError):
+        return False
+
+
 def _print_first_run_notice(backend: str) -> None:
     sep = "─" * 60
     lines = [
@@ -499,3 +673,13 @@ def _print_first_run_notice(backend: str) -> None:
 
     lines += [sep, ""]
     print("\n".join(lines), file=sys.stderr)
+
+
+def _validate(cfg: dict) -> None:
+    backend = cfg.get("llm", {}).get("backend", "")
+    if backend not in _VALID_BACKENDS:
+        raise ValueError(
+            f"[CONFIG] llm.backend = {backend!r} is not valid.\n"
+            f"Choose one of: {', '.join(sorted(_VALID_BACKENDS))}.\n"
+            f"Edit {CONFIG_PATH} to fix this."
+        )

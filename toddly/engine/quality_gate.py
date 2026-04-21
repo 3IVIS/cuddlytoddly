@@ -3,14 +3,22 @@
 import json
 import os
 from pathlib import Path
+from typing import Callable
 
-from cuddlytoddly.infra.logging import get_logger
-from cuddlytoddly.planning.llm_interface import LLMStoppedError
-from cuddlytoddly.planning.prompts import (
-    build_check_dependencies_prompt,
-    build_verify_result_prompt,
+from toddly.infra.logging import get_logger
+from toddly.planning.llm_interface import LLMStoppedError
+
+# Default prompt builders — imported here so callers that construct QualityGate
+# without explicit prompt functions get the cuddlytoddly-specific behaviour
+# unchanged.  When moving QualityGate to a shared agent-core library, remove
+# these imports and require callers to supply both functions explicitly.
+from toddly.planning.prompts import (
+    build_check_dependencies_prompt as _default_check_deps_prompt,
 )
-from cuddlytoddly.planning.schemas import (
+from toddly.planning.prompts import (
+    build_verify_result_prompt as _default_verify_prompt,
+)
+from toddly.planning.schemas import (
     DEPENDENCY_CHECK_SCHEMA,
     RESULT_VERIFICATION_SCHEMA,
 )
@@ -29,6 +37,17 @@ class QualityGate:
     Mirrors the pattern of LLMPlanner / LLMExecutor — the orchestrator
     receives it as a dependency and calls its methods; it never touches
     the graph directly.
+
+    Prompt functions
+    ----------------
+    verify_prompt_fn and check_deps_prompt_fn are the two domain-specific
+    seams.  Pass custom callables to use different prompt text for a different
+    project (e.g. code review) while reusing all the surrounding logic.
+
+    Both functions must accept only keyword arguments and return a str.
+    Their signatures must match the keyword arguments passed by verify_result()
+    and check_dependencies() respectively — see the default implementations in
+    planning/prompts.py for the exact parameter lists.
     """
 
     FILE_EXTENSIONS = frozenset(
@@ -57,11 +76,22 @@ class QualityGate:
         # against the correct location rather than the process CWD, which may
         # differ at verification time.
         working_dir: Path | None = None,
+        # Prompt functions — swap these to change verification/dependency-check
+        # behaviour without subclassing.  Defaults to the cuddlytoddly-specific
+        # implementations in planning/prompts.py.
+        verify_prompt_fn: Callable[..., str] | None = None,
+        check_deps_prompt_fn: Callable[..., str] | None = None,
     ):
         self.llm = llm_client
         self.tools = tool_registry
         self.max_total_input_chars = max_total_input_chars
         self.working_dir = working_dir
+        self._verify_prompt_fn: Callable[..., str] = (
+            verify_prompt_fn if verify_prompt_fn is not None else _default_verify_prompt
+        )
+        self._check_deps_prompt_fn: Callable[..., str] = (
+            check_deps_prompt_fn if check_deps_prompt_fn is not None else _default_check_deps_prompt
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -115,7 +145,7 @@ class QualityGate:
             return f"  - {o}"
 
         outputs_text = "\n".join(_fmt(o) for o in declared_outputs)
-        prompt = build_verify_result_prompt(
+        prompt = self._verify_prompt_fn(
             node_id=node.id,
             description=node.metadata.get("description", node.id),
             outputs_text=outputs_text,
@@ -224,7 +254,7 @@ class QualityGate:
             else "  (not specified)"
         )
 
-        prompt = build_check_dependencies_prompt(
+        prompt = self._check_deps_prompt_fn(
             node_id=node.id,
             description=node.metadata.get("description", node.id),
             inputs_text=inputs_text,

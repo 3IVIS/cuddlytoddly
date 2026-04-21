@@ -35,8 +35,7 @@ except ImportError:
         "Web UI requires FastAPI and uvicorn:\n  pip install fastapi 'uvicorn[standard]'"
     )
 
-from cuddlytoddly.ui.ui_config import UIConfig
-from toddly.core.events import (
+from cuddlytoddly.core.events import (
     ADD_DEPENDENCY,
     ADD_NODE,
     REMOVE_DEPENDENCY,
@@ -47,7 +46,9 @@ from toddly.core.events import (
     UPDATE_STATUS,
     Event,
 )
-from toddly.infra.logging import get_logger
+from cuddlytoddly.infra.logging import get_logger
+
+from cuddlytoddly.ui.ui_config import UIConfig
 
 logger = get_logger(__name__)
 

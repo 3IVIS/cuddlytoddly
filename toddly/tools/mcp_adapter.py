@@ -46,7 +46,7 @@ from typing import Any
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 
-from cuddlytoddly.infra.logging import get_logger
+from toddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
 

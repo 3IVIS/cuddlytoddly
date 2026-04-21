@@ -2,12 +2,13 @@
 
 import json
 import uuid
+from dataclasses import dataclass
+from dataclasses import field as _dc_field
 from pathlib import Path
 
-from toddly.engine.signals import AwaitingInputSignal
-from toddly.infra.logging import get_logger
-from toddly.planning.llm_interface import LLMStoppedError, NativeToolResponse
-from toddly.planning.prompts import (
+from cuddlytoddly.infra.logging import get_logger
+from cuddlytoddly.planning.llm_interface import LLMStoppedError, NativeToolResponse
+from cuddlytoddly.planning.prompts import (
     build_awaiting_input_check_prompt,
     build_broadened_description_prompt,
     build_executor_file_output_instruction,
@@ -21,7 +22,7 @@ from toddly.planning.prompts import (
     build_executor_prompt,
     build_executor_retry_notice,
 )
-from toddly.planning.schemas import (
+from cuddlytoddly.planning.schemas import (
     AWAITING_INPUT_CHECK_SCHEMA,
     BROADENED_DESCRIPTION_SCHEMA,
     EXECUTION_TURN_SCHEMA,
@@ -42,6 +43,37 @@ logger = get_logger(__name__)
 #   • run_python — uses a per-module lock (_PYTHON_CWD_LOCK) held only during
 #                  in-process eval/exec, not for the full tool call.
 #   • file tools — use absolute paths from _safe_resolve(); ignore _cwd.
+
+
+@dataclass
+class AwaitingInputSignal:
+    """
+    Produced by _preflight_awaiting_input when some required inputs are missing.
+
+    The signal no longer blocks execution — it carries the broadened_description
+    that execute() uses as the effective task goal for this run, along with
+    metadata the orchestrator writes back to the node after execution completes.
+
+    Fields
+    ------
+    reason               : Human-readable explanation of what is missing.
+    missing_fields       : Keys of existing clarification fields that are unknown.
+    new_fields           : New fields to add to the clarification form.
+    clarification_node_id: Upstream clarification node to patch.
+    broadened_description: Rephrased task goal that works without the missing inputs.
+    broadened_for_missing: The missing field keys active when the broadened
+                           description was generated — used to decide whether to
+                           reuse or regenerate on the next execution.
+    """
+
+    reason: str
+    missing_fields: list = _dc_field(default_factory=list)
+    new_fields: list = _dc_field(default_factory=list)
+    clarification_node_id: str = ""
+    broadened_description: str = ""
+    broadened_for_missing: list = _dc_field(default_factory=list)
+    broadened_output: list = _dc_field(default_factory=list)
+    broadened_steps: list = _dc_field(default_factory=list)
 
 
 class LLMExecutor:
@@ -538,7 +570,7 @@ class LLMExecutor:
         # executor's uniform LLMStoppedError handler deals with it, not a
         # silent None return that masks the real reason for the abort.
         if getattr(self.llm, "is_stopped", False):
-            from toddly.planning.llm_interface import LLMStoppedError
+            from cuddlytoddly.planning.llm_interface import LLMStoppedError
 
             raise LLMStoppedError("LLM is paused — deferring broadening call until resumed")
 

@@ -20,8 +20,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 import git
-
-from toddly.infra.logging import get_logger
+from cuddlytoddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
 

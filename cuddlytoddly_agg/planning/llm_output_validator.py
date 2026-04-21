@@ -1,5 +1,5 @@
-from toddly.core.events import ADD_DEPENDENCY, ADD_NODE
-from toddly.infra.logging import get_logger
+from cuddlytoddly.core.events import ADD_DEPENDENCY, ADD_NODE
+from cuddlytoddly.infra.logging import get_logger
 
 logger = get_logger(__name__)
 
