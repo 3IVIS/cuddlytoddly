@@ -1,8 +1,8 @@
-"""Tests for cuddlytoddly.core.id_generator."""
+"""Tests for toddly.core.id_generator."""
 
 import json
 
-from cuddlytoddly.core.id_generator import StableIDGenerator, base62_encode
+from toddly.core.id_generator import StableIDGenerator, base62_encode
 
 # ── base62_encode ──────────────────────────────────────────────────────────────
 

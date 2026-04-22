@@ -1,13 +1,13 @@
-"""Tests for cuddlytoddly.engine.llm_orchestrator.Orchestrator."""
+"""Tests for toddly.engine.orchestrator.Orchestrator."""
 
 from unittest.mock import MagicMock
 
 from conftest import FakeLLM, mark_done
 
-from cuddlytoddly.core.events import ADD_NODE, RESET_SUBTREE, Event
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.engine.llm_orchestrator import Orchestrator
-from cuddlytoddly.infra.event_queue import EventQueue
+from toddly.core.events import ADD_NODE, RESET_SUBTREE, Event
+from toddly.core.task_graph import TaskGraph
+from toddly.engine.orchestrator import Orchestrator
+from toddly.infra.event_queue import EventQueue
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

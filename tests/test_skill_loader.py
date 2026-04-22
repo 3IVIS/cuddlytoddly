@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cuddlytoddly.skills.skill_loader import SkillLoader, Tool, ToolRegistry
+from toddly.skills.skill_loader import SkillLoader, Tool, ToolRegistry
 
 # ── ToolRegistry ──────────────────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ class TestToolRegistry:
 
 
 def _build_real_skills_dir(tmp_path: Path) -> Path:
-    from cuddlytoddly.skills.skill_loader import SKILLS_DIR
+    from toddly.skills.skill_loader import SKILLS_DIR
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()

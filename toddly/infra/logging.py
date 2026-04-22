@@ -216,7 +216,7 @@ def setup_logging(
 def get_logger(name: str) -> logging.Logger:
     if name.startswith("dag.") or name == "dag":
         return logging.getLogger(name)
-    # Strip the package prefix so "cuddlytoddly.engine.foo" → "dag.engine.foo"
-    # instead of "dag.cuddlytoddly.engine.foo"
+    # Strip the package prefix so "toddly.engine.foo" → "dag.engine.foo"
+    # instead of "dag.toddly.engine.foo"
     stripped = re.sub(r"^(?:cuddlytoddly|cuddly)\.", "", name)
     return logging.getLogger(f"dag.{stripped}")

@@ -1,8 +1,8 @@
-"""Tests for cuddlytoddly.core.events and cuddlytoddly.core.reducer."""
+"""Tests for toddly.core.events and toddly.core.reducer."""
 
 from conftest import add_node, mark_done
 
-from cuddlytoddly.core.events import (
+from toddly.core.events import (
     ADD_DEPENDENCY,
     ADD_NODE,
     DETACH_NODE,
@@ -18,8 +18,8 @@ from cuddlytoddly.core.events import (
     UPDATE_STATUS,
     Event,
 )
-from cuddlytoddly.core.reducer import apply_event
-from cuddlytoddly.core.task_graph import TaskGraph
+from toddly.core.reducer import apply_event
+from toddly.core.task_graph import TaskGraph
 
 # ── Event serialization ───────────────────────────────────────────────────────
 
@@ -289,7 +289,7 @@ class TestReducerDetach:
 
 class TestReducerEventLog:
     def test_event_appended_to_log(self, tmp_path):
-        from cuddlytoddly.infra.event_log import EventLog
+        from toddly.infra.event_log import EventLog
 
         log = EventLog(str(tmp_path / "events.jsonl"))
         g = TaskGraph()

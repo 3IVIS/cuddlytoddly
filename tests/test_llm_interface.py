@@ -1,11 +1,11 @@
-"""Tests for cuddlytoddly.planning.llm_interface (LLM base + API layer)."""
+"""Tests for toddly.planning.llm_interface (LLM base + API layer)."""
 
 import json
 import threading
 
 import pytest
 
-from cuddlytoddly.planning.llm_interface import (
+from toddly.planning.llm_interface import (
     BaseLLM,
     FileBasedLLM,
     LlamaCppCache,
@@ -217,14 +217,14 @@ class TestCreateLLMClient:
             create_llm_client("llamacpp")
 
     def test_openai_backend_returns_api_llm(self):
-        from cuddlytoddly.planning.llm_interface import ApiLLM
+        from toddly.planning.llm_interface import ApiLLM
 
         llm = create_llm_client("openai", api_key="fake-key")
         assert isinstance(llm, ApiLLM)
         assert llm.provider == "openai"
 
     def test_claude_backend_returns_api_llm(self):
-        from cuddlytoddly.planning.llm_interface import ApiLLM
+        from toddly.planning.llm_interface import ApiLLM
 
         llm = create_llm_client("claude", api_key="fake-key")
         assert isinstance(llm, ApiLLM)
@@ -240,7 +240,7 @@ class TestCreateLLMClient:
 
 class TestApiLLMHelpers:
     def setup_method(self):
-        from cuddlytoddly.planning.llm_interface import ApiLLM
+        from toddly.planning.llm_interface import ApiLLM
 
         self.ApiLLM = ApiLLM
 

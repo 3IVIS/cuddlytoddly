@@ -1,4 +1,4 @@
-"""Tests for cuddlytoddly.engine.quality_gate.QualityGate."""
+"""Tests for toddly.engine.quality_gate.QualityGate."""
 
 import json
 import os
@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 from conftest import FakeLLM, add_node
 
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.engine.quality_gate import QualityGate
+from toddly.core.task_graph import TaskGraph
+from toddly.engine.quality_gate import QualityGate
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

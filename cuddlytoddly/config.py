@@ -308,7 +308,7 @@ def resolve_model_path(cfg: dict) -> str:
     """
     Return the absolute path to the GGUF model file specified in *cfg*.
 
-    Thin wrapper around cuddly.utils.config_utils.resolve_model_path
+    Thin wrapper around toddly.utils.config_utils.resolve_model_path
     that supplies the application-specific DATA_DIR and CONFIG_PATH so
     all existing callers (preflight_check, __main__) continue to work
     without any changes.

@@ -5,10 +5,10 @@ import threading
 
 import pytest
 
-from cuddlytoddly.core.events import ADD_NODE, MARK_DONE, Event
-from cuddlytoddly.core.reducer import apply_event
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.infra.event_queue import EventQueue
+from toddly.core.events import ADD_NODE, MARK_DONE, Event
+from toddly.core.reducer import apply_event
+from toddly.core.task_graph import TaskGraph
+from toddly.infra.event_queue import EventQueue
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -97,7 +97,7 @@ class FakeLLM:
         self._stop_event.clear()
 
     def ask(self, prompt, schema=None):
-        from cuddlytoddly.planning.llm_interface import LLMStoppedError
+        from toddly.planning.llm_interface import LLMStoppedError
 
         if self._stop_event.is_set():
             raise LLMStoppedError("stopped")

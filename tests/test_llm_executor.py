@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 from conftest import FakeLLM, add_node
 
-from cuddlytoddly.core.task_graph import TaskGraph
 from cuddlytoddly.planning.llm_executor import LLMExecutor
+from toddly.core.task_graph import TaskGraph
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ def tool_response(name, args):
 
 def make_tool_registry(tools_dict):
     """Build a minimal ToolRegistry from a dict of name → callable."""
-    from cuddlytoddly.skills.skill_loader import Tool, ToolRegistry
+    from toddly.skills.skill_loader import Tool, ToolRegistry
 
     registry = ToolRegistry()
     for name, fn in tools_dict.items():

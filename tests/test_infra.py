@@ -1,11 +1,11 @@
-"""Tests for cuddlytoddly.infra: EventLog, EventQueue, replay."""
+"""Tests for toddly.infra: EventLog, EventQueue, replay."""
 
 import threading
 
-from cuddlytoddly.core.events import ADD_NODE, MARK_DONE, Event
-from cuddlytoddly.infra.event_log import EventLog
-from cuddlytoddly.infra.event_queue import EventQueue
-from cuddlytoddly.infra.replay import rebuild_graph_from_log
+from toddly.core.events import ADD_NODE, MARK_DONE, Event
+from toddly.infra.event_log import EventLog
+from toddly.infra.event_queue import EventQueue
+from toddly.infra.replay import rebuild_graph_from_log
 
 # ── EventLog ──────────────────────────────────────────────────────────────────
 

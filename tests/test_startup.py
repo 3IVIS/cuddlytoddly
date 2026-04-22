@@ -4,13 +4,13 @@ import json
 import time
 from pathlib import Path
 
-from cuddlytoddly.core.events import ADD_DEPENDENCY, ADD_NODE
 from cuddlytoddly.ui.startup import (
     StartupChoice,
     build_manual_plan_events,
     parse_manual_plan,
     scan_runs,
 )
+from toddly.core.events import ADD_DEPENDENCY, ADD_NODE
 
 # ── parse_manual_plan ─────────────────────────────────────────────────────────
 

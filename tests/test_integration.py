@@ -11,14 +11,14 @@ from unittest.mock import MagicMock
 
 from conftest import add_node
 
-from cuddlytoddly.core.events import ADD_NODE, MARK_DONE, Event
-from cuddlytoddly.core.reducer import apply_event
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.engine.llm_orchestrator import Orchestrator
-from cuddlytoddly.infra.event_log import EventLog
-from cuddlytoddly.infra.event_queue import EventQueue
-from cuddlytoddly.infra.replay import rebuild_graph_from_log
 from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
+from toddly.core.events import ADD_NODE, MARK_DONE, Event
+from toddly.core.reducer import apply_event
+from toddly.core.task_graph import TaskGraph
+from toddly.engine.orchestrator import Orchestrator
+from toddly.infra.event_log import EventLog
+from toddly.infra.event_queue import EventQueue
+from toddly.infra.replay import rebuild_graph_from_log
 
 # ── Crash-and-resume ──────────────────────────────────────────────────────────
 

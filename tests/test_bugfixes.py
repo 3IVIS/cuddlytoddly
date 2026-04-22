@@ -18,12 +18,12 @@ from unittest.mock import MagicMock
 
 from conftest import FakeLLM, add_node
 
-from cuddlytoddly.core.reducer import apply_event
-from cuddlytoddly.core.task_graph import TaskGraph
-from cuddlytoddly.engine.llm_orchestrator import Orchestrator
-from cuddlytoddly.engine.quality_gate import QualityGate
-from cuddlytoddly.infra.event_queue import EventQueue
 from cuddlytoddly.planning.llm_executor import LLMExecutor
+from toddly.core.reducer import apply_event
+from toddly.core.task_graph import TaskGraph
+from toddly.engine.orchestrator import Orchestrator
+from toddly.engine.quality_gate import QualityGate
+from toddly.infra.event_queue import EventQueue
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -54,7 +54,7 @@ def make_orchestrator(
 
 
 def make_tool_registry(tools_dict):
-    from cuddlytoddly.skills.skill_loader import Tool, ToolRegistry
+    from toddly.skills.skill_loader import Tool, ToolRegistry
 
     registry = ToolRegistry()
     for name, fn in tools_dict.items():
@@ -72,7 +72,7 @@ def make_tool_registry(tools_dict):
 def make_reporter(parent_id, graph):
     import threading
 
-    from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
+    from toddly.engine.execution_step_reporter import ExecutionStepReporter
 
     lock = threading.RLock()
     apply_events = []
@@ -446,8 +446,8 @@ class TestAwaitingInput:
         missing it runs with the broadened description and returns a string."""
         import threading
 
-        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal, LLMExecutor
+        from toddly.engine.execution_step_reporter import ExecutionStepReporter
 
         g = TaskGraph()
         add_node(
@@ -519,8 +519,8 @@ class TestAwaitingInput:
         writes broadened_description and broadened_for_missing into node metadata."""
         import threading
 
-        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal
+        from toddly.engine.execution_step_reporter import ExecutionStepReporter
 
         orch, g, _, mock_gate = make_orchestrator(gate_satisfied=True)
         add_node(
@@ -567,8 +567,8 @@ class TestAwaitingInput:
         """new_fields in the reporter signal are added to the clarification node."""
         import threading
 
-        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
         from cuddlytoddly.planning.llm_executor import AwaitingInputSignal
+        from toddly.engine.execution_step_reporter import ExecutionStepReporter
 
         g = TaskGraph()
         add_node(
@@ -1100,8 +1100,8 @@ class TestBroadenedExecutionFixes:
         a second focused LLM call is made to generate it."""
         import threading
 
-        from cuddlytoddly.engine.execution_step_reporter import ExecutionStepReporter
         from cuddlytoddly.planning.llm_executor import LLMExecutor
+        from toddly.engine.execution_step_reporter import ExecutionStepReporter
 
         call_count = [0]
 

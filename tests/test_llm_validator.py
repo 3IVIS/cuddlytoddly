@@ -2,9 +2,9 @@
 
 from conftest import add_node
 
-from cuddlytoddly.core.events import ADD_DEPENDENCY, ADD_NODE
-from cuddlytoddly.core.task_graph import TaskGraph
 from cuddlytoddly.planning.llm_output_validator import LLMOutputValidator
+from toddly.core.events import ADD_DEPENDENCY, ADD_NODE
+from toddly.core.task_graph import TaskGraph
 
 
 def make_validator(graph=None):

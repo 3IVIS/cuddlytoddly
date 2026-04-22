@@ -1,8 +1,8 @@
-"""Tests for cuddlytoddly.core.task_graph."""
+"""Tests for toddly.core.task_graph."""
 
 from conftest import add_node, mark_done
 
-from cuddlytoddly.core.task_graph import TaskGraph
+from toddly.core.task_graph import TaskGraph
 
 # ── add_node ──────────────────────────────────────────────────────────────────
 
@@ -253,8 +253,8 @@ class TestUpdateStatus:
 
 class TestVersions:
     def test_structure_version_increments_on_add(self):
-        from cuddlytoddly.core.events import ADD_NODE, Event
-        from cuddlytoddly.core.reducer import apply_event
+        from toddly.core.events import ADD_NODE, Event
+        from toddly.core.reducer import apply_event
 
         g = TaskGraph()
         v = g.structure_version
