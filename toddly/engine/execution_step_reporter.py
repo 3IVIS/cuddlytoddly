@@ -1,3 +1,5 @@
+# --- FILE: toddly/engine/execution_step_reporter.py ---
+
 # engine/execution_step_reporter.py
 
 from datetime import datetime, timezone
@@ -295,6 +297,31 @@ class ExecutionStepReporter:
             )
 
         self._all_step_ids.append(step_id)
+
+    # ── Execution mode tracking ──────────────────────────────────────────────
+
+    def on_execution_mode(self, mode: str) -> None:
+        """
+        Called by LLMExecutor once the execution mode is decided — either
+        ``'original'`` (all required inputs present, or upstream outputs
+        matched the original contract) or ``'broadened'`` (running with
+        a generalised goal because some inputs are missing).
+
+        Writes ``_active_tab`` to the parent node's metadata so the web UI
+        can highlight the correct tab with a "▶ Running" badge and remove
+        any ambiguity about which plan is actually being executed.
+        """
+        with self._graph_lock:
+            self._apply(
+                Event(
+                    UPDATE_METADATA,
+                    {
+                        "node_id": self.parent_node_id,
+                        "origin": "executor",
+                        "metadata": {"_active_tab": mode},
+                    },
+                )
+            )
 
     # ── Post-execution visibility ─────────────────────────────────────────────
 

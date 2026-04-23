@@ -1,3 +1,5 @@
+# --- FILE: cuddlytoddly/__main__.py ---
+
 # __main__.py
 
 import argparse
@@ -479,6 +481,10 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
 
     # FIX #1: pass working_dir to the executor so it can chdir/restore around
     # each individual tool call instead of relying on the process-wide CWD.
+    from toddly.infra.tool_call_log import ToolCallLog
+
+    tool_call_log = ToolCallLog(run_dir / "tool_calls.jsonl")
+
     executor = LLMExecutor(
         llm_client=shared_llm,
         tool_registry=registry,
@@ -488,6 +494,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         max_tool_result_chars=exec_cfg["max_tool_result_chars"],
         max_history_entries=exec_cfg["max_history_entries"],
         working_dir=working_dir,
+        tool_call_log=tool_call_log,
     )
 
     # FIX #5: pass the executor's working_dir to QualityGate so that declared

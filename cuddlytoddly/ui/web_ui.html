@@ -1,3 +1,5 @@
+# --- FILE: cuddlytoddly/ui/web_ui.html ---
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2195,6 +2197,10 @@ function domainBuildContent(node, { row, esc, trunc }) {
   const broadDesc        = node.metadata?.broadened_description || '';
   const broadReason      = node.metadata?.broadened_reason || '';
   const broadMissing     = node.metadata?.broadened_for_missing || [];
+  // '_active_tab' is written by the executor when it decides which plan to run.
+  // It is cleared by reset() so it only appears while the node is truly running.
+  const activeTab        = node.metadata?._active_tab || null;  // 'original' | 'broadened' | null
+  const isRunning        = node.status === 'running';
   const origSteps        = node.metadata?.execution_steps || [];
   const broadSteps       = node.metadata?.broadened_steps || [];
   const pendingUserSteps = new Set(node.metadata?.pending_steps || []);
@@ -2293,12 +2299,20 @@ function domainBuildContent(node, { row, esc, trunc }) {
       };
     })(tabId, _activeCSS, _inactiveCSS);
 
+    // Running badge: shown on whichever tab is currently executing.
+    // Only rendered while status === 'running' and _active_tab is set.
+    const runBadge = isRunning && activeTab
+      ? `<span style="font-size:9px;font-weight:700;color:#0b1120;background:var(--s-running);border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;letter-spacing:0.3px">▶ RUNNING</span>`
+      : '';
+    const origRunBadge  = (isRunning && activeTab === 'original')  ? runBadge : '';
+    const broadRunBadge = (isRunning && activeTab === 'broadened') ? runBadge : '';
+
     html += `
       <div style="display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border-subtle);padding-bottom:0">
         <button id="${tabId}-btn-orig"
           onclick="${switchFn}('orig')"
           style="font-size:11px;padding:4px 10px;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--text-muted);cursor:pointer;font-weight:400;margin-bottom:-1px">
-          Original
+          Original${origRunBadge}
         </button>
         <div style="position:relative;display:inline-block">
           <button id="${tabId}-btn-broad"
@@ -2306,7 +2320,7 @@ function domainBuildContent(node, { row, esc, trunc }) {
             onmouseenter="document.getElementById('${tooltipId}').style.display='block'"
             onmouseleave="document.getElementById('${tooltipId}').style.display='none'"
             style="font-size:11px;padding:4px 10px;border:none;border-bottom:2px solid var(--text);background:transparent;color:var(--text);cursor:pointer;font-weight:600;margin-bottom:-1px">
-            ⟳ Broadened
+            ⟳ Broadened${broadRunBadge}
           </button>
           <div id="${tooltipId}" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px;min-width:220px;max-width:280px;box-shadow:0 4px 12px rgba(0,0,0,0.15);pointer-events:none">
             <div style="font-size:10px;font-weight:600;color:var(--s-running);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">⟳ Why this goal was generalised</div>

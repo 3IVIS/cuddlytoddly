@@ -856,6 +856,87 @@ class LlamaCppLLM(BaseLLM):
 
         raise ValueError("Model repeatedly returned invalid JSON")
 
+    supports_native_tools: bool = True  # ask_with_tools() implemented below
+
+    def ask_with_tools(
+        self,
+        task_prompt: str,
+        tools: list,
+        history: list[dict],
+    ) -> "NativeToolResponse":
+        """
+        Native tool-use for llama.cpp using constrained JSON generation.
+
+        llama.cpp has no provider-level tool-calling API, so we implement the
+        same done/tool_call protocol used by the legacy path but expose it
+        through the ask_with_tools() interface so the native executor loop
+        (_execute_native) can drive this backend identically to ApiLLM.
+
+        The full conversation — task prompt, tool schema, and accumulated
+        history — is serialised into a single prompt string and passed to
+        ask() with EXECUTION_TURN_SCHEMA so constrained generation forces
+        a valid {done, result, tool_call} object every time.
+        """
+
+        # Build tool summary block
+        if tools:
+            tool_lines = [
+                f"- {t.name}: {getattr(t, 'description', t.name)}. "
+                f"Args: {json.dumps(getattr(t, 'input_schema', {}))}"
+                for t in tools
+            ]
+            tools_block = "Available tools:\n" + "\n".join(tool_lines)
+        else:
+            tools_block = (
+                "NO TOOLS ARE AVAILABLE FOR THIS TASK. "
+                "Set done=true with a result based on your knowledge."
+            )
+
+        # Build history block
+        history_parts = []
+        for entry in history:
+            if entry.get("kind") == "correction":
+                history_parts.append(f"[Correction]: {entry['content']}")
+            else:
+                history_parts.append(
+                    f"Tool: {entry.get('name', '?')}\n"
+                    f"Args: {json.dumps(entry.get('args', {}))}\n"
+                    f"Result: {entry.get('result', '')}"
+                )
+        history_block = (
+            "Previous tool calls this turn:\n" + "\n\n".join(history_parts) if history_parts else ""
+        )
+
+        # Assemble full prompt
+        parts = [task_prompt, tools_block]
+        if history_block:
+            parts.append(history_block)
+        parts.append(
+            "Respond only in JSON. "
+            "Set done=true and result=<final answer> when the task is complete. "
+            "Set done=false and tool_call={name, args} to invoke a tool."
+        )
+        combined_prompt = "\n\n".join(parts)
+
+        logger.info(
+            "[LLAMACPP] ask_with_tools()  tools=%d  history_len=%d",
+            len(tools),
+            len(history),
+        )
+        raw = self.ask(combined_prompt, schema=EXECUTION_TURN_SCHEMA)
+        parsed = json.loads(raw)
+
+        if parsed.get("done"):
+            return NativeToolResponse(kind="text", text=parsed.get("result", ""))
+
+        tool_call = parsed.get("tool_call") or {}
+        return NativeToolResponse(
+            kind="tool_call",
+            tool_name=tool_call.get("name", ""),
+            tool_args=tool_call.get("args", {}),
+            tool_use_id="",  # llama.cpp does not assign provider-side IDs
+        )
+
     def clear_cache(self):
         if self._cache is not None:
             self._cache.clear()

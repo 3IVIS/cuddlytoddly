@@ -1,3 +1,5 @@
+# --- FILE: toddly/skills/web_research/tools.py ---
+
 # skills/web_research/tools.py
 
 import re
@@ -125,13 +127,21 @@ def _web_search(args: dict) -> str:
                     attempt + 1,
                 )
                 return "\n\n---\n\n".join(results)
+            # FIX: return an ERROR:-prefixed string so _dispatch_tool sets
+            # error=True and the executor treats this as a failed tool call
+            # rather than a successful (but empty) result.  Without the prefix
+            # the model sees a clean result, assumes the search worked, and
+            # proceeds to fabricate specific URLs and names.
             logger.warning("[WEB_SEARCH] No results on attempt %d for: %r", attempt + 1, query)
-            last_error = f"No results found for: {query}"
+            last_error = f'ERROR: no results found for "{query}" (attempt {attempt + 1}/3)'
         except Exception as e:
             logger.error("[WEB_SEARCH] Attempt %d failed: %s", attempt + 1, e)
             last_error = f"ERROR: web search failed — {e}"
 
-    return last_error or f"No results found for: {query}"
+    # All attempts exhausted — tell the model explicitly to try a different query.
+    return (
+        last_error or f'ERROR: no results found for "{query}"'
+    ) + " — try a different search query with different keywords or synonyms."
 
 
 def _fetch_url(args: dict) -> str:

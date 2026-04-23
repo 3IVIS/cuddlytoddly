@@ -1,5 +1,7 @@
 # --- FILE: cuddlytoddly/ui/web_server.py ---
 
+# --- FILE: cuddlytoddly/ui/web_server.py ---
+
 # ui/web_server.py
 """
 FastAPI + WebSocket server — drop-in replacement for the curses UI.
@@ -1020,7 +1022,41 @@ def _create_unified_app(
                 orch.event_queue.put(
                     Event(ADD_DEPENDENCY, {"node_id": node_id, "depends_on": added})
                 )
-        orch.event_queue.put(Event(RESET_NODE, {"node_id": node_id}))
+        # FIX: the original code always emitted RESET_NODE unconditionally.
+        # When the user edits only the result field this wiped the edit
+        # (reset() sets result=None) and SET_RESULT was never emitted, so the
+        # change was silently discarded.  Mirror the logic from the eager-init
+        # edit_node: emit SET_RESULT for result changes (resetting downstream
+        # children that are already done), and only emit RESET_NODE on the node
+        # itself when description, dependencies, or execution_steps changed.
+        result_changed = "result" in body and body.get("result", "") != (node.result or "")
+        desc_changed = "description" in body and body["description"] != node.metadata.get(
+            "description", ""
+        )
+        deps_changed = "dependencies" in body and set(body["dependencies"]) != set(
+            node.dependencies
+        )
+        steps_changed = "execution_steps" in body and body["execution_steps"] != node.metadata.get(
+            "execution_steps", []
+        )
+
+        if result_changed:
+            orch.event_queue.put(
+                Event(
+                    SET_RESULT,
+                    {
+                        "node_id": node_id,
+                        "result": body["result"] if body["result"] else None,
+                    },
+                )
+            )
+            for child_id in node.children:
+                child = snap.get(child_id)
+                if child and child.status == "done":
+                    orch.event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
+        elif desc_changed or deps_changed or steps_changed:
+            orch.event_queue.put(Event(RESET_NODE, {"node_id": node_id}))
+
         return {"ok": True}
 
     @app.delete("/api/node/{node_id:path}")

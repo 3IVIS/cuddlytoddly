@@ -1,3 +1,5 @@
+# --- FILE: cuddlytoddly/planning/llm_executor.py ---
+
 # planning/llm_executor.py
 
 import json
@@ -93,6 +95,7 @@ class LLMExecutor:
         max_tool_result_chars: int = 2000,
         max_history_entries: int = 3,
         working_dir: Path | str | None = None,
+        tool_call_log=None,
     ):
         self.llm = llm_client
         self.tools = tool_registry
@@ -103,6 +106,8 @@ class LLMExecutor:
         self.max_history_entries = max_history_entries
         # store working_dir as explicit state; forwarded to tools via _cwd arg key
         self.working_dir: Path | None = Path(working_dir) if working_dir else None
+        # optional structured tool-call log (ToolCallLog or NullToolCallLog)
+        self.tool_call_log = tool_call_log
 
     # ── Tool execution with CWD sandboxing ────────────────────────────────────
 
@@ -187,39 +192,44 @@ class LLMExecutor:
                     result.append(str(o))  # backward compat
             return result
 
+        def _render_clarification_entry(dep_id, dep):
+            """Build the resolved-input dict for a clarification node."""
+            known, unknown = self._parse_clarification_fields(dep.result)
+            lines = ["[Goal context from clarification node]"]
+            if known:
+                lines.append("  Known — use these values directly:")
+                for f in known:
+                    lines.append(f"    {f['label']}: {f['value']}")
+            if unknown:
+                lines.append(
+                    "  Unknown — the user has not provided these values. "
+                    "Do NOT invent or assume specific values for them. "
+                    "If your task cannot proceed without them, state what is "
+                    "missing and produce a template or general answer instead:"
+                )
+                for f in unknown:
+                    lines.append(f"    {f['label']}: not provided")
+            return {
+                "node_id": dep_id,
+                "description": dep.metadata.get("description", dep_id),
+                "declared_output": [],
+                "result": "\n".join(lines),
+                "_unknown_fields": unknown,
+                "_known_fields": known,
+            }
+
         resolved = []
+        included_ids: set[str] = set()
+
         for dep_id in node.dependencies:
+            included_ids.add(dep_id)
             dep = snapshot.get(dep_id)
             if not dep or not dep.result:
                 continue
 
             # ── Clarification node — render as structured known/unknown blocks ──
             if dep.node_type == "clarification":
-                known, unknown = self._parse_clarification_fields(dep.result)
-                lines = ["[Goal context from clarification node]"]
-                if known:
-                    lines.append("  Known — use these values directly:")
-                    for f in known:
-                        lines.append(f"    {f['label']}: {f['value']}")
-                if unknown:
-                    lines.append(
-                        "  Unknown — the user has not provided these values. "
-                        "Do NOT invent or assume specific values for them. "
-                        "If your task cannot proceed without them, state what is "
-                        "missing and produce a template or general answer instead:"
-                    )
-                    for f in unknown:
-                        lines.append(f"    {f['label']}: not provided")
-                resolved.append(
-                    {
-                        "node_id": dep_id,
-                        "description": dep.metadata.get("description", dep_id),
-                        "declared_output": [],
-                        "result": "\n".join(lines),
-                        "_unknown_fields": unknown,
-                        "_known_fields": known,
-                    }
-                )
+                resolved.append(_render_clarification_entry(dep_id, dep))
                 continue
 
             resolved.append(
@@ -243,6 +253,40 @@ class LLMExecutor:
                     ],
                 }
             )
+
+        # ── FIX: BFS over full ancestor chain for transitive clarification nodes ──
+        # A clarification node may be 2+ hops away (e.g. attached to the goal,
+        # which feeds Identify_Search_Terms, which feeds Filter_Repos_By_Review_Type).
+        # The direct-dep loop above only captures clarification nodes that are
+        # immediate parents; this BFS ensures every ancestor clarification node
+        # contributes its known/unknown fields to all downstream tasks.
+        queue = list(node.dependencies)
+        visited = set(queue)
+        ancestor_clar_entries = []
+
+        while queue:
+            dep_id = queue.pop(0)
+            dep = snapshot.get(dep_id)
+            if dep is None:
+                continue
+            if dep.node_type == "clarification" and dep.result and dep_id not in included_ids:
+                ancestor_clar_entries.append(_render_clarification_entry(dep_id, dep))
+                included_ids.add(dep_id)
+            # Keep walking regardless — there may be a clarification node further up.
+            for ancestor_id in getattr(dep, "dependencies", []):
+                if ancestor_id not in visited:
+                    visited.add(ancestor_id)
+                    queue.append(ancestor_id)
+
+        if ancestor_clar_entries:
+            logger.debug(
+                "[EXECUTOR] Node %s: found %d ancestor clarification node(s) via BFS: %s",
+                node.id,
+                len(ancestor_clar_entries),
+                [e["node_id"] for e in ancestor_clar_entries],
+            )
+            # Prepend so clarification context precedes task results in the prompt
+            resolved = ancestor_clar_entries + resolved
 
         # Distribute the char budget evenly across all upstream results
         if resolved:
@@ -379,6 +423,15 @@ class LLMExecutor:
             len(history_text),
             len(steps),
         )
+
+        # FIX: append the manual-retry nonce (if set) to extra_reminder so it
+        # becomes part of the prompt string and therefore the LLM cache key.
+        # The nonce is invisible to the model's reasoning but ensures a manual
+        # retry never collides with a prior cached response for the same prompt.
+        nonce = node.metadata.get("_retry_nonce", 0)
+        if nonce:
+            nonce_suffix = f"\n# retry_nonce={nonce}"
+            extra_reminder = (extra_reminder or "") + nonce_suffix
 
         return build_executor_prompt(
             node_id=node.id,
@@ -654,7 +707,8 @@ class LLMExecutor:
         """
         Decide whether to run the original plan or the broadened plan.
 
-        Returns (effective_description, effective_outputs, effective_steps).
+        Returns (effective_description, effective_outputs, effective_steps, mode)
+        where *mode* is ``'original'`` or ``'broadened'``.
 
         Logic:
         - If signal is None (all required inputs present) → original.
@@ -669,7 +723,7 @@ class LLMExecutor:
         original_steps = node.metadata.get("execution_steps", [])
 
         if signal is None:
-            return original_desc, original_outputs, original_steps
+            return original_desc, original_outputs, original_steps, "original"
 
         # Check if upstream inputs match the original required_input contract
         required_names = {
@@ -696,13 +750,13 @@ class LLMExecutor:
                 node.id,
                 sorted(required_names),
             )
-            return original_desc, original_outputs, original_steps
+            return original_desc, original_outputs, original_steps, "original"
 
         # Use the broadened plan
         broadened_desc = signal.broadened_description or original_desc
         broadened_outputs = signal.broadened_output if signal.broadened_output else original_outputs
         broadened_steps = signal.broadened_steps if signal.broadened_steps else original_steps
-        return broadened_desc, broadened_outputs, broadened_steps
+        return broadened_desc, broadened_outputs, broadened_steps, "broadened"
 
     def _llm_executable_types(self) -> frozenset:
         """
@@ -771,9 +825,30 @@ class LLMExecutor:
                 if reporter:
                     reporter.on_broadened_execution(signal)
 
-        effective_description, effective_outputs, effective_steps = self._select_goal_mode(
-            node, resolved_inputs, signal
+        effective_description, effective_outputs, effective_steps, _exec_mode = (
+            self._select_goal_mode(node, resolved_inputs, signal)
         )
+        # Tell the reporter (and via it the UI) which tab is actually running.
+        if reporter is not None:
+            reporter.on_execution_mode(_exec_mode)
+
+        # ── FIX: Explicit hallucination guard for broadened execution ──────────
+        # When running with a broadened description (some inputs are missing),
+        # the model can still fabricate values for the unknown fields even when
+        # told to stay general.  We append a hard, named-field prohibition
+        # directly to effective_description so it is present in every prompt
+        # variant (legacy and native) and is harder to ignore than a reminder
+        # buried elsewhere in the prompt.
+        if signal is not None and signal.broadened_for_missing:
+            missing_names = ", ".join(sorted(signal.broadened_for_missing))
+            effective_description = (
+                effective_description
+                + f"\n\nCRITICAL CONSTRAINT: The following inputs are unavailable: "
+                f"{missing_names}. "
+                "Do NOT invent, assume, or assign any specific value for these fields. "
+                "Any result that contains a fabricated value for an unknown field will be "
+                "rejected. Produce a general answer or template that is useful without them."
+            )
 
         use_native = (
             getattr(self.llm, "supports_native_tools", False)
@@ -824,7 +899,10 @@ class LLMExecutor:
         Centralising this logic removes ~40 lines of identical code that
         previously lived in both ``_execute_legacy`` and ``_execute_native``.
         """
+        import time as _time
+
         error = False
+        t0 = _time.time()
         try:
             tool_result = self._run_tool(tool_name, tool_args)
         except Exception as e:
@@ -839,6 +917,21 @@ class LLMExecutor:
                 "[EXECUTOR] Tool '%s' returned an error string: %.120s",
                 tool_name,
                 tool_result_str,
+            )
+
+        # Write to the structured tool-call log BEFORE truncation so the
+        # record always contains the complete tool output.  _cwd is stripped
+        # from args since it's an internal routing detail, not part of the
+        # logical call.
+        if self.tool_call_log is not None:
+            clean_args = {k: v for k, v in tool_args.items() if k != "_cwd"}
+            self.tool_call_log.record(
+                node_id=node_id,
+                tool_name=tool_name,
+                args=clean_args,
+                result=tool_result_str,
+                duration_ms=(_time.time() - t0) * 1000,
+                error=error,
             )
 
         if reporter and step_id:
@@ -900,6 +993,24 @@ class LLMExecutor:
             else:
                 awaiting_steps.append(step)
 
+        # ── FIX 3A: Per-turn live-search directive ────────────────────────────
+        # On the legacy path the model decides whether to call a tool by reading
+        # the prompt.  For steps typed search_web / fetch_url it can answer from
+        # training data instead of calling the tool; this reminder is appended to
+        # extra_reminder every turn so it is never silently dropped.
+        _LIVE_SEARCH_TYPES = {"search_web", "fetch_url"}
+        _needs_live_search = any(s.get("execution_type") in _LIVE_SEARCH_TYPES for s in llm_steps)
+        _registered_tool_names = set(self.tools.tools.keys()) if self.tools else set()
+        _live_tool_available = bool(_registered_tool_names & {"web_search", "fetch_url"})
+        _live_search_reminder = ""
+        if _needs_live_search and _live_tool_available:
+            _live_search_reminder = (
+                "\nIMPORTANT: One or more steps require a live web search. "
+                "You MUST call the web_search (or fetch_url) tool before setting "
+                "done=true. Do NOT answer from training data or prior knowledge — "
+                "only use information retrieved from actual tool calls this session."
+            )
+
         if awaiting_steps:
             logger.info(
                 "[EXECUTOR] Node %s: %d step(s) require user action: %s",
@@ -939,6 +1050,46 @@ class LLMExecutor:
 
             if expected_files and "write_file" not in {h["name"] for h in history}:
                 extra_reminder += build_executor_file_reminder(expected_files, turns_remaining)
+
+            # Append the live-search reminder until a tool call is made.
+            if _live_search_reminder and not any(
+                h.get("name") in _registered_tool_names for h in history
+            ):
+                extra_reminder += _live_search_reminder
+
+            # FIX: if a previous web_search turn already returned no results or
+            # an error, the model needs an explicit nudge to try a different
+            # query.  Without this it repeats the exact same query on the next
+            # turn — as seen in the logs where "python repository review" was
+            # submitted 9 times across 3 separate executor runs.
+            #
+            # We identify failed searches in history, extract the queries that
+            # were tried, and append a concrete instruction to vary the terms.
+            if _live_search_reminder:
+                failed_searches = [
+                    h
+                    for h in history
+                    if h.get("name") == "web_search"
+                    and (
+                        h.get("result", "").startswith("ERROR:")
+                        or "no results" in h.get("result", "").lower()
+                    )
+                ]
+                if failed_searches:
+                    tried_queries = [
+                        h["args"]["query"]
+                        for h in failed_searches
+                        if isinstance(h.get("args"), dict) and h["args"].get("query")
+                    ]
+                    if tried_queries:
+                        tried_str = ", ".join(f'"{q}"' for q in dict.fromkeys(tried_queries))
+                        extra_reminder += (
+                            f"\nWARNING: The following web_search queries returned no results: "
+                            f"{tried_str}. "
+                            "You MUST use a DIFFERENT query — try synonyms, a broader or "
+                            "narrower term, or break the search into smaller parts. "
+                            "Do NOT repeat any query that already failed."
+                        )
 
             if reporter:
                 reporter.on_llm_turn(turn)

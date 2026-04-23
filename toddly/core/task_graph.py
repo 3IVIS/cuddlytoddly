@@ -1,3 +1,5 @@
+# --- FILE: toddly/core/task_graph.py ---
+
 """
 TaskGraph
 
@@ -123,6 +125,9 @@ class TaskGraph:
             # re-populated in _on_node_done once the node actually completes
             # and passes verification.
             self.metadata.pop("produced_output", None)
+            # Clear active-tab indicator so the panel doesn't show a stale
+            # "▶ Running with this plan" badge from a previous execution.
+            self.metadata.pop("_active_tab", None)
 
         def to_dict(self):
             return {
@@ -420,3 +425,6 @@ class TaskGraph:
             return
         self.nodes[node_id].status = status
         self.execution_version += 1
+
+
+# --- FILE: toddly/engine/__init__.py ---

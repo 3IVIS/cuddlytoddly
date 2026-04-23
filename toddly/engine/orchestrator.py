@@ -1,3 +1,5 @@
+# --- FILE: toddly/engine/orchestrator.py ---
+
 # engine/llm_orchestrator.py
 
 from __future__ import annotations
@@ -144,6 +146,12 @@ class BaseOrchestrator:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._prev_results: dict[str, object] = {}
+        # Sentinel used by _prev_results to distinguish "key absent" from
+        # "key present but value is None".  node.result is None after reset(),
+        # so using None as the pop() default would make every post-retry
+        # completion appear unchanged and silently suppress downstream
+        # invalidation.
+        self._UNSET = object()
 
         # Fix #6: register LLM clients using duck typing so that _DeferredLLM
         # (which wraps a real client but is not a BaseLLM subclass) is also
@@ -437,6 +445,10 @@ class BaseOrchestrator:
                 current = self.graph.nodes.get(node.id)
                 if not current or current.status != "ready":
                     continue
+                # Store the previous result; use _UNSET only when the
+                # dict key is absent (pop default below).  Storing None here
+                # is intentional — it records that the node was tracked and
+                # its result was None (i.e. it was freshly reset).
                 self._prev_results[node.id] = current.result
                 snapshot = self.graph.get_snapshot()
 
@@ -783,6 +795,48 @@ class BaseOrchestrator:
                     reporter.hide_all()
                 self._reporters.pop(node_id, None)
 
+                # ── Downstream invalidation on result change ──────────────────
+                # _prev_results is populated just before a node is launched
+                # (in _execution_pass).  If the result is different from the
+                # previous run — i.e. this was a retry that produced genuinely
+                # new output — reset every downstream node that is already
+                # "done" so it re-executes with the updated input.  Nodes that
+                # are already pending/running/failed are left alone because they
+                # will pick up the fresh result naturally when they run.
+                prev = self._prev_results.pop(node_id, self._UNSET)
+                # Trigger invalidation when:
+                #   - the node was tracked (prev is not _UNSET), AND
+                #   - the new result differs from what it produced before.
+                # Crucially this fires even when prev=None (node was reset
+                # and result cleared) and the new result is a non-empty
+                # string — which is the normal manual-retry case.
+                if prev is not self._UNSET and result != prev:
+                    logger.info(
+                        "[EXEC] Node %s result changed after retry — "
+                        "invalidating downstream done nodes",
+                        node_id,
+                    )
+                    # Walk the full downstream subgraph (not just direct
+                    # children) so multi-hop dependents are also invalidated.
+                    to_invalidate: list[str] = list(node.children)
+                    visited: set[str] = set()
+                    while to_invalidate:
+                        cid = to_invalidate.pop()
+                        if cid in visited or cid not in self.graph.nodes:
+                            continue
+                        visited.add(cid)
+                        child = self.graph.nodes[cid]
+                        if child.status == "done":
+                            logger.info(
+                                "[EXEC] Resetting downstream node %s (result of %s changed)",
+                                cid,
+                                node_id,
+                            )
+                            self._apply(Event(RESET_NODE, {"node_id": cid}))
+                            # Continue walking: this child's own children may
+                            # also need invalidation.
+                            to_invalidate.extend(child.children)
+
     # ── Verification ─────────────────────────────────────────────────────────
 
     def _verify_result(self, node, result: str, snapshot):
@@ -1088,6 +1142,22 @@ class BaseOrchestrator:
             if not node or node_id in self._running_futures:
                 return
             self._apply(Event(RESET_NODE, {"node_id": node_id}))
+            # FIX: node.reset() clears retry_count and all retry metadata, so
+            # the next execution builds a prompt identical to the original run,
+            # causing the LLM client to return a cached result instead of
+            # re-running the model.  We stamp a _retry_nonce timestamp that
+            # reset() does NOT clear; _build_prompt() appends it to the prompt
+            # as a comment, making the cache key unique for every manual retry.
+            #
+            # A plain counter is NOT used here because the counter resets to 0
+            # when the session restarts (the nonce is not persisted via an
+            # event), so retry #1 in a new session produces nonce=1 — which
+            # collides with the nonce=1 cache entry written in the previous
+            # session.  A wall-clock timestamp is unique per call regardless
+            # of how many times the session has been restarted.
+            node = self.graph.nodes.get(node_id)
+            if node is not None:
+                node.metadata["_retry_nonce"] = time.time()
 
     def resume_node(self, node_id: str) -> bool:
         """
@@ -1625,19 +1695,34 @@ class Orchestrator(BaseOrchestrator):
         )
         clar_id = hint_clar_id
         if not clar_id or clar_id not in self.graph.nodes:
+            # ── FIX: BFS over all ancestors instead of direct-dep-only scan ──
+            # The clarification node may be 2+ hops away (e.g. attached to the
+            # goal node, which feeds an intermediate task, which feeds this one).
+            # The previous direct-dep loop silently failed for those cases and
+            # logged "no clarification node found upstream" even though one
+            # existed; the BFS ensures we always find it.
             node = self.graph.nodes.get(task_node_id)
             if not node:
                 return
-            for dep_id in node.dependencies:
+            queue = list(node.dependencies)
+            visited: set[str] = set(queue)
+            while queue and not clar_id:
+                dep_id = queue.pop(0)
                 dep = self.graph.nodes.get(dep_id)
-                if dep and dep.node_type == "clarification":
+                if dep is None:
+                    continue
+                if dep.node_type == "clarification":
                     clar_id = dep_id
                     break
+                for ancestor_id in dep.dependencies:
+                    if ancestor_id not in visited:
+                        visited.add(ancestor_id)
+                        queue.append(ancestor_id)
 
         if not clar_id or clar_id not in self.graph.nodes:
             logger.warning(
                 "[ORCHESTRATOR] Cannot patch clarification node for %s "
-                "— no clarification node found upstream",
+                "— no clarification node found upstream (BFS exhausted)",
                 task_node_id,
             )
             return
