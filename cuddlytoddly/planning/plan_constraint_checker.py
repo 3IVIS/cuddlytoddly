@@ -53,6 +53,7 @@ class PlanConstraintChecker:
                           batch dependents look like ghosts without this).
         """
         events = list(safe_events)
+        events = self._inject_dataflow_dependencies(events)
         events = self._dedup_edges(events)
         events = self._remove_cycles(events)
         events = self._check_required_input(events, known_dep_id=known_dep_id)
@@ -90,6 +91,91 @@ class PlanConstraintChecker:
                 if nid and dep:
                     edges.add((nid, dep))
         return new_nodes, edges
+
+    # ── Data-flow dependency injection ───────────────────────────────────────
+
+    @staticmethod
+    def _inject_dataflow_dependencies(events: list) -> list:
+        """
+        Mechanically inject missing ADD_DEPENDENCY edges wherever the planner
+        declared data-flow intent through output/required_input names but omitted
+        the corresponding dependency edge.
+
+        Algorithm
+        ---------
+        For every pair of new nodes (A, B):
+          if any name in A's ``output`` list matches any name in B's
+          ``required_input`` list, and B does not already declare A as a
+          dependency, emit ADD_DEPENDENCY(node_id=B, depends_on=A).
+
+        This is deterministic and requires no LLM call — the planner already
+        expresses the data contract through those name fields; this pass simply
+        enforces it structurally.
+
+        Example
+        -------
+        A outputs ``python_code_review_tools``.
+        B requires_input ``python_code_review_tools``.
+        The planner placed them in the same parallel_group and emitted no edge.
+        This pass adds ADD_DEPENDENCY(B, depends_on=A) so B waits for A's result
+        before executing, giving it the tool names to anchor its searches on.
+        """
+        new_nodes, existing_edges = PlanConstraintChecker._parse_events(events)
+
+        # Build output-name → producer node_id map.
+        # If two nodes declare the same output name the last one wins; in
+        # practice the validator rejects duplicate output names, so this is
+        # only a safety net.
+        output_to_producer: dict[str, str] = {}
+        for nid, payload in new_nodes.items():
+            for out in payload.get("metadata", {}).get("output", []):
+                name = out.get("name") if isinstance(out, dict) else str(out)
+                if name:
+                    output_to_producer[name] = nid
+
+        if not output_to_producer:
+            return events
+
+        injected: list[dict] = []
+        for nid, payload in new_nodes.items():
+            required_inputs = payload.get("metadata", {}).get("required_input", [])
+            for req in required_inputs:
+                req_name = req.get("name") if isinstance(req, dict) else str(req)
+                if not req_name:
+                    continue
+                producer_id = output_to_producer.get(req_name)
+                if not producer_id or producer_id == nid:
+                    continue
+                # Skip if edge already exists (declared in the ADD_NODE payload
+                # or as a standalone ADD_DEPENDENCY event).
+                if (nid, producer_id) in existing_edges:
+                    continue
+                logger.info(
+                    "[CHECKER] Injecting missing data-flow edge: %s → %s "
+                    "(output '%s' satisfies required_input '%s')",
+                    producer_id,
+                    nid,
+                    req_name,
+                    req_name,
+                )
+                injected.append(
+                    {
+                        "type": ADD_DEPENDENCY,
+                        "payload": {
+                            "node_id": nid,
+                            "depends_on": producer_id,
+                            "origin": "planning",
+                        },
+                    }
+                )
+                # Record so we don't emit duplicate edges if multiple
+                # required_input items map to the same producer.
+                existing_edges.add((nid, producer_id))
+
+        if injected:
+            logger.info("[CHECKER] Injected %d data-flow dependency edge(s)", len(injected))
+
+        return events + injected
 
     # ── Check 7: Deduplicate ADD_DEPENDENCY edges ─────────────────────────────
 

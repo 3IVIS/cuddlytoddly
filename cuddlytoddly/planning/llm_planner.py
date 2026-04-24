@@ -410,6 +410,10 @@ class LLMPlanner:
         skills_block = build_planner_skills_block(self.skills_summary)
         clarification_block = build_clarification_context_block(clarif_fields or [], clarif_prompt)
 
+        # Fix 4a: extract the root goal text so build_planner_prompt can inject
+        # a goal-alignment anchor that prevents surface-keyword task drift.
+        root_goal_text = goals[0].metadata.get("description", goals[0].id) if goals else ""
+
         return build_planner_prompt(
             pruned_view_json=json.dumps(pruned_view, indent=2),
             goals_repr_json=json.dumps(goals_repr, indent=2),
@@ -418,6 +422,7 @@ class LLMPlanner:
             min_tasks=self.min_tasks_per_goal,
             max_tasks=self.max_tasks_per_goal,
             clarification_block=clarification_block,
+            root_goal_text=root_goal_text,
         )
 
     # ── Event normalizer ──────────────────────────────────────────────────────

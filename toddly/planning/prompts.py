@@ -306,6 +306,7 @@ def build_planner_prompt(
     min_tasks: int = 3,
     max_tasks: int = 8,
     clarification_block: str = "",
+    root_goal_text: str = "",
 ) -> str:
     """
     Build the prompt sent to the LLM planner when decomposing a goal into tasks.
@@ -320,8 +321,33 @@ def build_planner_prompt(
     max_tasks           : Maximum tasks to generate per goal (from config).
     clarification_block : Pre-formatted block of goal context fields (empty string
                           when no clarification node exists for this goal).
+    root_goal_text      : The verbatim root goal description — injected as a
+                          goal-alignment anchor so the planner never drifts to
+                          a surface-level keyword interpretation of the goal.
     """
-    return f"""
+    # Fix 4a: build a goal-alignment anchor block when the root goal is known.
+    goal_alignment_block = ""
+    if root_goal_text:
+        goal_alignment_block = f"""
+CRITICAL — ROOT GOAL ALIGNMENT:
+The root goal you are decomposing is:
+  "{root_goal_text}"
+
+Every task you generate must directly and specifically advance this goal.
+Do NOT create tasks that address a keyword from the goal text in isolation if
+that keyword is not what the goal is actually asking for.
+Before finalising each task, ask yourself: "If this task completes successfully,
+does its output bring the plan meaningfully closer to achieving the root goal?"
+If not, redesign the task.
+
+Example of misalignment to avoid:
+  Goal: "find repos that help review a Python repo"
+  WRONG task: "Research popular Python repositories (stars, forks)"
+    — this targets the word "repositories" but not the goal's intent.
+  RIGHT task: "Find Python code-review and static-analysis tool repositories"
+    — this directly serves what the goal is asking for.
+"""
+    return f"""\
 You are a DAG planning assistant.
 
 Current DAG snapshot:
@@ -329,7 +355,7 @@ Current DAG snapshot:
 
 Goals to expand:
 {goals_repr_json}
-{existing_ids_note}{clarification_block}{skills_block}
+{existing_ids_note}{clarification_block}{goal_alignment_block}{skills_block}
 Your task is to decompose each goal into prerequisite tasks.
 
 Guidelines:
@@ -684,6 +710,18 @@ fix it in the output — do not just note it.
    Ask yourself: what would be missing? If the goal would not be fully met,
    add the tasks needed to close the gap. Be specific about what is missing
    and why, not just that something feels incomplete.
+
+1b. GOAL ALIGNMENT — For each task individually, ask: is this task specifically
+   working toward the stated goal, or is it targeting a keyword from the goal
+   text without serving the actual intent?
+   Before accepting a task, ask: "If this task completes successfully, does its
+   output bring the plan meaningfully closer to achieving the root goal?"
+   Common failure pattern: the goal mentions a concept (e.g. "Python repo") and
+   a task researches that concept generically (e.g. "list popular Python repos by
+   stars") rather than in the context the goal actually requires (e.g. "find
+   repos that are tools for reviewing Python code").
+   Rewrite or replace any task whose description or search steps address a
+   surface-level keyword rather than the goal's underlying objective.
 
 2. TASK REALISM — For each task, ask: could an autonomous agent actually
    execute this given only its description and the declared inputs?

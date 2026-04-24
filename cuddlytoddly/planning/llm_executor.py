@@ -1,11 +1,10 @@
-# --- FILE: cuddlytoddly/planning/llm_executor.py ---
-
 # planning/llm_executor.py
 
 import json
 import uuid
 from pathlib import Path
 
+from toddly.core.events import UPDATE_METADATA, Event
 from toddly.engine.signals import AwaitingInputSignal
 from toddly.infra.logging import get_logger
 from toddly.planning.llm_interface import LLMStoppedError, NativeToolResponse
@@ -492,7 +491,9 @@ class LLMExecutor:
             )
             return "", []
 
-    def _preflight_awaiting_input(self, node, resolved_inputs) -> "AwaitingInputSignal | None":
+    def _preflight_awaiting_input(
+        self, node, resolved_inputs, snapshot=None
+    ) -> "AwaitingInputSignal | None":
         """
         Ask the LLM whether this task can be executed with the currently
         available information and tools.
@@ -520,6 +521,20 @@ class LLMExecutor:
                 continue
             upstream_output_names.update(entry.get("_output_names", []))
 
+        # Fix 6: collect every output name declared by ANY task node in the DAG.
+        # A required_input whose name matches a DAG-task output is a data-flow
+        # dependency — it should NEVER be added as a clarification field
+        # (which the user would be asked to fill in).  It belongs to upstream
+        # task execution; the node must stay pending until that upstream result
+        # is actually available.
+        dag_output_names: set[str] = set()
+        if snapshot:
+            for snap_node in snapshot.values():
+                if snap_node.node_type == "task":
+                    for o in snap_node.metadata.get("output", []):
+                        if isinstance(o, dict) and o.get("name"):
+                            dag_output_names.add(o["name"])
+
         def _make_new_field(r: dict) -> dict:
             name = r.get("name", "")
             label = name.replace("_", " ").title()
@@ -536,6 +551,10 @@ class LLMExecutor:
             if r.get("name")
             and r.get("name") not in all_clar_keys
             and r.get("name") not in upstream_output_names
+            # Fix 6: never promote a data-flow output name to a clarification
+            # field — that would ask the user to supply something that should
+            # come from an upstream task result.
+            and r.get("name") not in dag_output_names
         ]
 
         if auto_new_fields:
@@ -786,7 +805,10 @@ class LLMExecutor:
     def execute(self, node, snapshot, reporter=None):
         resolved_inputs = self._resolve_inputs(node, snapshot)
 
-        signal = self._preflight_awaiting_input(node, resolved_inputs)
+        # Fix 6: pass snapshot so _preflight_awaiting_input can distinguish
+        # data-flow outputs (produced by task nodes) from genuine user-context
+        # fields, preventing task outputs from leaking into the clarification form.
+        signal = self._preflight_awaiting_input(node, resolved_inputs, snapshot)
 
         if signal is not None:
             if signal.broadened_description:
@@ -946,11 +968,77 @@ class LLMExecutor:
         return tool_result_str, error
 
     def _append_to_history(self, history: list, entry: dict) -> list:
-        """Append *entry* to *history*, trimming to ``max_history_entries``."""
+        """
+        Append *entry* to *history*, trimming to ``max_history_entries``.
+
+        When trimming is needed, a compact summary entry is prepended to the
+        retained window so the model retains awareness of earlier tool calls
+        and their outcomes.  Without this, the model has no memory of what
+        happened in turns that fell outside the window — leading to repeated
+        near-duplicate queries and wasted turns (context amnesia).
+
+        The summary occupies one history slot (``n_keep = max_history_entries - 1``
+        real entries + 1 summary), so the total list length never exceeds
+        ``max_history_entries``.
+
+        Entry format for the summary uses ``kind="correction"`` so both
+        execution paths handle it correctly without changes:
+          - Native path (ApiLLM._build_native_messages_*): the existing
+            ``kind="correction"`` branch renders it as a plain user message.
+          - Legacy path (history_text rendering loop): falls back to the
+            ``name`` / ``args`` / ``result`` fields which are always set.
+        """
         history.append(entry)
-        if len(history) > self.max_history_entries:
-            history = history[-self.max_history_entries :]
-        return history
+        if len(history) <= self.max_history_entries:
+            return history
+
+        # Reserve one slot for the summary; keep the most recent real entries.
+        n_keep = self.max_history_entries - 1
+        to_drop = history[: len(history) - n_keep]
+        retained = history[-n_keep:]
+
+        # Build a one-line summary per dropped entry so the model knows what
+        # happened without needing to see the full result text.
+        summary_lines = []
+        for e in to_drop:
+            kind = e.get("kind")
+            name = e.get("name", "")
+            result = e.get("result", "")
+            ok = not result.startswith("ERROR:") and "no results" not in result.lower()
+
+            if kind == "correction":
+                # Correction messages are injected by the executor itself;
+                # the model doesn't need the full text, just that one occurred.
+                summary_lines.append("[correction injected]")
+            elif name == "web_search":
+                q = e.get("args", {}).get("query", "?")
+                status = "OK" if ok else "FAILED"
+                summary_lines.append(f"[web_search query={q!r} → {status}]")
+            elif name == "fetch_url":
+                url = e.get("args", {}).get("url", "?")
+                status = "OK" if ok else "FAILED"
+                summary_lines.append(f"[fetch_url url={url!r} → {status}]")
+            elif name:
+                status = "OK" if ok else "FAILED"
+                summary_lines.append(f"[{name} → {status}]")
+            # Entries with neither kind nor name (e.g. malformed) are skipped.
+
+        if not summary_lines:
+            return retained
+
+        summary_text = "Context from earlier turns (trimmed from window): " + "; ".join(
+            summary_lines
+        )
+        summary_entry = {
+            # kind="correction" → native path renders this as a plain user message.
+            "kind": "correction",
+            "content": summary_text,
+            # Legacy path fallback — the history_text loop uses these fields.
+            "name": "[history-summary]",
+            "args": {},
+            "result": summary_text,
+        }
+        return [summary_entry] + retained
 
     # ──────────────────────────────────────────────────────────────────────────
     # Legacy execution loop (JSON-in-prompt, done+tool_call protocol)
@@ -978,6 +1066,12 @@ class LLMExecutor:
         expected_files = [_output_name(o) for o in effective_outputs if _is_file(o)]
         history: list[dict] = []
         tool_not_found_count = 0
+        # ── Fix 7: seed failed_queries from persisted metadata so previously
+        # failed queries survive session restarts (legacy path accumulator).
+        # tried_queries is a superset: all queries attempted, regardless of
+        # outcome.  Both are maintained independently of history trimming.
+        failed_queries: set[str] = set(node.metadata.get("_failed_queries", []))
+        tried_queries: set[str] = set(failed_queries)
 
         # ── Step capability pre-check ─────────────────────────────────────────
         # Partition the declared execution steps into those the LLM can handle
@@ -1051,44 +1145,49 @@ class LLMExecutor:
             if expected_files and "write_file" not in {h["name"] for h in history}:
                 extra_reminder += build_executor_file_reminder(expected_files, turns_remaining)
 
-            # Append the live-search reminder until a tool call is made.
-            if _live_search_reminder and not any(
-                h.get("name") in _registered_tool_names for h in history
-            ):
-                extra_reminder += _live_search_reminder
-
-            # FIX: if a previous web_search turn already returned no results or
-            # an error, the model needs an explicit nudge to try a different
-            # query.  Without this it repeats the exact same query on the next
-            # turn — as seen in the logs where "python repository review" was
-            # submitted 9 times across 3 separate executor runs.
-            #
-            # We identify failed searches in history, extract the queries that
-            # were tried, and append a concrete instruction to vary the terms.
+            # ── Per-turn search guidance (two-tier) ──────────────────────────
+            # Mirrors the native path.  Accumulated sets survive history
+            # trimming; injection happens every turn so the model always has
+            # the full picture regardless of which history entries remain.
             if _live_search_reminder:
-                failed_searches = [
-                    h
-                    for h in history
-                    if h.get("name") == "web_search"
-                    and (
-                        h.get("result", "").startswith("ERROR:")
-                        or "no results" in h.get("result", "").lower()
+                if not any(h.get("name") in _registered_tool_names for h in history):
+                    extra_reminder += _live_search_reminder
+
+                # Tier 1 — failed queries: do not repeat.
+                if failed_queries:
+                    failed_str = ", ".join(f'"{q}"' for q in sorted(failed_queries))
+                    extra_reminder += (
+                        f"\nWARNING: The following web_search queries returned no "
+                        f"results or an error: {failed_str}. "
+                        "Do NOT repeat these queries. "
+                        "Use completely different keywords or synonyms."
                     )
-                ]
-                if failed_searches:
-                    tried_queries = [
-                        h["args"]["query"]
-                        for h in failed_searches
-                        if isinstance(h.get("args"), dict) and h["args"].get("query")
-                    ]
-                    if tried_queries:
-                        tried_str = ", ".join(f'"{q}"' for q in dict.fromkeys(tried_queries))
+
+                # Tier 2 — all tried queries: avoid near-duplicates.
+                non_failed = tried_queries - failed_queries
+                if non_failed:
+                    tried_str = ", ".join(f'"{q}"' for q in sorted(non_failed))
+                    extra_reminder += (
+                        f"\nNOTE: You have already searched for: {tried_str}. "
+                        "Avoid repeating the same or very similar queries. "
+                        "If you need more information, try a meaningfully different angle."
+                    )
+
+                # Fetch-url nudge — prefer reading a page over searching again.
+                fetch_called = any(h.get("name") == "fetch_url" for h in history)
+                if not fetch_called:
+                    urls_available = any(
+                        h.get("name") == "web_search"
+                        and not h.get("result", "").startswith("ERROR:")
+                        and "URL:" in h.get("result", "")
+                        for h in history
+                    )
+                    if urls_available:
                         extra_reminder += (
-                            f"\nWARNING: The following web_search queries returned no results: "
-                            f"{tried_str}. "
-                            "You MUST use a DIFFERENT query — try synonyms, a broader or "
-                            "narrower term, or break the search into smaller parts. "
-                            "Do NOT repeat any query that already failed."
+                            "\nHINT: Your search results contain URLs. "
+                            "Rather than searching again, consider calling "
+                            "fetch_url on a promising URL to get the full "
+                            "page content."
                         )
 
             if reporter:
@@ -1127,6 +1226,43 @@ class LLMExecutor:
             if response.get("done"):
                 result = response.get("result", "")
                 tool_names_used = {h["name"] for h in history}
+
+                # ── Fix 1: reject done=true when every search tool call failed ──
+                # The model satisfies the "must call web_search before finishing"
+                # prompt guard by calling the tool, but then fabricates results
+                # when every call errors.  Catch this here — before the result
+                # ever reaches the verifier — and force a fresh attempt.
+                if _needs_live_search and _live_tool_available:
+                    successful_searches = [
+                        h
+                        for h in history
+                        if h.get("name") in ("web_search", "fetch_url")
+                        and not h.get("result", "").startswith("ERROR:")
+                        and "no results" not in h.get("result", "").lower()
+                    ]
+                    if not successful_searches:
+                        logger.warning(
+                            "[EXECUTOR] Node %s set done=true but all search tool "
+                            "calls failed — injecting correction turn",
+                            node.id,
+                        )
+                        history = self._append_to_history(
+                            history,
+                            {
+                                "name": "web_search",
+                                "args": {},
+                                "result": (
+                                    "ERROR: You cannot set done=true because every "
+                                    "web_search call returned an error or no results. "
+                                    "You MUST retrieve real data from the web before "
+                                    "completing this task. Try a completely different "
+                                    "search query — use different keywords, broaden or "
+                                    "narrow the terms, or break the search into smaller "
+                                    "parts. Do NOT fabricate results."
+                                ),
+                            },
+                        )
+                        continue
 
                 if expected_files and "write_file" not in tool_names_used:
                     logger.warning(
@@ -1182,6 +1318,18 @@ class LLMExecutor:
                     }
 
                 logger.info("[EXECUTOR] Node %s completed. Result: %.120s", node.id, result)
+                # ── Fix 7: persist failed queries before returning ────────────
+                # ── Fix 7: persist failed queries before returning ────────────
+                if failed_queries and reporter:
+                    reporter._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": node.id,
+                                "metadata": {"_failed_queries": sorted(failed_queries)},
+                            },
+                        )
+                    )
                 return result
 
             tool_call = response.get("tool_call")
@@ -1239,6 +1387,17 @@ class LLMExecutor:
             tool_result_str, _ = self._dispatch_tool(
                 node.id, tool_name, tool_args, reporter, step_id
             )
+            # ── Track queries in both tiers (mirrors native path) ────────────
+            if tool_name == "web_search":
+                q = tool_args.get("query", "").strip()
+                if q:
+                    tried_queries.add(q)
+                    if (
+                        tool_result_str.startswith("ERROR:")
+                        or "no results" in tool_result_str.lower()
+                    ):
+                        failed_queries.add(q)
+
             history = self._append_to_history(
                 history,
                 {"name": tool_name, "args": tool_args, "result": tool_result_str},
@@ -1249,6 +1408,17 @@ class LLMExecutor:
             node.id,
             self.max_turns,
         )
+        # ── Fix 7: persist failed queries even on turn exhaustion ────────────
+        if failed_queries and reporter:
+            reporter._apply(
+                Event(
+                    UPDATE_METADATA,
+                    {
+                        "node_id": node.id,
+                        "metadata": {"_failed_queries": sorted(failed_queries)},
+                    },
+                )
+            )
         return None
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1330,6 +1500,37 @@ class LLMExecutor:
             effective_steps=llm_steps if llm_steps else effective_steps,
         )
 
+        # ── Live-search reminder (mirrors legacy path) ────────────────────────
+        # Build once outside the loop; injected every turn until a tool fires.
+        _LIVE_SEARCH_TYPES = {"search_web", "fetch_url"}
+        _needs_live_search = any(s.get("execution_type") in _LIVE_SEARCH_TYPES for s in llm_steps)
+        _registered_tool_names = set(self.tools.tools.keys()) if self.tools else set()
+        _live_tool_available = bool(_registered_tool_names & {"web_search", "fetch_url"})
+        _live_search_reminder = ""
+        if _needs_live_search and _live_tool_available:
+            _live_search_reminder = (
+                "\nIMPORTANT: One or more steps require a live web search. "
+                "You MUST call the web_search (or fetch_url) tool before finishing. "
+                "Do NOT answer from training data or prior knowledge — "
+                "only use information retrieved from actual tool calls this session."
+            )
+
+        # ── FIX: tried_queries accumulator ────────────────────────────────────
+        # Two tiers of tracking, both maintained independently of history
+        # trimming (max_history_entries=3 on llamacpp means early entries are
+        # evicted before the run ends):
+        #
+        #   failed_queries  — queries that returned ERROR or no results.
+        #                     Seeded from persisted metadata (_failed_queries)
+        #                     so they survive session restarts (Fix 7).
+        #   tried_queries   — ALL queries attempted this session, regardless of
+        #                     outcome.  Prevents near-duplicate queries (e.g.
+        #                     "python code review tools github" vs "python code
+        #                     review tools on github") that waste turns even
+        #                     when the first attempt technically succeeded.
+        failed_queries: set[str] = set(node.metadata.get("_failed_queries", []))
+        tried_queries: set[str] = set(failed_queries)  # superset; grows each turn
+
         for turn in range(self.max_turns):
             turns_remaining = self.max_turns - turn
 
@@ -1338,6 +1539,53 @@ class LLMExecutor:
                 extra_reminder = build_executor_native_file_reminder(
                     expected_files, turns_remaining
                 )
+
+            # ── FIX: per-turn search guidance ──────────────────────────────
+            # Injected every turn so the guidance survives history trimming.
+            if _live_search_reminder:
+                extra_reminder += _live_search_reminder
+
+                # Tier 1 — failed queries: explicitly warn the model not to
+                # repeat these (they returned errors or no results).
+                if failed_queries:
+                    failed_str = ", ".join(f'"{q}"' for q in sorted(failed_queries))
+                    extra_reminder += (
+                        f"\nWARNING: The following web_search queries returned no "
+                        f"results or an error: {failed_str}. "
+                        "Do NOT repeat these queries. "
+                        "Use completely different keywords or synonyms."
+                    )
+
+                # Tier 2 — all tried queries: nudge the model away from
+                # near-duplicates of queries that technically returned results
+                # but were semantically equivalent to an earlier call.
+                non_failed = tried_queries - failed_queries
+                if non_failed:
+                    tried_str = ", ".join(f'"{q}"' for q in sorted(non_failed))
+                    extra_reminder += (
+                        f"\nNOTE: You have already searched for: {tried_str}. "
+                        "Avoid repeating the same or very similar queries. "
+                        "If you need more information, try a meaningfully different angle."
+                    )
+
+                # Fetch-url nudge — if at least one search succeeded and
+                # produced URLs but fetch_url has not been called yet, remind
+                # the model to read a page rather than doing another search.
+                fetch_called = any(h.get("name") == "fetch_url" for h in history)
+                if not fetch_called:
+                    urls_available = any(
+                        h.get("name") == "web_search"
+                        and not h.get("result", "").startswith("ERROR:")
+                        and "URL:" in h.get("result", "")
+                        for h in history
+                    )
+                    if urls_available:
+                        extra_reminder += (
+                            "\nHINT: Your search results contain URLs. "
+                            "Rather than searching again, consider calling "
+                            "fetch_url on a promising URL to get the full "
+                            "page content."
+                        )
 
             current_prompt = task_prompt + "\n" + extra_reminder if extra_reminder else task_prompt
 
@@ -1380,6 +1628,38 @@ class LLMExecutor:
                         },
                     )
                     continue
+
+                # ── Fix 1: reject final answer when all search calls failed ───
+                if _needs_live_search and _live_tool_available:
+                    successful_searches = [
+                        h
+                        for h in history
+                        if h.get("name") in ("web_search", "fetch_url")
+                        and not h.get("result", "").startswith("ERROR:")
+                        and "no results" not in h.get("result", "").lower()
+                    ]
+                    if not successful_searches:
+                        logger.warning(
+                            "[EXECUTOR] Node %s gave final answer but all search tool "
+                            "calls failed — injecting correction turn (native)",
+                            node.id,
+                        )
+                        history = self._append_to_history(
+                            history,
+                            {
+                                "kind": "correction",
+                                "content": (
+                                    "Your answer cannot be accepted because every "
+                                    "web_search call returned an error or no results. "
+                                    "You MUST successfully retrieve real data from the "
+                                    "web before finishing. Try a completely different "
+                                    "search query — use different keywords, broaden or "
+                                    "narrow the terms, or break the search into smaller "
+                                    "parts. Do NOT fabricate results."
+                                ),
+                            },
+                        )
+                        continue
 
                 # ── Surface awaiting_user steps ───────────────────────────────
                 if awaiting_steps:
@@ -1412,6 +1692,17 @@ class LLMExecutor:
                     node.id,
                     result,
                 )
+                # ── Fix 7: persist failed queries before returning ────────────
+                if failed_queries and reporter:
+                    reporter._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": node.id,
+                                "metadata": {"_failed_queries": sorted(failed_queries)},
+                            },
+                        )
+                    )
                 return result
 
             tool_name = response.tool_name
@@ -1455,9 +1746,22 @@ class LLMExecutor:
             tool_not_found_count = 0
             step_id = reporter.on_tool_start(tool_name, tool_args) if reporter else None
 
-            tool_result_str, _ = self._dispatch_tool(
+            tool_result_str, tool_error = self._dispatch_tool(
                 node.id, tool_name, tool_args, reporter, step_id
             )
+
+            # ── FIX: track queries in both tiers ─────────────────────────────
+            # tried_queries: every web_search query regardless of outcome.
+            # failed_queries: only queries that errored or returned no results.
+            # Both survive history trimming; failed_queries is persisted so it
+            # also survives session restarts (Fix 7).
+            if tool_name == "web_search":
+                q = tool_args.get("query", "").strip()
+                if q:
+                    tried_queries.add(q)
+                    if tool_error or "no results" in tool_result_str.lower():
+                        failed_queries.add(q)
+
             history = self._append_to_history(
                 history,
                 {
@@ -1473,132 +1777,17 @@ class LLMExecutor:
             node.id,
             self.max_turns,
         )
-        return None
-
-        for turn in range(self.max_turns):
-            turns_remaining = self.max_turns - turn
-
-            extra_reminder = ""
-            if expected_files and "write_file" not in {h["name"] for h in history}:
-                extra_reminder = build_executor_native_file_reminder(
-                    expected_files, turns_remaining
-                )
-
-            current_prompt = task_prompt + "\n" + extra_reminder if extra_reminder else task_prompt
-
-            if reporter:
-                reporter.on_llm_turn(turn)
-
-            try:
-                response: NativeToolResponse = self.llm.ask_with_tools(
-                    current_prompt, tools, history
-                )
-            except LLMStoppedError:
-                logger.warning("[EXECUTOR] LLM stopped during native execution of %s", node.id)
-                return None
-            except Exception as e:
-                logger.error("[EXECUTOR] LLM error during native execution of %s: %s", node.id, e)
-                if reporter:
-                    reporter.on_llm_error(turn, str(e))
-                return None
-
-            if response.kind == "text":
-                result = response.text
-
-                if expected_files and "write_file" not in {h["name"] for h in history}:
-                    logger.warning(
-                        "[EXECUTOR] Node %s gave final answer without calling write_file "
-                        "— injecting correction turn",
-                        node.id,
-                    )
-                    # Fix #10: the old code injected a fake tool_use history
-                    # entry (pretending the model called write_file with an ID
-                    # it never issued).  Both Anthropic and OpenAI validate
-                    # tool_use_id consistency and reject such conversations with
-                    # a 400 error.  Use a plain "correction" entry instead,
-                    # which _build_native_messages_* renders as a user message —
-                    # a safe, provider-agnostic way to redirect the model.
-                    history = self._append_to_history(
-                        history,
-                        {
-                            "kind": "correction",
-                            "content": (
-                                f"Your previous response was a text answer, but this task "
-                                f"requires you to call write_file to produce "
-                                f"{expected_files[0]}. "
-                                f"Do not give a final text answer — call write_file with the "
-                                f"actual file content now."
-                            ),
-                        },
-                    )
-                    continue
-
-                logger.info(
-                    "[EXECUTOR] Node %s completed (native). Result: %.120s",
-                    node.id,
-                    result,
-                )
-                return result
-
-            tool_name = response.tool_name
-            tool_args = response.tool_args
-            tool_use_id = response.tool_use_id or f"toolu_{uuid.uuid4().hex[:12]}"
-
-            if tool_name not in self.tools.tools:
-                logger.warning("[EXECUTOR] Node %s requested unknown tool '%s'", node.id, tool_name)
-                if reporter:
-                    step_id = reporter.on_tool_start(tool_name, tool_args)
-                    reporter.on_tool_done(
-                        step_id,
-                        tool_name,
-                        tool_args,
-                        f"ERROR: tool '{tool_name}' not found",
-                        error=True,
-                    )
-                history = self._append_to_history(
-                    history,
+        # ── Fix 7: persist failed queries even on turn exhaustion ────────────
+        if failed_queries and reporter:
+            reporter._apply(
+                Event(
+                    UPDATE_METADATA,
                     {
-                        "name": tool_name,
-                        "args": tool_args,
-                        "result": (
-                            f"ERROR: tool '{tool_name}' is not available. "
-                            "Use only the tools listed in the system prompt."
-                        ),
-                        "tool_use_id": tool_use_id,
+                        "node_id": node.id,
+                        "metadata": {"_failed_queries": sorted(failed_queries)},
                     },
                 )
-                tool_not_found_count += 1
-                if tool_not_found_count >= 2:
-                    logger.error(
-                        "[EXECUTOR] Node %s: %d consecutive tool-not-found errors — aborting",
-                        node.id,
-                        tool_not_found_count,
-                    )
-                    return None
-                continue
-
-            logger.info("[EXECUTOR] Node %s calling tool '%s' (native)", node.id, tool_name)
-            tool_not_found_count = 0
-            step_id = reporter.on_tool_start(tool_name, tool_args) if reporter else None
-
-            tool_result_str, _ = self._dispatch_tool(
-                node.id, tool_name, tool_args, reporter, step_id
             )
-            history = self._append_to_history(
-                history,
-                {
-                    "name": tool_name,
-                    "args": tool_args,
-                    "result": tool_result_str,
-                    "tool_use_id": tool_use_id,
-                },
-            )
-
-        logger.error(
-            "[EXECUTOR] Node %s did not complete within %d turns (native)",
-            node.id,
-            self.max_turns,
-        )
         return None
 
     def _build_native_task_prompt(

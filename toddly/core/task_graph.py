@@ -1,5 +1,3 @@
-# --- FILE: toddly/core/task_graph.py ---
-
 """
 TaskGraph
 
@@ -243,7 +241,10 @@ class TaskGraph:
                 continue
             # awaiting_input / awaiting_user deps are treated like failed — not satisfied
             if all(
-                dep in self.nodes and self.nodes[dep].status == "done" for dep in node.dependencies
+                dep in self.nodes
+                and self.nodes[dep].status == "done"
+                and bool(self.nodes[dep].result)  # Fix 2: a reset node has no result
+                for dep in node.dependencies
             ):
                 node.status = "ready"
             else:
@@ -278,7 +279,10 @@ class TaskGraph:
             if child is None or child.status in _SKIP:
                 continue
             if all(
-                dep in self.nodes and self.nodes[dep].status == "done" for dep in child.dependencies
+                dep in self.nodes
+                and self.nodes[dep].status == "done"
+                and bool(self.nodes[dep].result)  # Fix 2: reset node has no result
+                for dep in child.dependencies
             ):
                 child.status = "ready"
             else:
@@ -291,7 +295,10 @@ class TaskGraph:
             if other.status != "ready":
                 continue
             if not all(
-                dep in self.nodes and self.nodes[dep].status == "done" for dep in other.dependencies
+                dep in self.nodes
+                and self.nodes[dep].status == "done"
+                and bool(self.nodes[dep].result)  # Fix 2: reset node has no result
+                for dep in other.dependencies
             ):
                 other.status = "pending"
 
@@ -425,6 +432,3 @@ class TaskGraph:
             return
         self.nodes[node_id].status = status
         self.execution_version += 1
-
-
-# --- FILE: toddly/engine/__init__.py ---
