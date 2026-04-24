@@ -393,6 +393,17 @@ CLARIFICATION_GENERATION_SCHEMA = {
                         "type": "string",
                         "description": "One sentence explaining why this information would significantly improve the plan.",
                     },
+                    "hint": {
+                        "type": "string",
+                        "description": (
+                            "Optional but strongly encouraged for any field whose label alone "
+                            "might be ambiguous. A short, example-driven prompt that tells the "
+                            "user what format or scope is expected. "
+                            "e.g. 'e.g. static analysis tools, dependency managers, test frameworks' "
+                            "or 'e.g. £60,000–£70,000 base, or leave blank if unsure'. "
+                            "Do NOT repeat the rationale here — focus on examples and format."
+                        ),
+                    },
                 },
             },
         },

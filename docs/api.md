@@ -22,7 +22,7 @@ All JSON schemas used for structured LLM output are defined here and imported by
 | `AWAITING_INPUT_CHECK_SCHEMA` | Executor pre-flight check (determines whether to use broadened description) |
 | `BROADENED_DESCRIPTION_SCHEMA` | Executor fallback call (generates broadened description when primary call returns empty) |
 
-All schemas from this module are also re-exported by `toddly.planning.llm_interface` for backward compatibility.
+All schemas from this module are also re-exported by `agent_core.planning.llm_interface` for backward compatibility.
 
 ---
 
@@ -151,7 +151,7 @@ LLAMACPP_SYSTEM_PROMPT: str # system content for the llama.cpp chat template
 
 ---
 
-## `toddly.planning.llm_interface`
+## `agent_core.planning.llm_interface`
 
 ### `create_llm_client(backend, **kwargs) → BaseLLM`
 
@@ -189,10 +189,10 @@ def generate(self, prompt: str) -> str:
 
 ### `TokenCounter`
 
-Module-level singleton (`token_counter`) that tracks tokens consumed across all LLM calls in the current process. Imported from `toddly.planning.llm_interface`.
+Module-level singleton (`token_counter`) that tracks tokens consumed across all LLM calls in the current process. Imported from `agent_core.planning.llm_interface`.
 
 ```python
-from toddly.planning.llm_interface import token_counter
+from agent_core.planning.llm_interface import token_counter
 
 token_counter.prompt_tokens     # int — cumulative prompt tokens
 token_counter.completion_tokens # int — cumulative completion tokens
@@ -230,7 +230,7 @@ When `cache_path` is provided, a cache hit is served immediately without any net
 Persistent JSON cache shared by all three backends. Stores `{sha256(key): {prompt, response}}` pairs. Loaded into memory at construction; written atomically to disk on every new entry.
 
 ```python
-from toddly.planning.llm_interface import LlamaCppCache
+from agent_core.planning.llm_interface import LlamaCppCache
 
 cache = LlamaCppCache("my_cache.json")
 cache.set(prompt, response)
@@ -303,7 +303,7 @@ Checks are applied in this order, as earlier repairs affect what later checks se
 
 ## `cuddlytoddly.planning.llm_executor`
 
-### `LLMExecutor(llm_client, tool_registry, max_turns, max_inline_result_chars, max_total_input_chars, max_tool_result_chars, max_history_entries)`
+### `LLMExecutor(llm_client, tool_registry, max_successful_turns, max_unsuccessful_turns, max_inline_result_chars, max_total_input_chars, max_tool_result_chars, max_history_entries)`
 
 Executes a single task node via multi-turn LLM + tool calls.
 
@@ -311,16 +311,19 @@ Executes a single task node via multi-turn LLM + tool calls.
 executor = LLMExecutor(
     llm_client=llm,
     tool_registry=registry,
-    max_turns=5,                    # from config [orchestrator]
-    max_inline_result_chars=3000,   # from config [executor]
-    max_total_input_chars=3000,     # from config [executor]
-    max_tool_result_chars=2000,     # from config [executor]
-    max_history_entries=3,          # from config [executor]
+    max_successful_turns=10,        # from config [llamacpp] / [claude] / [openai]
+    max_unsuccessful_turns=10,      # from config [llamacpp] / [claude] / [openai]
+    max_inline_result_chars=3000,   # from config [llamacpp] / [claude] / [openai]
+    max_total_input_chars=3000,     # from config [llamacpp] / [claude] / [openai]
+    max_tool_result_chars=2000,     # from config [llamacpp] / [claude] / [openai]
+    max_history_entries=3,          # from config [llamacpp] / [claude] / [openai]
 )
 result: str | None = executor.execute(node, snapshot, reporter)
 ```
 
-All numeric parameters default to reasonable values when constructing programmatically. When started via the CLI they are read from `config.toml` by `__main__._init_system()`.
+All numeric parameters default to reasonable values when constructing programmatically. When started via the CLI they are read from the active backend's section of `config.toml` by `__main__._init_system()`.
+
+`max_successful_turns` caps turns where a tool call returned a result without error; `max_unsuccessful_turns` caps turns where a tool call errored or returned no results. Both counters run independently. The final turn of their combined budget is always reserved — on that turn the model receives no tools and a `FINAL TURN` notice, ensuring it always has a chance to return its result. Old configs that set `max_turns` (deprecated) set both to the same value.
 
 `reporter` is an `ExecutionStepReporter` instance; pass `None` to skip step tracking.
 
@@ -361,7 +364,7 @@ These keys are visible in both the web UI and curses UI as a "Running as (broade
 
 ---
 
-## `toddly.engine.orchestrator`
+## `agent_core.engine.orchestrator`
 
 ### `Orchestrator(graph, planner, executor, event_log, event_queue, max_workers, quality_gate, max_gap_fill_attempts, idle_sleep, max_retries)`
 
@@ -379,6 +382,7 @@ orchestrator = Orchestrator(
     max_gap_fill_attempts=2,   # from config [orchestrator]
     idle_sleep=0.5,            # from config [orchestrator]
     max_retries=5,             # from config [orchestrator]
+
 )
 orchestrator.start()   # runs in a background thread
 orchestrator.stop()    # signals shutdown
@@ -443,7 +447,7 @@ Returns `{"ok": true, "path": "<absolute path to written file>"}`.
 
 ---
 
-## `toddly.engine.quality_gate`
+## `agent_core.engine.quality_gate`
 
 ### `QualityGate(llm_client, tool_registry=None)`
 
@@ -489,7 +493,7 @@ result: str = registry.execute(tool_name: str, input_data: dict)
 
 ---
 
-## `toddly.core.task_graph`
+## `agent_core.core.task_graph`
 
 ### `TaskGraph`
 
@@ -574,6 +578,8 @@ Loads `config.toml`, creating it with auto-detected defaults on first run.
 Convenience accessors that return the named config section as a flat dict with defaults filled in. Old `config.toml` files that predate a section will work without requiring a manual edit.
 
 `get_planner_cfg` returns `min_tasks_per_goal`, `max_tasks_per_goal`, and `scrutinize_plan`.
+
+`get_orchestrator_cfg` returns `max_workers`, `max_successful_turns`, `max_unsuccessful_turns`, `max_gap_fill_attempts`, `idle_sleep`, and `max_retries`. The deprecated `max_turns` key is accepted as a fallback that sets both turn budgets to the same value.
 
 ```python
 from cuddlytoddly.config import load_config, get_planner_cfg

@@ -134,7 +134,7 @@ class QualityGate:
 
         # ── Collect upstream context for the LLM verifier ────────────────────
         unknown_fields_context = self._collect_unknown_fields(node, snapshot)
-        tool_results_context = self._build_tool_results_context(node, snapshot)
+        tool_results_context, tool_call_content = self._build_tool_results_context(node, snapshot)
         broadening_context = self._build_broadening_context(node)
         upstream_results_context = self._build_upstream_results_context(node, snapshot)
 
@@ -154,6 +154,7 @@ class QualityGate:
             tool_results_context=tool_results_context,
             broadening_context=broadening_context,
             upstream_results_context=upstream_results_context,
+            tool_call_content=tool_call_content,
         )
 
         try:
@@ -186,7 +187,7 @@ class QualityGate:
             "tbd",
             "",
         }
-        unknown_labels = []
+        unknown_fields = []
 
         for dep_id in node.dependencies:
             dep = snapshot.get(dep_id)
@@ -201,17 +202,24 @@ class QualityGate:
                     continue
                 val = str(f.get("value", "")).strip().lower()
                 if val in _PLACEHOLDERS:
-                    unknown_labels.append(f.get("label") or f.get("key", "?"))
+                    unknown_fields.append(
+                        {
+                            "label": f.get("label") or f.get("key", "?"),
+                            "hint": f.get("hint", "").strip(),
+                        }
+                    )
 
-        if not unknown_labels:
+        if not unknown_fields:
             return ""
 
         lines = [
             "The following context was unknown when this task ran "
             "(the user did not provide these values):",
         ]
-        for label in unknown_labels:
-            lines.append(f"  - {label}")
+        for f in unknown_fields:
+            hint = f["hint"]
+            hint_suffix = f" ({hint})" if hint else ""
+            lines.append(f"  - {f['label']}{hint_suffix}")
         lines.append(
             "If the result contains specific invented values for these fields "
             "(e.g. a specific salary figure, a named company, a precise percentage) "
@@ -297,47 +305,66 @@ class QualityGate:
             return str(p)
         return str(self.working_dir / p)
 
-    def _build_tool_results_context(self, node, snapshot) -> str:
+    def _build_tool_results_context(self, node, snapshot) -> tuple[str, str]:
         """
         Build a factual summary of this node's tool call outcomes for inclusion
-        in the verifier prompt.  Returns empty string when no tool calls were made.
+        in the verifier prompt.  Returns a (summary, content) tuple.
 
-        The LLM verifier uses this context to decide whether specific figures in
-        the result could plausibly have come from a successful search, or whether
+        summary : describes how many calls succeeded/failed overall.
+        content : truncated content from successful calls, for the verifier to
+                  cross-check against the result and catch fabricated values.
+
+        The LLM verifier uses both to decide whether specific figures in the
+        result could plausibly have come from a successful search, or whether
         they are likely fabricated from prior knowledge.
         """
+        _CONTENT_BUDGET = 400  # chars per successful tool result
+
         step_nodes = [
             n
             for nid, n in snapshot.items()
             if nid.startswith(node.id + "__step_") and n.metadata.get("step_type") == "tool_call"
         ]
         if not step_nodes:
-            return ""
+            return "", ""
 
         total = 0
         failed = 0
+        successful_contents: list[str] = []
         for sn in step_nodes:
             for attempt in sn.metadata.get("attempts", []):
                 total += 1
                 if attempt.get("status") == "error":
                     failed += 1
+                else:
+                    content = str(attempt.get("result", "")).strip()
+                    if content:
+                        tool = sn.metadata.get("tool_name", "tool")
+                        snippet = content[:_CONTENT_BUDGET]
+                        if len(content) > _CONTENT_BUDGET:
+                            snippet += f"…[{len(content)} chars total]"
+                        successful_contents.append(f"[{tool}] {snippet}")
 
         if total == 0:
-            return ""
+            return "", ""
 
         if failed == total:
-            return (
+            summary = (
                 f"All {total} tool call attempt(s) for this task returned errors "
                 "or no results. If the result contains specific figures, names, or "
                 "statistics that could only come from a successful search, it is "
                 "likely fabricated from the model's prior knowledge."
             )
         elif failed > 0:
-            return (
+            summary = (
                 f"{failed} of {total} tool call attempt(s) returned errors or no "
                 f"results; {total - failed} returned data."
             )
-        return f"All {total} tool call attempt(s) returned data successfully."
+        else:
+            summary = f"All {total} tool call attempt(s) returned data successfully."
+
+        content_block = "\n\n".join(successful_contents) if successful_contents else ""
+        return summary, content_block
 
     def _build_broadening_context(self, node) -> str:
         """

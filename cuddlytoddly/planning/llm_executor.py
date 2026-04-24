@@ -56,7 +56,14 @@ class LLMExecutor:
       2. Ask the LLM → it responds with either done=True + result,
          or done=False + tool_call
       3. If tool_call, run the tool and append the result to history
-      4. Repeat until done=True or max_turns reached
+      4. Repeat until done=True or a turn budget is exhausted
+
+    Two independent turn budgets control the loop:
+      max_successful_turns   — turns where a tool call returned without error.
+      max_unsuccessful_turns — turns where a tool call errored, no tool call
+                               was made, or a correction was injected.
+    The final turn of the combined budget is always reserved for the model
+    to synthesise and return its result without calling any more tools.
 
     All numeric limits come from the application config (passed via __init__)
     so users can tune behaviour without editing source code.
@@ -88,17 +95,26 @@ class LLMExecutor:
         self,
         llm_client,
         tool_registry=None,
-        max_turns: int = 5,
+        max_successful_turns: int = 10,
+        max_unsuccessful_turns: int = 10,
+        max_turns: int | None = None,  # deprecated: sets both budgets to the same value
         max_inline_result_chars: int = 3000,
         max_total_input_chars: int = 3000,
         max_tool_result_chars: int = 2000,
         max_history_entries: int = 3,
         working_dir: Path | str | None = None,
         tool_call_log=None,
+        quality_gate=None,
     ):
         self.llm = llm_client
         self.tools = tool_registry
-        self.max_turns = max_turns
+        if max_turns is not None:
+            # Deprecated single-budget path: treat both limits identically.
+            self.max_successful_turns = max_turns
+            self.max_unsuccessful_turns = max_turns
+        else:
+            self.max_successful_turns = max_successful_turns
+            self.max_unsuccessful_turns = max_unsuccessful_turns
         self.max_inline_result_chars = max_inline_result_chars
         self.max_total_input_chars = max_total_input_chars
         self.max_tool_result_chars = max_tool_result_chars
@@ -107,6 +123,8 @@ class LLMExecutor:
         self.working_dir: Path | None = Path(working_dir) if working_dir else None
         # optional structured tool-call log (ToolCallLog or NullToolCallLog)
         self.tool_call_log = tool_call_log
+        # optional quality gate for inline result verification (Issue 6)
+        self.quality_gate = quality_gate
 
     # ── Tool execution with CWD sandboxing ────────────────────────────────────
 
@@ -140,8 +158,8 @@ class LLMExecutor:
         """
         Parse a clarification node result into (known_fields, unknown_fields).
 
-        known_fields   : list of {key, label, value} where value is not a placeholder
-        unknown_fields : list of {key, label} where value was "unknown" or similar
+        known_fields   : list of {key, label, value, hint?} where value is not a placeholder
+        unknown_fields : list of {key, label, hint?} where value was "unknown" or similar
 
         Used by _resolve_inputs to annotate the executor prompt, and passed
         to the quality gate so it can flag fabricated values for unknown fields.
@@ -166,16 +184,21 @@ class LLMExecutor:
             if not isinstance(f, dict):
                 continue
             val = str(f.get("value", "")).strip().lower()
+            hint = f.get("hint", "").strip()
             if val in _PLACEHOLDERS:
-                unknown.append({"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))})
+                entry = {"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))}
+                if hint:
+                    entry["hint"] = hint
+                unknown.append(entry)
             else:
-                known.append(
-                    {
-                        "key": f.get("key", ""),
-                        "label": f.get("label", f.get("key", "")),
-                        "value": f.get("value", ""),
-                    }
-                )
+                entry = {
+                    "key": f.get("key", ""),
+                    "label": f.get("label", f.get("key", "")),
+                    "value": f.get("value", ""),
+                }
+                if hint:
+                    entry["hint"] = hint
+                known.append(entry)
         return known, unknown
 
     def _resolve_inputs(self, node, snapshot):
@@ -207,7 +230,9 @@ class LLMExecutor:
                     "missing and produce a template or general answer instead:"
                 )
                 for f in unknown:
-                    lines.append(f"    {f['label']}: not provided")
+                    hint = f.get("hint", "")
+                    hint_suffix = f" ({hint})" if hint else ""
+                    lines.append(f"    {f['label']}{hint_suffix}: not provided")
             return {
                 "node_id": dep_id,
                 "description": dep.metadata.get("description", dep_id),
@@ -615,15 +640,15 @@ class LLMExecutor:
             raise LLMStoppedError("LLM is paused — deferring broadening call until resumed")
 
         def _fmt_fields(fields):
-            return (
-                "\n".join(
-                    f"  - {f.get('key', '?')} ({f.get('label', f.get('key', '?'))}): "
-                    f"{f.get('value', 'unknown')}"
-                    for f in fields
+            lines = []
+            for f in fields:
+                hint = f.get("hint", "")
+                hint_suffix = f" ({hint})" if hint else ""
+                lines.append(
+                    f"  - {f.get('key', '?')} ({f.get('label', f.get('key', '?'))})"
+                    f"{hint_suffix}: {f.get('value', 'unknown')}"
                 )
-                if fields
-                else "  (none)"
-            )
+            return "\n".join(lines) if lines else "  (none)"
 
         known_fields_text = _fmt_fields(known_fields)
         unknown_fields_text = _fmt_fields(unknown_fields)
@@ -886,6 +911,7 @@ class LLMExecutor:
         if use_native:
             return self._execute_native(
                 node,
+                snapshot,
                 resolved_inputs,
                 effective_description,
                 effective_outputs,
@@ -895,6 +921,7 @@ class LLMExecutor:
         else:
             return self._execute_legacy(
                 node,
+                snapshot,
                 resolved_inputs,
                 effective_description,
                 effective_outputs,
@@ -1047,6 +1074,7 @@ class LLMExecutor:
     def _execute_legacy(
         self,
         node,
+        snapshot,
         resolved_inputs,
         effective_description: str,
         effective_outputs: list,
@@ -1072,6 +1100,8 @@ class LLMExecutor:
         # outcome.  Both are maintained independently of history trimming.
         failed_queries: set[str] = set(node.metadata.get("_failed_queries", []))
         tried_queries: set[str] = set(failed_queries)
+        # ── Issue 2: track fetched URLs to prevent re-fetching the same page ──
+        fetched_urls: set[str] = set()
 
         # ── Step capability pre-check ─────────────────────────────────────────
         # Partition the declared execution steps into those the LLM can handle
@@ -1138,8 +1168,21 @@ class LLMExecutor:
                 "partial_result": "",
             }
 
-        for turn in range(self.max_turns):
-            turns_remaining = self.max_turns - turn
+        successful_turn_count = 0
+        unsuccessful_turn_count = 0
+
+        for turn in range(self.max_successful_turns + self.max_unsuccessful_turns):
+            remaining_successful = max(0, self.max_successful_turns - successful_turn_count)
+            remaining_unsuccessful = max(0, self.max_unsuccessful_turns - unsuccessful_turn_count)
+            turns_left = remaining_successful + remaining_unsuccessful
+
+            # Stop as soon as either individual budget is exhausted.
+            if remaining_successful <= 0 or remaining_unsuccessful <= 0:
+                break
+
+            # Final turn when either budget is one away from exhaustion.
+            is_final_turn = remaining_successful == 1 or remaining_unsuccessful == 1
+            turns_remaining = turns_left
             extra_reminder = ""
 
             if expected_files and "write_file" not in {h["name"] for h in history}:
@@ -1189,6 +1232,22 @@ class LLMExecutor:
                             "fetch_url on a promising URL to get the full "
                             "page content."
                         )
+
+                # Issue 2: warn the model away from already-fetched URLs.
+                if fetched_urls:
+                    fetched_str = ", ".join(f'"{u}"' for u in sorted(fetched_urls))
+                    extra_reminder += (
+                        f"\nNOTE: You have already fetched these URLs this session: "
+                        f"{fetched_str}. Do NOT fetch them again — they will return "
+                        "identical content. Choose a different URL."
+                    )
+
+            if is_final_turn:
+                extra_reminder += (
+                    "\nFINAL TURN: You must not call any more tools. "
+                    "Set done=true now and return your best result based "
+                    "on everything you have gathered so far."
+                )
 
             if reporter:
                 reporter.on_llm_turn(turn)
@@ -1262,6 +1321,7 @@ class LLMExecutor:
                                 ),
                             },
                         )
+                        unsuccessful_turn_count += 1
                         continue
 
                 if expected_files and "write_file" not in tool_names_used:
@@ -1284,6 +1344,7 @@ class LLMExecutor:
                             ),
                         },
                     )
+                    unsuccessful_turn_count += 1
                     continue
 
                 # ── Surface awaiting_user steps ───────────────────────────────
@@ -1316,6 +1377,35 @@ class LLMExecutor:
                         "pending_steps": [s.get("execution_type") for s in awaiting_steps],
                         "partial_result": result,
                     }
+
+                # ── Issue 6: inline quality gate verification ─────────────────
+                # Verify the result within the executor's own turn budget before
+                # returning it.  If it fails and turns remain, inject the failure
+                # reason as a correction so the model can revise without a full
+                # node restart from the orchestrator.
+                if self.quality_gate and not is_final_turn:
+                    _ok, _reason = self.quality_gate.verify_result(node, result, snapshot)
+                    if not _ok:
+                        logger.warning(
+                            "[EXECUTOR] Node %s inline verification failed: %s "
+                            "— injecting correction turn (legacy)",
+                            node.id,
+                            _reason,
+                        )
+                        history = self._append_to_history(
+                            history,
+                            {
+                                "name": "web_search",
+                                "args": {},
+                                "result": (
+                                    f"ERROR: Your result was rejected by the quality gate: "
+                                    f"{_reason}. You must revise it. Base your answer only "
+                                    "on information retrieved from tool calls this session."
+                                ),
+                            },
+                        )
+                        unsuccessful_turn_count += 1
+                        continue
 
                 logger.info("[EXECUTOR] Node %s completed. Result: %.120s", node.id, result)
                 # ── Fix 7: persist failed queries before returning ────────────
@@ -1370,6 +1460,7 @@ class LLMExecutor:
                         ),
                     },
                 )
+                unsuccessful_turn_count += 1
                 tool_not_found_count += 1
                 if tool_not_found_count >= 2:
                     logger.error(
@@ -1380,11 +1471,48 @@ class LLMExecutor:
                     return None
                 continue
 
+            if is_final_turn:
+                # Model ignored the FINAL TURN instruction and called a tool.
+                # Skip execution — there are no remaining turns to process a result.
+                logger.warning(
+                    "[EXECUTOR] Node %s ignored FINAL TURN instruction (tool=%s) — aborting",
+                    node.id,
+                    tool_name,
+                )
+                break
+
+            # ── Issue 2: URL deduplication for fetch_url ──────────────────────
+            # If the model requests a URL it already fetched this session, inject
+            # a correction instead of making a redundant network call.
+            if tool_name == "fetch_url":
+                url = tool_args.get("url", "").strip()
+                if url and url in fetched_urls:
+                    logger.warning(
+                        "[EXECUTOR] Node %s: fetch_url skipped — URL already fetched: %s",
+                        node.id,
+                        url,
+                    )
+                    history = self._append_to_history(
+                        history,
+                        {
+                            "name": tool_name,
+                            "args": tool_args,
+                            "result": (
+                                f"ERROR: URL already fetched this session: {url!r}. "
+                                "Fetching it again will return identical content. "
+                                "Pick a different URL from your search results, or "
+                                "run a new web_search with different keywords."
+                            ),
+                        },
+                    )
+                    unsuccessful_turn_count += 1
+                    continue
+
             logger.info("[EXECUTOR] Node %s calling tool '%s'", node.id, tool_name)
             tool_not_found_count = 0
             step_id = reporter.on_tool_start(tool_name, tool_args) if reporter else None
 
-            tool_result_str, _ = self._dispatch_tool(
+            tool_result_str, tool_call_error = self._dispatch_tool(
                 node.id, tool_name, tool_args, reporter, step_id
             )
             # ── Track queries in both tiers (mirrors native path) ────────────
@@ -1397,6 +1525,16 @@ class LLMExecutor:
                         or "no results" in tool_result_str.lower()
                     ):
                         failed_queries.add(q)
+            # ── Issue 2: record successfully fetched URLs ─────────────────────
+            elif tool_name == "fetch_url" and not tool_call_error:
+                url = tool_args.get("url", "").strip()
+                if url:
+                    fetched_urls.add(url)
+
+            if tool_call_error or tool_result_str.startswith("ERROR:"):
+                unsuccessful_turn_count += 1
+            else:
+                successful_turn_count += 1
 
             history = self._append_to_history(
                 history,
@@ -1404,9 +1542,12 @@ class LLMExecutor:
             )
 
         logger.error(
-            "[EXECUTOR] Node %s did not complete within %d turns",
+            "[EXECUTOR] Node %s did not complete: %d/%d successful turns, %d/%d unsuccessful turns used",
             node.id,
-            self.max_turns,
+            successful_turn_count,
+            self.max_successful_turns,
+            unsuccessful_turn_count,
+            self.max_unsuccessful_turns,
         )
         # ── Fix 7: persist failed queries even on turn exhaustion ────────────
         if failed_queries and reporter:
@@ -1428,6 +1569,7 @@ class LLMExecutor:
     def _execute_native(
         self,
         node,
+        snapshot,
         resolved_inputs,
         effective_description: str,
         effective_outputs: list,
@@ -1448,6 +1590,8 @@ class LLMExecutor:
         tools = list(self.tools.tools.values())
         history: list[dict] = []
         tool_not_found_count = 0
+        # ── Issue 2: track fetched URLs to prevent re-fetching the same page ──
+        fetched_urls: set[str] = set()
 
         # ── Step capability pre-check (same logic as legacy path) ────────────
         executable_types = self._llm_executable_types()
@@ -1531,8 +1675,21 @@ class LLMExecutor:
         failed_queries: set[str] = set(node.metadata.get("_failed_queries", []))
         tried_queries: set[str] = set(failed_queries)  # superset; grows each turn
 
-        for turn in range(self.max_turns):
-            turns_remaining = self.max_turns - turn
+        successful_turn_count = 0
+        unsuccessful_turn_count = 0
+
+        for turn in range(self.max_successful_turns + self.max_unsuccessful_turns):
+            remaining_successful = max(0, self.max_successful_turns - successful_turn_count)
+            remaining_unsuccessful = max(0, self.max_unsuccessful_turns - unsuccessful_turn_count)
+            turns_left = remaining_successful + remaining_unsuccessful
+
+            # Stop as soon as either individual budget is exhausted.
+            if remaining_successful <= 0 or remaining_unsuccessful <= 0:
+                break
+
+            # Final turn when either budget is one away from exhaustion.
+            is_final_turn = remaining_successful == 1 or remaining_unsuccessful == 1
+            turns_remaining = turns_left
 
             extra_reminder = ""
             if expected_files and "write_file" not in {h["name"] for h in history}:
@@ -1587,14 +1744,33 @@ class LLMExecutor:
                             "page content."
                         )
 
+                # Issue 2: warn the model away from already-fetched URLs.
+                if fetched_urls:
+                    fetched_str = ", ".join(f'"{u}"' for u in sorted(fetched_urls))
+                    extra_reminder += (
+                        f"\nNOTE: You have already fetched these URLs this session: "
+                        f"{fetched_str}. Do NOT fetch them again — they will return "
+                        "identical content. Choose a different URL."
+                    )
+
+            if is_final_turn:
+                extra_reminder += (
+                    "\nFINAL TURN: You must not call any more tools. "
+                    "Return your best result now based on everything you have gathered so far."
+                )
+
             current_prompt = task_prompt + "\n" + extra_reminder if extra_reminder else task_prompt
 
             if reporter:
                 reporter.on_llm_turn(turn)
 
+            # On the final turn pass an empty tools list so the provider API
+            # physically cannot emit a tool call — the model must respond with text.
+            tools_for_turn = [] if is_final_turn else tools
+
             try:
                 response: NativeToolResponse = self.llm.ask_with_tools(
-                    current_prompt, tools, history
+                    current_prompt, tools_for_turn, history
                 )
             except LLMStoppedError:
                 logger.warning("[EXECUTOR] LLM stopped during native execution of %s", node.id)
@@ -1627,6 +1803,7 @@ class LLMExecutor:
                             ),
                         },
                     )
+                    unsuccessful_turn_count += 1
                     continue
 
                 # ── Fix 1: reject final answer when all search calls failed ───
@@ -1659,6 +1836,7 @@ class LLMExecutor:
                                 ),
                             },
                         )
+                        unsuccessful_turn_count += 1
                         continue
 
                 # ── Surface awaiting_user steps ───────────────────────────────
@@ -1686,6 +1864,34 @@ class LLMExecutor:
                         "pending_steps": [s.get("execution_type") for s in awaiting_steps],
                         "partial_result": result,
                     }
+
+                # ── Issue 6: inline quality gate verification ─────────────────
+                # Verify the result within the executor's own turn budget before
+                # returning it.  If it fails and turns remain, inject the failure
+                # reason as a correction so the model can revise without a full
+                # node restart from the orchestrator.
+                if self.quality_gate and not is_final_turn:
+                    _ok, _reason = self.quality_gate.verify_result(node, result, snapshot)
+                    if not _ok:
+                        logger.warning(
+                            "[EXECUTOR] Node %s inline verification failed: %s "
+                            "— injecting correction turn (native)",
+                            node.id,
+                            _reason,
+                        )
+                        history = self._append_to_history(
+                            history,
+                            {
+                                "kind": "correction",
+                                "content": (
+                                    f"Your result was rejected by the quality gate: "
+                                    f"{_reason}. You must revise it. Base your answer "
+                                    "only on information retrieved from tool calls this session."
+                                ),
+                            },
+                        )
+                        unsuccessful_turn_count += 1
+                        continue
 
                 logger.info(
                     "[EXECUTOR] Node %s completed (native). Result: %.120s",
@@ -1732,6 +1938,7 @@ class LLMExecutor:
                         "tool_use_id": tool_use_id,
                     },
                 )
+                unsuccessful_turn_count += 1
                 tool_not_found_count += 1
                 if tool_not_found_count >= 2:
                     logger.error(
@@ -1744,6 +1951,37 @@ class LLMExecutor:
 
             logger.info("[EXECUTOR] Node %s calling tool '%s' (native)", node.id, tool_name)
             tool_not_found_count = 0
+
+            # ── Issue 2: URL deduplication for fetch_url ──────────────────────
+            # If the model requests a URL it already fetched this session, inject
+            # a correction instead of making a redundant network call.
+            if tool_name == "fetch_url":
+                url = tool_args.get("url", "").strip()
+                if url and url in fetched_urls:
+                    logger.warning(
+                        "[EXECUTOR] Node %s: fetch_url skipped — URL already fetched: %s",
+                        node.id,
+                        url,
+                    )
+                    history = self._append_to_history(
+                        history,
+                        {
+                            "kind": "correction",
+                            "content": (
+                                f"URL already fetched this session: {url!r}. "
+                                "Fetching it again will return identical content. "
+                                "Pick a different URL from your search results, or "
+                                "run a new web_search with different keywords."
+                            ),
+                            "name": "fetch_url",
+                            "args": tool_args,
+                            "result": f"ERROR: duplicate fetch skipped for {url!r}",
+                            "tool_use_id": tool_use_id,
+                        },
+                    )
+                    unsuccessful_turn_count += 1
+                    continue
+
             step_id = reporter.on_tool_start(tool_name, tool_args) if reporter else None
 
             tool_result_str, tool_error = self._dispatch_tool(
@@ -1761,6 +1999,16 @@ class LLMExecutor:
                     tried_queries.add(q)
                     if tool_error or "no results" in tool_result_str.lower():
                         failed_queries.add(q)
+            # ── Issue 2: record successfully fetched URLs ─────────────────────
+            elif tool_name == "fetch_url" and not tool_error:
+                url = tool_args.get("url", "").strip()
+                if url:
+                    fetched_urls.add(url)
+
+            if tool_error or tool_result_str.startswith("ERROR:"):
+                unsuccessful_turn_count += 1
+            else:
+                successful_turn_count += 1
 
             history = self._append_to_history(
                 history,
@@ -1773,9 +2021,12 @@ class LLMExecutor:
             )
 
         logger.error(
-            "[EXECUTOR] Node %s did not complete within %d turns (native)",
+            "[EXECUTOR] Node %s did not complete (native): %d/%d successful turns, %d/%d unsuccessful turns used",
             node.id,
-            self.max_turns,
+            successful_turn_count,
+            self.max_successful_turns,
+            unsuccessful_turn_count,
+            self.max_unsuccessful_turns,
         )
         # ── Fix 7: persist failed queries even on turn exhaustion ────────────
         if failed_queries and reporter:
@@ -1876,5 +2127,5 @@ class LLMExecutor:
             output_instruction=output_instruction,
             inputs_text=inputs_text,
             steps_text=steps_text,
-            turns_remaining=self.max_turns,
+            turns_remaining=self.max_successful_turns + self.max_unsuccessful_turns,
         )

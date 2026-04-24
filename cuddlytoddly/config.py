@@ -1,4 +1,4 @@
-"""
+r"""
 cuddlytoddly.config
 ~~~~~~~~~~~~~~~~~~~
 Configuration management.
@@ -10,7 +10,7 @@ immediately usable without any manual editing in the common cases.
 Data directory per OS:
   Linux   : ~/.local/share/cuddlytoddly/
   macOS   : ~/Library/Application Support/cuddlytoddly/
-  Windows : %LOCALAPPDATA%\\3IVIS\\cuddlytoddly\\
+  Windows : %LOCALAPPDATA%\3IVIS\cuddlytoddly\
 """
 
 from __future__ import annotations
@@ -30,16 +30,21 @@ from toddly.infra.logging import get_logger
 from toddly.planning.llm_interface import _DEFAULT_CLAUDE_MODEL, _DEFAULT_OPENAI_MODEL
 from toddly.utils.config_utils import (
     detect_backend as _detect_backend,
-    validate_config as _validate,
-    get_backend,
-    get_executor_cfg,
-    get_file_llm_cfg,
-    get_orchestrator_cfg,
-    get_planner_cfg,
+)
+from toddly.utils.config_utils import get_executor_cfg as get_executor_cfg
+from toddly.utils.config_utils import get_orchestrator_cfg as get_orchestrator_cfg
+from toddly.utils.config_utils import get_planner_cfg as get_planner_cfg
+from toddly.utils.config_utils import (
     llama_has_gpu_support as _llama_has_gpu_support,
+)
+from toddly.utils.config_utils import (
     model_size_hint as _model_size_hint,
+)
+from toddly.utils.config_utils import (
     resolve_model_path as _resolve_model_path_generic,
-    _MODEL_SIZES,
+)
+from toddly.utils.config_utils import (
+    validate_config as _validate,
 )
 
 logger = get_logger(__name__)
@@ -97,8 +102,10 @@ cache_enabled = true
 # Must stay at 1 — llama.cpp is not thread-safe.
 max_workers = 1
 
-# Maximum LLM turns per task node before marking it failed.
-max_turns = 5
+# Maximum successful tool-call turns per task node before marking it failed.
+max_successful_turns = 10
+# Maximum unsuccessful (errored / no-result) tool-call turns per task node.
+max_unsuccessful_turns = 10
 
 # Maximum tasks the planner generates per goal.
 max_tasks_per_goal = 8
@@ -133,7 +140,8 @@ cache_enabled = true
 # Higher limits for remote API: large context windows, parallelisable calls.
 
 max_workers             = 4
-max_turns               = 10
+max_successful_turns    = 10
+max_unsuccessful_turns  = 10
 max_tasks_per_goal      = 15
 max_inline_result_chars = 12000
 max_total_input_chars   = 12000
@@ -167,7 +175,8 @@ cache_enabled = true
 # Higher limits for remote API: large context windows, parallelisable calls.
 
 max_workers             = 4
-max_turns               = 10
+max_successful_turns    = 10
+max_unsuccessful_turns  = 10
 max_tasks_per_goal      = 15
 max_inline_result_chars = 12000
 max_total_input_chars   = 12000
@@ -191,8 +200,9 @@ max_retries = 5
 idle_sleep = 0.5
 
 # ── Planner ───────────────────────────────────────────────────────────────────
-# These settings are backend-agnostic.  max_tasks_per_goal and max_turns are
-# set per-backend above because their ideal values differ significantly.
+# These settings are backend-agnostic.  max_tasks_per_goal, max_successful_turns,
+# and max_unsuccessful_turns are set per-backend above because their ideal values
+# differ significantly.
 [planner]
 
 # Minimum tasks the planner must generate per goal.
@@ -228,7 +238,8 @@ cache_enabled = true
 
 # Execution limits for the file backend (dev/testing — same as llamacpp).
 max_workers             = 1
-max_turns               = 5
+max_successful_turns    = 10
+max_unsuccessful_turns  = 10
 max_tasks_per_goal      = 8
 max_inline_result_chars = 3000
 max_total_input_chars   = 3000
@@ -302,8 +313,6 @@ def load_config() -> dict:
     return cfg
 
 
-
-
 def resolve_model_path(cfg: dict) -> str:
     """
     Return the absolute path to the GGUF model file specified in *cfg*.
@@ -314,6 +323,7 @@ def resolve_model_path(cfg: dict) -> str:
     without any changes.
     """
     return _resolve_model_path_generic(cfg, data_dir=DATA_DIR, config_path=CONFIG_PATH)
+
 
 def preflight_check(cfg: dict) -> list[dict]:
     """

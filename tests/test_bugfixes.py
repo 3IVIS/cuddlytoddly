@@ -917,8 +917,8 @@ class TestToolResultsContext:
                 [("ERROR: no results", "error")],
             ],
         )
-        ctx = gate._build_tool_results_context(node, snap)
-        assert "All" in ctx and "error" in ctx.lower()
+        summary, content = gate._build_tool_results_context(node, snap)
+        assert "All" in summary and "error" in summary.lower()
 
     def test_mixed_results_produces_partial_context(self):
         gate = self._make_gate()
@@ -929,8 +929,9 @@ class TestToolResultsContext:
                 [("Title: Salary\nURL: glassdoor.com", "ok")],
             ],
         )
-        ctx = gate._build_tool_results_context(node, snap)
-        assert "1 of 2" in ctx
+        summary, content = gate._build_tool_results_context(node, snap)
+        assert "1 of 2" in summary
+        assert "glassdoor.com" in content
 
     def test_no_tool_calls_returns_empty_string(self):
         gate = self._make_gate()
@@ -943,8 +944,8 @@ class TestToolResultsContext:
                 "output": [{"name": "report", "type": "document", "description": "r"}],
             },
         )
-        ctx = gate._build_tool_results_context(g.nodes["t"], g.get_snapshot())
-        assert ctx == ""
+        summary, content = gate._build_tool_results_context(g.nodes["t"], g.get_snapshot())
+        assert summary == "" and content == ""
 
     def test_all_success_produces_success_context(self):
         gate = self._make_gate()
@@ -954,8 +955,9 @@ class TestToolResultsContext:
                 [("Title: Salary Survey\nURL: glassdoor.com", "ok")],
             ],
         )
-        ctx = gate._build_tool_results_context(node, snap)
-        assert "successfully" in ctx.lower()
+        summary, content = gate._build_tool_results_context(node, snap)
+        assert "successfully" in summary.lower()
+        assert "glassdoor.com" in content
 
     # ── Integration: verify_result passes tool context to LLM verifier ────────
 

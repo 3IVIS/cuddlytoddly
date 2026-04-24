@@ -2167,6 +2167,7 @@ function domainPanelBody(node, { row, esc }) {
     fhtml += `<div style="padding:8px 0;border-bottom:1px solid var(--border-subtle)">
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:3px">${esc(f.label || f.key)}</div>
       <div style="font-size:13px;color:${valColor};margin-bottom:3px">${esc(isUnknown ? 'unknown' : f.value)}</div>
+      ${f.hint ? `<div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">${esc(f.hint)}</div>` : ''}
       ${f.rationale ? `<div style="font-size:10px;color:var(--text-dim);font-style:italic">${esc(f.rationale)}</div>` : ''}
     </div>`;
   });
@@ -2437,13 +2438,14 @@ function _renderClarificationFields() {
     return `
       <div class="form-group" style="border-bottom:1px solid var(--border-subtle);padding-bottom:12px;margin-bottom:12px">
         <label class="form-label form-label-amber">${esc(f.label || f.key)}</label>
+        ${f.hint ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">${esc(f.hint)}</div>` : ''}
         ${f.rationale ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;font-style:italic">${esc(f.rationale)}</div>` : ''}
         <input
           class="form-input form-input-code"
           id="clarif-field-${i}"
           type="text"
           value="${esc(isUnknown ? '' : f.value)}"
-          placeholder="unknown"
+          placeholder="${esc(f.hint ? f.hint : 'unknown')}"
           oninput="_clarificationDraft[${i}].value = this.value || 'unknown'"
         >
       </div>`;

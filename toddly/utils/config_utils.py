@@ -128,7 +128,8 @@ def get_orchestrator_cfg(cfg: dict) -> dict:
     c = cfg.get("orchestrator", {})
     return {
         "max_workers": _get(cfg, "max_workers", "orchestrator", 4, 1),
-        "max_turns": _get(cfg, "max_turns", "orchestrator", 10, 5),
+        "max_successful_turns": _get(cfg, "max_successful_turns", "orchestrator", 10, 10),
+        "max_unsuccessful_turns": _get(cfg, "max_unsuccessful_turns", "orchestrator", 10, 10),
         "max_gap_fill_attempts": c.get("max_gap_fill_attempts", 2),
         "max_retries": c.get("max_retries", 5),
         "idle_sleep": c.get("idle_sleep", 0.5),

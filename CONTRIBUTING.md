@@ -131,7 +131,7 @@ cuddlytoddly/
 │   ├── llm_planner.py         # LLMPlanner — goal → DAG decomposition
 │   └── llm_executor.py        # LLMExecutor — per-task LLM execution loop
 ├── engine/
-│   ├── llm_orchestrator.py    # Orchestrator — concurrency, scheduling, event loop
+│   ├── orchestrator.py        # Orchestrator — concurrency, scheduling, event loop
 │   └── quality_gate.py        # QualityGate — output verification + gap bridging
 ├── skills/
 │   ├── skill_loader.py        # Discovers and loads SKILL.md skill folders
@@ -205,11 +205,11 @@ Check that the planner picks up the skill in its summary and that the executor c
 
 ## Adding a New Backend
 
-Backends live behind the `create_llm_client()` abstraction in `cuddlytoddly/planning/llm_interface.py`. To add support for a new LLM provider:
+Backends live behind the `create_llm_client()` abstraction in `agent_core/planning/llm_interface.py`. To add support for a new LLM provider:
 
-1. **Add a client class** in `llm_interface.py` that implements the same interface as the existing `ClaudeClient` and `OpenAIClient` classes (i.e. a `complete()` method with the same signature).
+1. **Add a client class** in `agent_core/planning/llm_interface.py` that implements the same interface as the existing `ApiLLM` and `LlamaCppLLM` classes (i.e. an `ask()` method with the same signature, plus optional `ask_with_tools()` for native tool-use APIs).
 
-2. **Register the backend name** in the `create_llm_client()` factory function.
+2. **Register the backend name** in the `create_llm_client()` factory function in that same file.
 
 3. **Add a pip extra** in `pyproject.toml` (e.g. `[project.optional-dependencies]` → `myprovider = ["their-sdk"]`).
 

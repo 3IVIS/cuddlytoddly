@@ -359,7 +359,8 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     planner_cfg = get_planner_cfg(cfg)
 
     max_workers = orch_cfg["max_workers"]
-    max_turns = orch_cfg["max_turns"]
+    max_successful_turns = orch_cfg["max_successful_turns"]
+    max_unsuccessful_turns = orch_cfg["max_unsuccessful_turns"]
 
     # ── Per-run token counter ─────────────────────────────────────────────────
     # FIX #3: created here — before the graph-replay block — so it is in scope
@@ -488,7 +489,8 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     executor = LLMExecutor(
         llm_client=shared_llm,
         tool_registry=registry,
-        max_turns=max_turns,
+        max_successful_turns=max_successful_turns,
+        max_unsuccessful_turns=max_unsuccessful_turns,
         max_inline_result_chars=exec_cfg["max_inline_result_chars"],
         max_total_input_chars=exec_cfg["max_total_input_chars"],
         max_tool_result_chars=exec_cfg["max_tool_result_chars"],

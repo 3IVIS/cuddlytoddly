@@ -63,8 +63,10 @@ cache_enabled = true
 # Parallel task execution threads. Must stay at 1 — llama.cpp is not thread-safe.
 max_workers = 1
 
-# Maximum LLM turns per task node before marking it failed.
-max_turns = 5
+# Maximum successful tool-call turns per task node before marking it failed.
+max_successful_turns = 10
+# Maximum unsuccessful (errored / no-result) tool-call turns per task node.
+max_unsuccessful_turns = 10
 
 # Maximum tasks the planner generates per goal.
 max_tasks_per_goal = 8
@@ -99,7 +101,8 @@ cache_enabled = true
 # Higher limits for remote API: large context windows, parallelisable calls.
 
 max_workers             = 4
-max_turns               = 10
+max_successful_turns    = 10
+max_unsuccessful_turns  = 10
 max_tasks_per_goal      = 15
 max_inline_result_chars = 12000
 max_total_input_chars   = 12000
@@ -126,7 +129,8 @@ cache_enabled = true
 # Higher limits for remote API: large context windows, parallelisable calls.
 
 max_workers             = 4
-max_turns               = 10
+max_successful_turns    = 10
+max_unsuccessful_turns  = 10
 max_tasks_per_goal      = 15
 max_inline_result_chars = 12000
 max_total_input_chars   = 12000
@@ -151,7 +155,9 @@ max_retries = 5
 idle_sleep = 0.5
 
 # ── Planner ───────────────────────────────────────────────────────────────────
-# Backend-agnostic settings. max_tasks_per_goal is set per-backend above.
+# Backend-agnostic settings. max_tasks_per_goal, max_successful_turns, and
+# max_unsuccessful_turns are set per-backend above because their ideal values
+# differ significantly between local and API backends.
 [planner]
 
 # Minimum tasks the planner must generate per goal.
@@ -189,7 +195,8 @@ cache_enabled = true
 
 # Execution limits — same conservative defaults as llamacpp.
 max_workers             = 1
-max_turns               = 5
+max_successful_turns    = 10
+max_unsuccessful_turns  = 10
 max_tasks_per_goal      = 8
 max_inline_result_chars = 3000
 max_total_input_chars   = 3000
@@ -217,7 +224,7 @@ port = 8765
 | `[planner]` | Backend-agnostic settings: minimum task count per goal, optional scrutiny pass |
 | `[server]` | Host and port for the web UI |
 
-Execution limits (`max_workers`, `max_turns`, `max_tasks_per_goal`, `max_inline_result_chars`, `max_total_input_chars`, `max_tool_result_chars`, `max_history_entries`) live in the active backend's section so their values are always visible alongside the model settings they apply to.
+Execution limits (`max_workers`, `max_successful_turns`, `max_unsuccessful_turns`, `max_tasks_per_goal`, `max_inline_result_chars`, `max_total_input_chars`, `max_tool_result_chars`, `max_history_entries`) live in the active backend's section so their values are always visible alongside the model settings they apply to.
 
 ---
 
@@ -349,12 +356,17 @@ This adds one LLM call per planning cycle. If you are using a slow or expensive 
 
 ### Tasks hit the turn limit before finishing
 
-Raise `max_turns` in your active backend's section. This allows the executor more LLM iterations per task before it is marked failed.
+The executor has two independent turn budgets. `max_successful_turns` caps turns where a tool call returned a result; `max_unsuccessful_turns` caps turns where a tool call errored or returned no results. The final turn of the combined budget is always reserved for the model to synthesise and return its result.
+
+Raise either or both in your active backend's section:
 
 ```toml
 [claude]   # or [openai] / [llamacpp] depending on your backend
-max_turns = 15
+max_successful_turns   = 15
+max_unsuccessful_turns = 15
 ```
+
+If tasks are failing because of too many failed searches (e.g. a web research node exhausting retries before finding results), raise `max_unsuccessful_turns` specifically rather than both.
 
 ### Upstream context is being truncated
 

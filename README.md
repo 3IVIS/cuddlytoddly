@@ -249,13 +249,13 @@ Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/ski
 ## Python API
 
 ```python
-from toddly.planning.llm_interface import create_llm_client
+from agent_core.planning.llm_interface  import create_llm_client
 from cuddlytoddly.planning.llm_planner   import LLMPlanner
 from cuddlytoddly.planning.llm_executor  import LLMExecutor
-from toddly.engine.quality_gate    import QualityGate
-from toddly.engine.orchestrator import Orchestrator
+from agent_core.engine.quality_gate      import QualityGate
+from agent_core.engine.orchestrator      import Orchestrator
 from cuddlytoddly.skills.skill_loader    import SkillLoader
-from toddly.core.task_graph        import TaskGraph
+from agent_core.core.task_graph          import TaskGraph
 
 # Swap "claude" for "openai" or "llamacpp" — everything else is identical
 llm      = create_llm_client("claude", model="claude-opus-4-6")

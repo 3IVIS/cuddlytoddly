@@ -62,13 +62,18 @@ def build_executor_prompt(
     max_inline_result_chars: int,
     turns_remaining: int = 0,
 ) -> str:
-    turns_line = (
-        f"- Turns remaining (including this one): {turns_remaining}. "
-        "If you have already made multiple searches, synthesise what you have "
-        "now rather than searching again.\n"
-        if turns_remaining > 0
-        else ""
-    )
+    if turns_remaining == 1:
+        turns_line = (
+            "- FINAL TURN: Do not call any more tools. Return your result now using done=true.\n"
+        )
+    elif turns_remaining > 1:
+        turns_line = (
+            f"- Turns remaining (including this one): {turns_remaining}. "
+            "If you have already made multiple searches, synthesise what you have "
+            "now rather than searching again.\n"
+        )
+    else:
+        turns_line = ""
     return f"""\
 You are executing one task inside a larger automated plan.
 Your result will be stored and passed directly to downstream tasks as their input,
@@ -109,6 +114,12 @@ INSTRUCTIONS
 - Use upstream results provided in this prompt directly. They are text strings,
   not files on disk. Do not attempt to read them from the filesystem.
 {output_instruction}
+- GROUNDING CONSTRAINT: Every item, name, value, or fact in your result must
+  come from information retrieved via tool calls in this session. Do NOT include
+  anything that comes from your training knowledge unless it also appeared
+  verbatim in a tool call result this session. If your tool calls did not return
+  enough information to complete the task, state what is missing rather than
+  filling in from memory.
 - Your result must be detailed enough that a downstream task can use it
   without any other context. Label each output clearly:
     investment_analysis: <full content>
@@ -209,13 +220,18 @@ def build_executor_native_prompt(
     - Omits all references to done=true / tool_call JSON fields.
     - Instructs the model to respond with plain text when the task is complete.
     """
-    turns_line = (
-        f"- Turns remaining (including this one): {turns_remaining}. "
-        "If you have already made multiple searches, synthesise what you have "
-        "now rather than searching again.\n"
-        if turns_remaining > 0
-        else ""
-    )
+    if turns_remaining == 1:
+        turns_line = (
+            "- FINAL TURN: Do not call any more tools. Return your result now using done=true.\n"
+        )
+    elif turns_remaining > 1:
+        turns_line = (
+            f"- Turns remaining (including this one): {turns_remaining}. "
+            "If you have already made multiple searches, synthesise what you have "
+            "now rather than searching again.\n"
+        )
+    else:
+        turns_line = ""
     return f"""\
 You are executing one task inside a larger automated plan.
 Your result will be stored and passed directly to downstream tasks as their input,
@@ -247,6 +263,12 @@ INSTRUCTIONS
 - Use upstream results provided in this prompt directly. They are text strings,
   not files on disk. Do not attempt to read them from the filesystem.
 {output_instruction}
+- GROUNDING CONSTRAINT: Every item, name, value, or fact in your result must
+  come from information retrieved via tool calls in this session. Do NOT include
+  anything that comes from your training knowledge unless it also appeared
+  verbatim in a tool call result this session. If your tool calls did not return
+  enough information to complete the task, state what is missing rather than
+  filling in from memory.
 - Your result must be detailed enough that a downstream task can use it
   without any other context. Label each output clearly:
     investment_analysis: <full content>
@@ -914,6 +936,7 @@ def build_verify_result_prompt(
     tool_results_context: str = "",
     broadening_context: str = "",
     upstream_results_context: str = "",
+    tool_call_content: str = "",
 ) -> str:
     """
     Prompt asking the LLM to verify whether a task result satisfies its declared outputs.
@@ -929,6 +952,11 @@ def build_verify_result_prompt(
                                by upstream task dependencies.  Tells the verifier which
                                specific values were legitimately available as inputs so
                                they are not mistakenly flagged as invented.
+    tool_call_content        : optional block containing truncated content actually
+                               returned by successful tool calls this session.  Lets
+                               the verifier cross-check result items against what the
+                               tools actually retrieved, catching fabricated values that
+                               would otherwise slip past the summary-only tool_results_context.
     """
     unknown_section = ""
     if unknown_fields_context:
@@ -958,6 +986,13 @@ def build_verify_result_prompt(
     {upstream_results_context}
 """
 
+    tool_content_section = ""
+    if tool_call_content:
+        tool_content_section = f"""
+    TOOL CALL CONTENT (actual data returned by successful tool calls this session):
+    {tool_call_content}
+"""
+
     return f"""You are verifying whether a task result satisfies its declared outputs.
 
     TASK
@@ -966,7 +1001,7 @@ def build_verify_result_prompt(
 
     DECLARED OUTPUTS (what this task was supposed to produce):
     {outputs_text}
-    {unknown_section}{tool_section}{broadening_section}{upstream_section}
+    {unknown_section}{tool_section}{broadening_section}{upstream_section}{tool_content_section}
     ACTUAL RESULT:
     {result}
 
@@ -994,6 +1029,12 @@ def build_verify_result_prompt(
     directly derived from that data are legitimate — they are not invented. Only flag
     specifics as invented if they cannot be traced to the upstream data, clarification
     fields, or a successful tool call.
+
+    If TOOL CALL CONTENT is present: cross-check the result's specific items against what
+    actually appeared in those tool call outputs. If the result contains specific values
+    (names, identifiers, statistics) that do not appear anywhere in the tool call content
+    and cannot be traced to upstream results or clarification fields, mark as not satisfied —
+    those values are likely fabricated from the model's prior knowledge.
 
     Respond only in JSON matching the schema.
 """
@@ -1461,8 +1502,25 @@ STEP 2 — Identify genuinely missing information.
 
 For every field (from both steps):
   - Set value to the extracted or assumed value when known.
-  - Set value to "unknown" only when the information is genuinely absent.
+  - If a field's value can be reasonably inferred from the nature and intent
+    of the goal — even if not stated word-for-word — set it to that inferred
+    value rather than "unknown". For example, if the goal is about reviewing
+    a Python repository, the package_type is clearly "code quality and static
+    analysis tools", not "unknown". Use your judgment to supply a concrete
+    inferred value whenever the goal makes the answer apparent.
+  - Set value to "unknown" ONLY when the information is private to the user
+    (e.g. personal details, private credentials, internal company specifics)
+    or is completely unresolvable from the goal text and the available tools.
   - Never leave value blank.
+  - For any field whose label alone might leave a user unsure what to type,
+    add a hint with 2–3 concrete examples that show the expected format and
+    scope. Phrase it as "e.g. …" and keep it under 15 words. Focus on
+    examples, not on repeating the rationale. Fields with obvious single-word
+    answers (like "Programming Language: Python") do not need a hint.
+    Examples of good hints:
+      package_type  → "e.g. static analysis tools, test frameworks, linters"
+      budget        → "e.g. £50,000–£60,000, or leave blank if unsure"
+      target_audience → "e.g. senior engineers, junior devs, non-technical stakeholders"
 
 Always include a final field with:
   key:      "additional_context"
