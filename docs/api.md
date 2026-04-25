@@ -1,4 +1,3 @@
-
 # API Reference
 
 This page documents the public interfaces intended for programmatic use. Internal modules (reducer, event types, ID generator) are implementation details and may change between releases.
@@ -152,7 +151,7 @@ LLAMACPP_SYSTEM_PROMPT: str # system content for the llama.cpp chat template
 
 ---
 
-## `agent_core.planning.llm_interface`
+## `toddly.planning.llm_interface`
 
 ### `create_llm_client(backend, **kwargs) → BaseLLM`
 
@@ -193,7 +192,7 @@ def generate(self, prompt: str) -> str:
 Module-level singleton (`token_counter`) that tracks tokens consumed across all LLM calls in the current process. Imported from `agent_core.planning.llm_interface`.
 
 ```python
-from agent_core.planning.llm_interface import token_counter
+from toddly.planning.llm_interface import token_counter
 
 token_counter.prompt_tokens     # int — cumulative prompt tokens
 token_counter.completion_tokens # int — cumulative completion tokens
@@ -231,7 +230,7 @@ When `cache_path` is provided, a cache hit is served immediately without any net
 Persistent JSON cache shared by all three backends. Stores `{sha256(key): {prompt, response}}` pairs. Loaded into memory at construction; written atomically to disk on every new entry.
 
 ```python
-from agent_core.planning.llm_interface import LlamaCppCache
+from toddly.planning.llm_interface import LlamaCppCache
 
 cache = LlamaCppCache("my_cache.json")
 cache.set(prompt, response)
@@ -365,7 +364,7 @@ These keys are visible in both the web UI and curses UI as a "Running as (broade
 
 ---
 
-## `agent_core.engine.orchestrator`
+## `cuddlytoddly.engine.orchestrator`
 
 ### `Orchestrator(graph, planner, executor, event_log, event_queue, max_workers, quality_gate, max_gap_fill_attempts, idle_sleep, max_retries)`
 
@@ -448,7 +447,7 @@ Returns `{"ok": true, "path": "<absolute path to written file>"}`.
 
 ---
 
-## `agent_core.engine.quality_gate`
+## `cuddlytoddly.engine.quality_gate`
 
 ### `QualityGate(llm_client, tool_registry=None)`
 
@@ -494,7 +493,7 @@ result: str = registry.execute(tool_name: str, input_data: dict)
 
 ---
 
-## `agent_core.core.task_graph`
+## `toddly.core.task_graph`
 
 ### `TaskGraph`
 
@@ -589,4 +588,3 @@ cfg = load_config()
 planner_cfg = get_planner_cfg(cfg)
 # {"min_tasks_per_goal": 3, "max_tasks_per_goal": 8, "scrutinize_plan": False}
 ```
-

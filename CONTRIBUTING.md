@@ -1,4 +1,3 @@
-
 # Contributing to cuddlytoddly
 
 Thank you for your interest in contributing! cuddlytoddly is an open-source project and contributions of all kinds are welcome — bug fixes, new features, documentation improvements, new skills, and additional backend support.
@@ -124,29 +123,30 @@ Then open a pull request on GitHub from your branch to `3IVIS/cuddlytoddly:main`
 Understanding where things live will help you find the right place for your change:
 
 ```
-cuddlytoddly/
-├── core/
-│   └── task_graph.py          # TaskGraph — the mutable DAG at the heart of everything
-├── planning/
-│   ├── llm_interface.py       # create_llm_client() — backend abstraction layer
-│   ├── llm_planner.py         # LLMPlanner — goal → DAG decomposition
-│   └── llm_executor.py        # LLMExecutor — per-task LLM execution loop
+cuddlytoddly/           # main package (entry point, UI, planning, engine)
 ├── engine/
 │   ├── orchestrator.py        # Orchestrator — concurrency, scheduling, event loop
 │   └── quality_gate.py        # QualityGate — output verification + gap bridging
+├── planning/
+│   ├── prompts.py             # All LLM prompt templates (edit here)
+│   ├── schemas.py             # All JSON output schemas (edit here)
+│   ├── llm_planner.py         # LLMPlanner — goal → DAG decomposition
+│   └── llm_executor.py        # LLMExecutor — per-task LLM execution loop
+├── ui/                        # Curses terminal UI, web UI, Git DAG projection
+│   ├── curses_ui.py
+│   └── web_server.py
+└── config.py                  # Config loading, CONFIG_PATH, defaults
+toddly/                 # core library (graph, infra, LLM backends, skills)
+├── core/
+│   └── task_graph.py          # TaskGraph — the mutable DAG at the heart of everything
+├── planning/
+│   └── llm_interface.py       # create_llm_client() — backend abstraction layer
 ├── skills/
 │   ├── skill_loader.py        # Discovers and loads SKILL.md skill folders
-│   └── builtin/               # Built-in skills (code execution, file I/O, web access)
-├── ui/
-│   ├── terminal/              # Curses-based terminal UI
-│   └── web/                   # Web UI — task graph visualiser, node editor
-├── config.py                  # Config loading, CONFIG_PATH, defaults
+│   ├── code_execution/        # Built-in skill: run Python / shell
+│   ├── file_ops/              # Built-in skill: read/write files
+│   └── web_research/          # Built-in skill: web search and URL fetch
 docs/
-├── architecture.md
-├── configuration.md
-├── skills.md
-└── api.md
-skills/                        # Drop custom skill folders here
 tests/
 ```
 
@@ -194,7 +194,7 @@ def tool_name(arg1: str, arg2: int) -> str:
 
 ### Testing your skill
 
-Drop the folder into the `skills/` directory at the project root and run a goal that would naturally invoke it:
+Drop the folder into `toddly/skills/` and run a goal that would naturally invoke it:
 
 ```bash
 cuddlytoddly "Your goal that exercises the new skill"
@@ -208,7 +208,7 @@ Check that the planner picks up the skill in its summary and that the executor c
 
 Backends live behind the `create_llm_client()` abstraction in `agent_core/planning/llm_interface.py`. To add support for a new LLM provider:
 
-1. **Add a client class** in `agent_core/planning/llm_interface.py` that implements the same interface as the existing `ApiLLM` and `LlamaCppLLM` classes (i.e. an `ask()` method with the same signature, plus optional `ask_with_tools()` for native tool-use APIs).
+1. **Add a client class** in `toddly/planning/llm_interface.py` that implements the same interface as the existing `ApiLLM` and `LlamaCppLLM` classes (i.e. an `ask()` method with the same signature, plus optional `ask_with_tools()` for native tool-use APIs).
 
 2. **Register the backend name** in the `create_llm_client()` factory function in that same file.
 
@@ -333,4 +333,3 @@ For large changes (new subsystems, breaking changes to the API), please open a d
 ## Questions?
 
 Open a [GitHub Discussion](https://github.com/3IVIS/cuddlytoddly/discussions) or file an issue labelled `question`. We're happy to help.
-

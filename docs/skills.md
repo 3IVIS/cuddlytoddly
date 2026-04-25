@@ -1,4 +1,3 @@
-
 # Skills
 
 Skills are the tool packs that the LLM executor can call during node execution. cuddlytoddly ships two built-in skills and supports adding custom ones with no code changes.
@@ -24,12 +23,21 @@ Read and write files relative to the run's `outputs/` directory.
 | `write_file` | Write a string to a file (creates parent dirs automatically) |
 | `list_files` | List files in a directory |
 
+### `web_research`
+
+Search the web and fetch page content. Used for tasks that require current information, salary data, market research, company research, news, or any fact that cannot be reliably answered from training knowledge alone.
+
+| Tool | Description |
+|---|---|
+| `web_search` | Search the web and return a list of results (title, URL, snippet) for a query |
+| `fetch_url` | Fetch the content of a URL and return cleaned plain text |
+
 ## Adding a custom skill
 
-1. Create a directory under `cuddlytoddly/skills/`:
+1. Create a directory under `toddly/skills/`:
 
 ```
-cuddlytoddly/skills/
+toddly/skills/
 └── my_skill/
     ├── SKILL.md     ← required
     └── tools.py     ← optional (local Python implementations)
@@ -77,7 +85,7 @@ TOOLS = {
 For tools that live in an external MCP server, pass a pre-built `ToolRegistry` to `SkillLoader.merge_mcp()`:
 
 ```python
-from cuddlytoddly.skills.skill_loader import SkillLoader
+from toddly.skills.skill_loader import SkillLoader
 
 skills = SkillLoader()
 
@@ -86,5 +94,3 @@ skills.merge_mcp(my_mcp_registry)
 
 registry = skills.registry  # combined local + MCP tools
 ```
-
-

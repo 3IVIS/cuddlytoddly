@@ -1,4 +1,3 @@
-
 # [cuddlytoddly](https://cuddlytoddly.com)
 
 *Holding AI's hand through planning and into execution.*
@@ -250,13 +249,13 @@ Drop a folder with a `SKILL.md` (and optional `tools.py`) into `cuddlytoddly/ski
 ## Python API
 
 ```python
-from agent_core.planning.llm_interface  import create_llm_client
+from toddly.planning.llm_interface       import create_llm_client
 from cuddlytoddly.planning.llm_planner   import LLMPlanner
 from cuddlytoddly.planning.llm_executor  import LLMExecutor
-from agent_core.engine.quality_gate      import QualityGate
-from agent_core.engine.orchestrator      import Orchestrator
-from cuddlytoddly.skills.skill_loader    import SkillLoader
-from agent_core.core.task_graph          import TaskGraph
+from cuddlytoddly.engine.quality_gate    import QualityGate
+from cuddlytoddly.engine.orchestrator    import Orchestrator
+from toddly.skills.skill_loader          import SkillLoader
+from toddly.core.task_graph              import TaskGraph
 
 # Swap "claude" for "openai" or "llamacpp" — everything else is identical
 llm      = create_llm_client("claude", model="claude-opus-4-6")
@@ -298,22 +297,32 @@ See [docs/api.md](https://github.com/3IVIS/cuddlytoddly/blob/main/docs/api.md) f
 ## Project structure
 
 ```
-cuddlytoddly/
-├── core/           # TaskGraph, events, reducer, ID generator
-├── engine/         # Orchestrator, QualityGate, ExecutionStepReporter
-├── infra/          # Logging, EventQueue, EventLog, replay
+cuddlytoddly/           # main package (entry point, UI, planning, engine)
+├── engine/
+│   ├── orchestrator.py
+│   └── quality_gate.py
 ├── planning/
 │   ├── prompts.py              ← all LLM prompt templates (edit here)
 │   ├── schemas.py              ← all JSON output schemas (edit here)
-│   ├── llm_interface.py
 │   ├── llm_planner.py
 │   ├── llm_executor.py
 │   ├── llm_output_validator.py
 │   └── plan_constraint_checker.py
-├── skills/         # SkillLoader + built-in skill packs
-│   ├── code_execution/
-│   └── file_ops/
-└── ui/             # Curses terminal UI, web UI, Git DAG projection
+├── ui/             # Curses terminal UI, web UI, Git DAG projection
+└── config.py
+toddly/             # core library (graph, infra, LLM backends, skills)
+├── core/           # TaskGraph, events, reducer, ID generator
+├── engine/         # BaseOrchestrator, ExecutionStepReporter
+├── infra/          # Logging, EventQueue, EventLog, replay
+├── planning/
+│   ├── llm_interface.py        ← LLM client factory + backends
+│   ├── llm_base.py
+│   ├── llm_backends_api.py
+│   └── llm_backends_local.py
+└── skills/         # SkillLoader + built-in skill packs
+    ├── code_execution/
+    ├── file_ops/
+    └── web_research/
 docs/
 pyproject.toml
 LICENSE
@@ -359,4 +368,3 @@ See [CONTRIBUTING.md](https://github.com/3IVIS/cuddlytoddly/blob/main/CONTRIBUTI
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
