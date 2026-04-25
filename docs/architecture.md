@@ -1,3 +1,4 @@
+
 # Architecture
 
 ## Overview
@@ -97,8 +98,8 @@ All events are appended to an `events.jsonl` file via `EventLog`. On restart, `r
 
 | Package | Files | Responsibility |
 |---|---|---|
-| `agent_core.core` | `task_graph.py`, `events.py`, `reducer.py`, `id_generator.py` | `TaskGraph`, `Node`, `Event` types, `apply_event` reducer |
-| `agent_core.engine` | `orchestrator.py`, `quality_gate.py`, `execution_step_reporter.py` | Plan→execute loop, result verification, bridge-node injection |
+| `toddly.core` | `task_graph.py`, `events.py`, `reducer.py`, `id_generator.py` | `TaskGraph`, `Node`, `Event` types, `apply_event` reducer |
+| `toddly.engine` | `base_orchestrator.py`, `execution_step_reporter.py` | Generic orchestration loop, retry/backoff, event sourcing, execution step tracking |
 | `cuddlytoddly.planning` | `prompts.py` ★, `schemas.py` ★, `llm_interface.py`, `llm_planner.py`, `llm_executor.py`, `llm_output_validator.py`, `plan_constraint_checker.py` | LLM client abstraction, prompt templates, JSON schemas, planning pipeline and execution logic |
 | `toddly.infra` | `logging.py`, `event_queue.py`, `event_log.py`, `replay.py` | Logging, `EventQueue`, `EventLog`, replay |
 | `cuddlytoddly.skills` | `skill_loader.py`, `*/SKILL.md`, `*/tools.py` | `SkillLoader`, `ToolRegistry`, built-in skill packs |
@@ -203,3 +204,4 @@ config.load_config()
 ```
 
 No component reads config directly — they receive values through their constructors, which makes them independently testable with any parameter set.
+

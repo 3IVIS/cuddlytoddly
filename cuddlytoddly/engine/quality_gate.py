@@ -5,23 +5,22 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from toddly.infra.logging import get_logger
-from toddly.planning.llm_interface import LLMStoppedError
-
 # Default prompt builders — imported here so callers that construct QualityGate
 # without explicit prompt functions get the cuddlytoddly-specific behaviour
 # unchanged.  When moving QualityGate to a shared agent-core library, remove
 # these imports and require callers to supply both functions explicitly.
-from toddly.planning.prompts import (
+from cuddlytoddly.planning.prompts import (
     build_check_dependencies_prompt as _default_check_deps_prompt,
 )
-from toddly.planning.prompts import (
+from cuddlytoddly.planning.prompts import (
     build_verify_result_prompt as _default_verify_prompt,
 )
-from toddly.planning.schemas import (
+from cuddlytoddly.planning.schemas import (
     DEPENDENCY_CHECK_SCHEMA,
     RESULT_VERIFICATION_SCHEMA,
 )
+from toddly.infra.logging import get_logger
+from toddly.planning.llm_interface import LLMStoppedError
 
 logger = get_logger(__name__)
 

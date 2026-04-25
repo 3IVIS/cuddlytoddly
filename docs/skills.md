@@ -1,3 +1,4 @@
+
 # Skills
 
 Skills are the tool packs that the LLM executor can call during node execution. cuddlytoddly ships two built-in skills and supports adding custom ones with no code changes.
@@ -85,3 +86,5 @@ skills.merge_mcp(my_mcp_registry)
 
 registry = skills.registry  # combined local + MCP tools
 ```
+
+

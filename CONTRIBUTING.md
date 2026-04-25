@@ -1,3 +1,4 @@
+
 # Contributing to cuddlytoddly
 
 Thank you for your interest in contributing! cuddlytoddly is an open-source project and contributions of all kinds are welcome — bug fixes, new features, documentation improvements, new skills, and additional backend support.
@@ -332,3 +333,4 @@ For large changes (new subsystems, breaking changes to the API), please open a d
 ## Questions?
 
 Open a [GitHub Discussion](https://github.com/3IVIS/cuddlytoddly/discussions) or file an issue labelled `question`. We're happy to help.
+

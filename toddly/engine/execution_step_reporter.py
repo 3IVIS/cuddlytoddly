@@ -1,5 +1,3 @@
-# --- FILE: toddly/engine/execution_step_reporter.py ---
-
 # engine/execution_step_reporter.py
 
 from datetime import datetime, timezone

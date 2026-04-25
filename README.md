@@ -1,3 +1,4 @@
+
 # [cuddlytoddly](https://cuddlytoddly.com)
 
 *Holding AI's hand through planning and into execution.*
@@ -358,3 +359,4 @@ See [CONTRIBUTING.md](https://github.com/3IVIS/cuddlytoddly/blob/main/CONTRIBUTI
 ## License
 
 MIT — see [LICENSE](LICENSE).
+

@@ -1,3 +1,4 @@
+
 # Configuration
 
 cuddlytoddly is configured through a single TOML file in the user data directory.
@@ -469,3 +470,4 @@ supported.
         ├── outputs/             ← working directory for file-writing tools
         └── dag_repo/            ← Git repo mirroring the DAG
 ```
+

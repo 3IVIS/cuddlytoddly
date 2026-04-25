@@ -2,10 +2,10 @@
 
 import json
 
+from cuddlytoddly.planning.prompts import build_ghost_node_resolution_prompt
+from cuddlytoddly.planning.schemas import GHOST_NODE_RESOLUTION_SCHEMA
 from toddly.core.events import ADD_DEPENDENCY, ADD_NODE
 from toddly.infra.logging import get_logger
-from toddly.planning.prompts import build_ghost_node_resolution_prompt
-from toddly.planning.schemas import GHOST_NODE_RESOLUTION_SCHEMA
 
 logger = get_logger(__name__)
 

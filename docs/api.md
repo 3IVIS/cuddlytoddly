@@ -1,3 +1,4 @@
+
 # API Reference
 
 This page documents the public interfaces intended for programmatic use. Internal modules (reducer, event types, ID generator) are implementation details and may change between releases.
@@ -588,3 +589,4 @@ cfg = load_config()
 planner_cfg = get_planner_cfg(cfg)
 # {"min_tasks_per_goal": 3, "max_tasks_per_goal": 8, "scrutinize_plan": False}
 ```
+

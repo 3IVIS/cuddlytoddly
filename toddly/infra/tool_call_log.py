@@ -1,5 +1,3 @@
-# --- FILE: toddly/infra/tool_call_log.py ---
-
 """
 toddly.infra.tool_call_log
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

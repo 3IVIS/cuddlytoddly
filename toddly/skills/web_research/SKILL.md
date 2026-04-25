@@ -1,3 +1,4 @@
+
 # web_research
 
 ## Description
@@ -14,3 +15,5 @@ Search the web and fetch page content. Use for tasks that require current inform
 
 ## Expected output format
 Summarise findings as structured text. Cite the source URL for each key fact. Do not reproduce large blocks of verbatim text.
+
+

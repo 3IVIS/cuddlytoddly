@@ -1,5 +1,3 @@
-# --- FILE: cuddlytoddly/__main__.py ---
-
 # __main__.py
 
 import argparse
@@ -18,6 +16,8 @@ from cuddlytoddly.config import (
     load_config,
     preflight_check,
 )
+from cuddlytoddly.engine.orchestrator import Orchestrator
+from cuddlytoddly.engine.quality_gate import QualityGate
 from cuddlytoddly.planning.llm_executor import LLMExecutor
 from cuddlytoddly.planning.llm_planner import LLMPlanner
 from cuddlytoddly.ui.curses_ui import run_ui
@@ -28,8 +28,6 @@ from toddly.core.events import ADD_NODE, Event
 from toddly.core.id_generator import StableIDGenerator
 from toddly.core.reducer import apply_event
 from toddly.core.task_graph import TaskGraph
-from toddly.engine.orchestrator import Orchestrator
-from toddly.engine.quality_gate import QualityGate
 from toddly.infra.event_log import EventLog
 from toddly.infra.event_queue import EventQueue
 from toddly.infra.logging import get_logger, setup_logging

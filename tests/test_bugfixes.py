@@ -18,11 +18,11 @@ from unittest.mock import MagicMock
 
 from conftest import FakeLLM, add_node
 
+from cuddlytoddly.engine.orchestrator import Orchestrator
+from cuddlytoddly.engine.quality_gate import QualityGate
 from cuddlytoddly.planning.llm_executor import LLMExecutor
 from toddly.core.reducer import apply_event
 from toddly.core.task_graph import TaskGraph
-from toddly.engine.orchestrator import Orchestrator
-from toddly.engine.quality_gate import QualityGate
 from toddly.infra.event_queue import EventQueue
 
 # ── Shared helpers ────────────────────────────────────────────────────────────

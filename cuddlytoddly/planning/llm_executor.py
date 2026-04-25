@@ -4,11 +4,8 @@ import json
 import uuid
 from pathlib import Path
 
-from toddly.core.events import UPDATE_METADATA, Event
-from toddly.engine.signals import AwaitingInputSignal
-from toddly.infra.logging import get_logger
-from toddly.planning.llm_interface import LLMStoppedError, NativeToolResponse
-from toddly.planning.prompts import (
+from cuddlytoddly.engine.signals import AwaitingInputSignal
+from cuddlytoddly.planning.prompts import (
     build_awaiting_input_check_prompt,
     build_broadened_description_prompt,
     build_executor_file_output_instruction,
@@ -22,9 +19,14 @@ from toddly.planning.prompts import (
     build_executor_prompt,
     build_executor_retry_notice,
 )
-from toddly.planning.schemas import (
+from cuddlytoddly.planning.schemas import (
     AWAITING_INPUT_CHECK_SCHEMA,
     BROADENED_DESCRIPTION_SCHEMA,
+)
+from toddly.core.events import UPDATE_METADATA, Event
+from toddly.infra.logging import get_logger
+from toddly.planning.llm_interface import LLMStoppedError, NativeToolResponse
+from toddly.planning.schemas import (
     EXECUTION_TURN_SCHEMA,
 )
 

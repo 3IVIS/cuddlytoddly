@@ -45,17 +45,6 @@ from toddly.planning.llm_base import (  # noqa: F401
     token_counter,
 )
 
-# Re-export schemas so existing callers that imported them from here continue to work.
-from toddly.planning.schemas import (  # noqa: F401
-    DEPENDENCY_CHECK_SCHEMA,
-    EVENT_LIST_SCHEMA,
-    EXECUTION_TURN_SCHEMA,
-    GOAL_SUMMARY_SCHEMA,
-    PLAN_SCHEMA,
-    REFINER_OUTPUT_SCHEMA,
-    RESULT_VERIFICATION_SCHEMA,
-)
-
 # ---------------------------------------------------------------------------
 # Factory — single entry point for the rest of the codebase
 # ---------------------------------------------------------------------------

@@ -1,5 +1,3 @@
-# --- FILE: cuddlytoddly/ui/git_projection.py ---
-
 """
 git_projection.py — per-run git repository state for DAG visualisation.
 
