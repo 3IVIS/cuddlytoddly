@@ -1777,14 +1777,18 @@ class LLMExecutor:
             if reporter:
                 reporter.on_llm_turn(turn)
 
-            # On the final turn pass an empty tools list so the provider API
-            # physically cannot emit a tool call — the model must respond with text.
-            tools_for_turn = [] if is_final_turn else tools
-
+            # On the final turn, bypass ask_with_tools entirely and call
+            # generate() directly.  Passing tools=[] to ask_with_tools would
+            # raise a 400 BadRequestError from both the Anthropic and OpenAI
+            # APIs ("tools: must have at least 1 item").  generate() sends the
+            # prompt as plain text without any tool scaffolding, so the model
+            # is forced to produce a text answer.
             try:
-                response: NativeToolResponse = self.llm.ask_with_tools(
-                    current_prompt, tools_for_turn, history
-                )
+                if is_final_turn:
+                    final_text = self.llm.generate(current_prompt)
+                    response = NativeToolResponse(kind="text", text=final_text)
+                else:
+                    response = self.llm.ask_with_tools(current_prompt, tools, history)
             except LLMStoppedError:
                 logger.warning("[EXECUTOR] LLM stopped during native execution of %s", node.id)
                 return None
@@ -1981,19 +1985,27 @@ class LLMExecutor:
                         node.id,
                         url,
                     )
+                    # Record the duplicate as a proper tool_result entry rather
+                    # than a "correction".  A correction entry produces a bare
+                    # user message; if the previous history entry was also a
+                    # user message (tool_result from the prior turn) this creates
+                    # two consecutive user messages, which the Anthropic API
+                    # rejects with 400 "messages: roles must alternate between
+                    # user and assistant".  Using the standard tool_result format
+                    # produces the expected assistant→user alternation:
+                    #   assistant: [tool_use for fetch_url (duplicate)]
+                    #   user:      [tool_result with error text]
                     history = self._append_to_history(
                         history,
                         {
-                            "kind": "correction",
-                            "content": (
-                                f"URL already fetched this session: {url!r}. "
+                            "name": "fetch_url",
+                            "args": tool_args,
+                            "result": (
+                                f"ERROR: URL already fetched this session: {url!r}. "
                                 "Fetching it again will return identical content. "
                                 "Pick a different URL from your search results, or "
                                 "run a new web_search with different keywords."
                             ),
-                            "name": "fetch_url",
-                            "args": tool_args,
-                            "result": f"ERROR: duplicate fetch skipped for {url!r}",
                             "tool_use_id": tool_use_id,
                         },
                     )
