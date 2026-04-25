@@ -70,7 +70,7 @@ class QualityGate:
         llm_client,
         tool_registry=None,
         max_total_input_chars: int = 3000,
-        # FIX #5: accept the executor's working directory so that declared file
+        # Accept the executor's working directory so that declared file
         # output names (which are relative paths like "report.md") are resolved
         # against the correct location rather than the process CWD, which may
         # differ at verification time.
@@ -125,7 +125,7 @@ class QualityGate:
         for output in declared_outputs:
             if _is_file_output(output):
                 path = _output_name(output)
-                # FIX #5: resolve the declared path against the executor's
+                # Resolve the declared path against the executor's
                 # working directory so the check is CWD-independent.
                 resolved = self._resolve_output_path(path)
                 if not self._file_exists(resolved):
@@ -346,7 +346,7 @@ class QualityGate:
                 # Path is inside the sandbox — allow it.
                 return str(resolved)
             except ValueError:
-                # FIX F: absolute path escapes working_dir.  Return a synthetic
+                # Absolute path escapes working_dir.  Return a synthetic
                 # path inside the sandbox that will never exist on disk, so the
                 # subsequent _file_exists() call returns False and verification
                 # fails rather than accidentally passing on a host-level file.

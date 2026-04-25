@@ -24,7 +24,7 @@ from platformdirs import user_data_dir
 
 from toddly.infra.logging import get_logger
 
-# FIX #8: import model name constants so the config template uses the same
+# Import model name constants so the config template uses the same
 # single source of truth as the LLM backends, rather than hard-coded strings
 # that go stale when default models are updated.
 from toddly.planning.llm_interface import _DEFAULT_CLAUDE_MODEL, _DEFAULT_OPENAI_MODEL
@@ -162,7 +162,7 @@ cache_enabled = true
 # Uncomment for OpenAI-compatible providers (Together, Groq, Mistral, etc.)
 # base_url = "https://api.together.xyz/v1"
 #
-# FIX #11: SECURITY WARNING — setting api_key here stores your secret key in a
+# SECURITY WARNING — setting api_key here stores your secret key in a
 # plain-text file on disk at a well-known path.  Anyone with read access to
 # your home directory can read it.  Prefer setting the OPENAI_API_KEY
 # environment variable instead (e.g. in your shell profile or a .env file that
@@ -253,7 +253,7 @@ host = "127.0.0.1"
 port = 8765
 """
 
-# FIX #8: include "file" so that backend = "file" in config.toml is accepted
+# Include "file" so that backend = "file" in config.toml is accepted
 # by _validate() instead of raising ValueError.  The "file" backend is a
 # legitimate dev/testing backend fully supported by _build_llm_client().
 _VALID_BACKENDS = {"llamacpp", "claude", "openai", "file"}
@@ -280,7 +280,7 @@ def load_config() -> dict:
 
     if not CONFIG_PATH.exists():
         backend = _detect_backend()
-        # FIX #8: substitute all three placeholders so the written file always
+        # Substitute all three placeholders so the written file always
         # reflects the current default model names from llm_interface.py.
         content = (
             _DEFAULT_CONFIG_TEMPLATE.replace('"{backend}"', f'"{backend}"')
@@ -298,7 +298,7 @@ def load_config() -> dict:
 
     _validate(cfg)
 
-    # FIX #11: warn at load time if a plain-text api_key is present in the
+    # Warn at load time if a plain-text api_key is present in the
     # [openai] section so that users who set it there are reminded of the
     # security implication every time the application starts.
     if cfg.get("openai", {}).get("api_key"):

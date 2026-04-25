@@ -1,17 +1,13 @@
 """
-cuddly.utils.make_run_dir
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+toddly.utils.make_run_dir
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 Create a timestamped, collision-safe directory for a single agent run.
-
-Extracted from cuddlytoddly/__main__.py so any host application can reuse
-the logic without importing the full cuddlytoddly package.
 
 Usage::
 
-    from cuddly.utils.make_run_dir import make_run_dir
-    from cuddlytoddly.config import DATA_DIR
+    from toddly.utils.make_run_dir import make_run_dir
 
-    run_dir = make_run_dir("build a todo app", base_dir=DATA_DIR)
+    run_dir = make_run_dir("build a todo app", base_dir=data_dir)
 """
 
 from __future__ import annotations

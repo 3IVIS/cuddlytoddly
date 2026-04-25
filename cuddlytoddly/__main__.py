@@ -42,7 +42,7 @@ from toddly.utils.make_run_dir import make_run_dir as _make_run_dir_impl
 
 REPO_ROOT = Path(__file__).resolve().parent  # package code location
 
-# FIX #8: do NOT call setup_logging() at module import time.  The module is
+# Do NOT call setup_logging() at module import time.  The module is
 # imported before any run directory is known, so a module-level call produces
 # log output with no per-run log file and accumulates duplicate handlers if the
 # module is imported more than once (e.g. in tests).  setup_logging() is now
@@ -82,7 +82,7 @@ class _DeferredLLM:
             return getattr(self._real, "is_stopped", False)
 
     def stop(self) -> None:
-        # FIX #5: snapshot _real under the lock, then call stop() outside it.
+        # Snapshot _real under the lock, then call stop() outside it.
         # Holding _lock while delegating risks deadlock if the backend's stop()
         # tries to acquire its own lock while a concurrent ask() thread holds it.
         with self._lock:
@@ -91,7 +91,7 @@ class _DeferredLLM:
             real.stop()
 
     def resume(self) -> None:
-        # FIX #5: same pattern as stop() — release lock before delegating.
+        # Same pattern as stop() — release lock before delegating.
         with self._lock:
             real = self._real
         if real is not None and hasattr(real, "resume"):
@@ -107,7 +107,7 @@ class _DeferredLLM:
         return real.ask(prompt, schema=schema) if schema is not None else real.ask(prompt)
 
     def generate(self, prompt: str) -> str:
-        # FIX #10: delegate to the real client's generate() method once
+        # Delegate to the real client's generate() method once
         # attached, rather than routing through ask() which has different
         # semantics (ask() always accepts a schema kwarg; generate() is a
         # simpler text-completion call without structured output).  Before
@@ -298,7 +298,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     """
     goal_text = choice.goal_text
 
-    # FIX #7: sanitise goal_id with the same alnum+underscore filter used in
+    # Sanitise goal_id with the same alnum+underscore filter used in
     # make_run_dir so that special characters (quotes, backslashes, unicode…)
     # never leak into event-log node IDs and corrupt JSONL replay.
     goal_id = "".join(c for c in goal_text.lower().replace(" ", "_") if c.isalnum() or c == "_")[
@@ -330,20 +330,20 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     # this is safe for the single-active-run terminal mode.
     git_proj.configure(run_dir / "dag_repo")
 
-    # FIX #1: removed os.chdir() here — the working directory is now stored on
+    # Removed os.chdir() here — the working directory is now stored on
     # the executor and set/restored around each individual tool call so that
     # concurrent runs in web-server mode cannot clobber each other's CWD.
     working_dir = run_dir / "outputs"
     _logger.info("Task working directory: %s", working_dir)
 
-    # FIX (security): configure the file_ops sandbox so that read_file,
+    # Configure the file_ops sandbox so that read_file,
     # write_file, append_file, and list_dir are restricted to the run's
     # outputs/ directory.  Absolute paths outside this sandbox raise
     # ValueError and fail the tool call cleanly rather than silently
     # reading or writing arbitrary files on the host filesystem.
     file_ops_tools.configure(working_dir)
 
-    # FIX #5: create the StableIDGenerator per-run and pass it directly to the
+    # Create the StableIDGenerator per-run and pass it directly to the
     # LLM client rather than replacing a shared module-level global.  This
     # prevents two concurrent web-mode runs from racing on the same id_gen.
     run_id_gen = StableIDGenerator(
@@ -361,7 +361,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     max_unsuccessful_turns = orch_cfg["max_unsuccessful_turns"]
 
     # ── Per-run token counter ─────────────────────────────────────────────────
-    # FIX #3: created here — before the graph-replay block — so it is in scope
+    # Created here — before the graph-replay block — so it is in scope
     # when the seed call inside the replay branch fires (the seed call must
     # happen before the first LLM call, not after).
     run_token_counter = TokenCounter()
@@ -389,7 +389,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
                 n.metadata.pop("retry_count", None)
                 n.metadata.pop("verification_failure", None)
                 n.metadata.pop("verified", None)
-                # FIX: also clear retry_after so a node that crashed while
+                # Also clear retry_after so a node that crashed while
                 # inside an exponential-backoff window is not silently skipped
                 # by _execution_pass() after restart.  Without this, the node
                 # would sit in "ready" status but never be launched until the
@@ -401,7 +401,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         # ── Restore historical token counts ───────────────────────────────────
         # Read llamacpp_cache.json (present for llama.cpp runs; absent for
         # Anthropic/OpenAI runs — skipped silently in that case).
-        # FIX #9: the original code approximated token counts as len(text) // 4,
+        # The original code approximated token counts as len(text) // 4,
         # which is an English-centric heuristic that can be off by 2-5× for
         # non-English text.  We now use tiktoken (if available) for a much more
         # accurate count, and fall back to the character-based approximation only
@@ -478,7 +478,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         max_clarification_fields=planner_cfg["max_clarification_fields"],
     )
 
-    # FIX #1: pass working_dir to the executor so it can chdir/restore around
+    # Pass working_dir to the executor so it can chdir/restore around
     # each individual tool call instead of relying on the process-wide CWD.
     from toddly.infra.tool_call_log import ToolCallLog
 
@@ -497,7 +497,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         tool_call_log=tool_call_log,
     )
 
-    # FIX #5: pass the executor's working_dir to QualityGate so that declared
+    # Pass the executor's working_dir to QualityGate so that declared
     # file output paths (e.g. "report.md") are resolved against the correct
     # directory during file-existence checks rather than the process CWD.
     #
@@ -568,7 +568,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
                 orchestrator.verify_restored_nodes()
             except Exception as exc:
                 _logger.error("[STARTUP] Background LLM load failed: %s", exc)
-                # FIX: StatusEvent now lives in event_queue (it was previously
+                # StatusEvent now lives in event_queue (it was previously
                 # imported inside a try/except because it didn't exist there,
                 # so failures were always silently swallowed).  Import at the
                 # top of the except block — no defensive try needed.

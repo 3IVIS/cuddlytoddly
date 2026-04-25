@@ -1,6 +1,6 @@
 # infra/event_log.py
 
-# FIX #11: moved `import logging` to module level — it was previously inside
+# Moved `import logging` to module level — it was previously inside
 # the except block on every replay iteration (harmless due to Python's import
 # cache, but misleading and contrary to PEP 8 style).
 import json
@@ -67,7 +67,7 @@ class EventLog:
                     )
 
     def clear(self):
-        # FIX: acquire the lock before truncating so that a concurrent append()
+        # Acquire the lock before truncating so that a concurrent append()
         # call (which also holds self._lock while writing) cannot interleave with
         # the truncation.  Without the lock, the two file-open calls race: on
         # Linux, whichever open() wins determines whether the appended line lands

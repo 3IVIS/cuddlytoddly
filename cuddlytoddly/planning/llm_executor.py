@@ -32,7 +32,7 @@ from toddly.planning.schemas import (
 
 logger = get_logger(__name__)
 
-# FIX: _CWD_LOCK removed.  The original implementation called os.chdir() +
+# _CWD_LOCK removed.  The original implementation called os.chdir() +
 # held a process-wide lock for the full duration of every tool call, which
 # serialised all tool execution across all concurrent runs and all thread-pool
 # workers.  A 30-second shell command blocked every other tool call in the
@@ -450,7 +450,7 @@ class LLMExecutor:
             len(steps),
         )
 
-        # FIX: append the manual-retry nonce (if set) to extra_reminder so it
+        # Append the manual-retry nonce (if set) to extra_reminder so it
         # becomes part of the prompt string and therefore the LLM cache key.
         # The nonce is invisible to the model's reasoning but ensures a manual
         # retry never collides with a prior cached response for the same prompt.
@@ -1429,7 +1429,7 @@ class LLMExecutor:
                             },
                         )
                     )
-                # FIX E: wrap result with pre-verification flag when the inline
+                # Wrap result with pre-verification flag when the inline
                 # quality gate ran and passed so _on_node_done skips its own call.
                 if _pre_verified:
                     return {"result": result, "_pre_verified": True}
@@ -1924,7 +1924,7 @@ class LLMExecutor:
                             },
                         )
                     )
-                # FIX E: wrap with pre-verification tag when inline check passed.
+                # Wrap with pre-verification tag when inline check passed.
                 if _pre_verified:
                     return {"result": result, "_pre_verified": True}
                 return result

@@ -50,7 +50,7 @@ class ApiLLM(BaseLLM):
 
     supports_native_tools: bool = True
 
-    # FIX #14: reference the named constants so there is one canonical source.
+    # Reference the named constants so there is one canonical source.
     _DEFAULTS = {
         "openai": _DEFAULT_OPENAI_MODEL,
         "claude": _DEFAULT_CLAUDE_MODEL,
@@ -98,7 +98,7 @@ class ApiLLM(BaseLLM):
         )
 
         self._client = None  # lazy-loaded
-        # FIX #1: protect lazy client initialisation with a lock so that
+        # Protect lazy client initialisation with a lock so that
         # concurrent executor threads (max_workers > 1) cannot race through
         # the `if self._client is None` check and each create their own client.
         self._load_lock = __import__("threading").Lock()
@@ -110,7 +110,7 @@ class ApiLLM(BaseLLM):
         if self._client is not None:
             return
 
-        # FIX #1: double-checked locking — identical pattern to LlamaCppLLM.
+        # Double-checked locking — identical pattern to LlamaCppLLM.
         with self._load_lock:
             if self._client is not None:
                 return
@@ -295,7 +295,7 @@ class ApiLLM(BaseLLM):
                 logger.info("[API] Cache HIT")
                 return cached
 
-        # FIX: use 4 attempts (was 2) so rate-limit retries with backoff still
+        # Use 4 attempts (was 2) so rate-limit retries with backoff still
         # leave room for a JSON-parse retry without exhausting all attempts.
         for attempt in range(_API_MAX_ATTEMPTS):
             try:
@@ -306,7 +306,7 @@ class ApiLLM(BaseLLM):
             except LLMStoppedError:
                 raise
             except Exception as e:
-                # FIX: rate-limit errors (HTTP 429) require exponential backoff
+                # Rate-limit errors (HTTP 429) require exponential backoff
                 # before retrying.  The original code retried immediately on
                 # any exception, which turned a 429 into two back-to-back
                 # requests — the second also rate-limited — and then re-raised.
@@ -323,7 +323,7 @@ class ApiLLM(BaseLLM):
                         _API_MAX_ATTEMPTS,
                         backoff,
                     )
-                    # FIX 4: sleep in short increments so the stop flag is
+                    # Sleep in short increments so the stop flag is
                     # checked frequently.  A bare time.sleep(backoff) blocks for
                     # up to 60 s; the user pressing pause cannot interrupt it and
                     # the orchestrator's llm_stopped flag has no effect until the

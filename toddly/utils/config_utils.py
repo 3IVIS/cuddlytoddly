@@ -1,5 +1,5 @@
 """
-cuddly.utils.config_utils
+toddly.utils.config_utils
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Backend detection and tiered config-resolution helpers.
 

@@ -268,7 +268,7 @@ def _web_search(args: dict) -> str:
                 )
                 return combined
 
-            # FIX: return an ERROR:-prefixed string so _dispatch_tool sets
+            # Return an ERROR:-prefixed string so _dispatch_tool sets
             # error=True and the executor treats this as a failed tool call
             # rather than a successful (but empty) result.  Without the prefix
             # the model sees a clean result, assumes the search worked, and

@@ -403,7 +403,7 @@ class PlanConstraintChecker:
         self.graph when no snapshot is provided (tests, legacy callers).
         """
         new_nodes, edges = self._parse_events(events)
-        # FIX 2: use snapshot for existing-node lookups when available.
+        # Use snapshot for existing-node lookups when available.
         graph_view: dict = snapshot if snapshot is not None else self.graph.nodes
         existing_ids = set(graph_view.keys())
         new_node_ids = set(new_nodes.keys())
@@ -433,7 +433,7 @@ class PlanConstraintChecker:
         new_summaries: dict[str, str] = {
             nid: p.get("metadata", {}).get("description", "") for nid, p in new_nodes.items()
         }
-        # FIX 2: read descriptions from snapshot, not live graph.
+        # Read descriptions from snapshot, not live graph.
         existing_summaries: dict[str, str] = {
             nid: node.metadata.get("description", "") for nid, node in graph_view.items()
         }
@@ -445,7 +445,7 @@ class PlanConstraintChecker:
             # Ancestors of the ghost node must be excluded from candidates to
             # prevent introducing a cycle (if X is an ancestor of ghost, adding
             # ADD_DEPENDENCY(X, depends_on=ghost) would mean ghost→...→X→ghost).
-            # FIX 2: pass graph_view (snapshot) to _get_ancestors so it uses the
+            # Pass graph_view (snapshot) to _get_ancestors so it uses the
             # same safe data source as the rest of this method.
             ancestors = self._get_ancestors(ghost_id, edges, graph_view)
             valid_candidates = (
@@ -502,7 +502,7 @@ class PlanConstraintChecker:
 
         return events + extra_edges
 
-    # FIX: removed duplicate @staticmethod decorator.  The original code had
+    # Removed duplicate @staticmethod decorator.  The original code had
     # two stacked @staticmethod decorators on this method.  On Python < 3.10
     # that raises TypeError at runtime (staticmethod objects are not callable
     # before 3.10).  On Python ≥ 3.10 it silently works but is still wrong.

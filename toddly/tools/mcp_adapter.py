@@ -191,7 +191,7 @@ class MCPAdapter:
 
             def make_fn(name):
                 def call_tool(input_data: dict) -> str:
-                    # FIX: use _run_coroutine instead of asyncio.run so this
+                    # Use _run_coroutine instead of asyncio.run so this
                     # closure is safe when executed inside an already-running
                     # event loop (e.g. via asyncio.to_thread in web mode).
                     return _run_coroutine(self._call_tool(name, input_data))

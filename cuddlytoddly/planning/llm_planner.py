@@ -88,7 +88,7 @@ class LLMPlanner:
         self.min_tasks_per_goal = min_tasks_per_goal
         self.max_tasks_per_goal = max_tasks_per_goal
         self.scrutinize_plan = scrutinize_plan
-        # FIX: use dedicated clarification field limits instead of reusing the
+        # Use dedicated clarification field limits instead of reusing the
         # task count limits.  Callers that do not supply these get sensible
         # standalone defaults rather than whatever the task count happens to be.
         self.min_clarification_fields: int = (
@@ -126,7 +126,7 @@ class LLMPlanner:
         clarif_fields: list = []
         clarif_prompt: str = ""
 
-        # FIX D: read the clarification node from the immutable snapshot rather
+        # Read the clarification node from the immutable snapshot rather
         # than from self.graph directly.  propose() is called from _planning_pass
         # with graph_lock released; concurrent _on_node_done callbacks in the
         # thread pool may be mutating self.graph.nodes at the same time.  A
@@ -199,7 +199,7 @@ class LLMPlanner:
 
         # ── Validate and constrain plan events ────────────────────────────────
         raw_events = self._normalize_events(raw_events)
-        # FIX D (continued): LLMOutputValidator reads graph.nodes.keys() and
+        # LLMOutputValidator reads graph.nodes.keys() and
         # graph.nodes.items() to build existing_ids and goal_ids.  Pass a thin
         # proxy backed by the immutable snapshot instead of the live graph so
         # those reads are also GIL-race-free.  The proxy exposes only the .nodes

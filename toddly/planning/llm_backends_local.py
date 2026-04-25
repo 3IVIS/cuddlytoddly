@@ -76,7 +76,7 @@ class FileBasedLLM(BaseLLM):
         self.timeout = timeout
         self.progress_log_interval = progress_log_interval
         self._cache = PromptCache(cache_path) if cache_path is not None else None
-        # FIX #5: use the caller-supplied generator so each run is isolated;
+        # Use the caller-supplied generator so each run is isolated;
         # fall back to the module-level default only when none is provided.
         self._id_gen: StableIDGenerator = id_gen if id_gen is not None else _module_id_gen
         logger.info("[LLM] Initialized FileBasedLLM")
@@ -89,7 +89,7 @@ class FileBasedLLM(BaseLLM):
 
     def send_prompt(self, prompt: str) -> str:
         logger.info("[LLM] send_prompt() called")
-        # FIX #5: use the per-instance generator instead of the module global
+        # Use the per-instance generator instead of the module global
         prompt_id = self._id_gen.get_id(prompt, "prompts")
         logger.info("[LLM] Generated prompt_id=%s", prompt_id)
 
@@ -509,7 +509,7 @@ class LlamaCppLLM(BaseLLM):
             response_text = self._run_model(prompt, constrained_schema)
             try:
                 parsed = json.loads(response_text)
-                # FIX: mirror the ApiLLM fix — only reject a genuinely null
+                # Mirror the ApiLLM fix — only reject a genuinely null
                 # response.  The old check `not parsed and parsed != 0` treated
                 # {} and [] as invalid because `not {}` and `not []` are True in
                 # Python, causing unnecessary retries and ultimately raising

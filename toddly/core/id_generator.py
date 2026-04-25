@@ -10,7 +10,7 @@ BASE62_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercas
 
 
 def base62_encode(num: int, length: int = 6) -> str:
-    # FIX #7: instead of encoding the full integer and then truncating (which
+    # Instead of encoding the full integer and then truncating (which
     # silently aliases two different large integers that share the same leading
     # `length` base-62 digits), reduce `num` modulo 62^length first so the
     # result always fits exactly in `length` characters without any truncation.

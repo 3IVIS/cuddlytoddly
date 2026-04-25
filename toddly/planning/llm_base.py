@@ -23,7 +23,7 @@ from toddly.core.id_generator import StableIDGenerator
 from toddly.infra.logging import get_logger
 
 # ---------------------------------------------------------------------------
-# FIX #14: Named constants for default model strings so that a single edit
+# Named constants for default model strings so that a single edit
 # updates every reference — __main__.py, ApiLLM._DEFAULTS, and the config
 # template all resolve from the same source of truth.
 # ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ _API_MAX_ATTEMPTS: int = 4  # total attempts before raising
 _API_RATE_LIMIT_INITIAL_BACKOFF: int = 5  # seconds before first retry on 429
 _API_RATE_LIMIT_MAX_BACKOFF: int = 60  # ceiling for exponential backoff
 
-# FIX #5: module-level id_gen is kept as an in-memory-only fallback for
+# Module-level id_gen is kept as an in-memory-only fallback for
 # callers that don't pass an explicit id_gen.  It is NEVER replaced at
 # runtime, so concurrent web-mode runs can't race on it.
 id_gen: StableIDGenerator = StableIDGenerator(id_length=6)
@@ -188,7 +188,7 @@ class BaseLLM(ABC):
 
     def __init__(self, token_counter_instance: "TokenCounter | None" = None):
         self._stop_event = threading.Event()
-        # FIX #3: Each backend owns its counter so concurrent web-mode runs
+        # Each backend owns its counter so concurrent web-mode runs
         # do not accumulate tokens into a shared module-level singleton.
         # Falls back to the module-level ``token_counter`` when none supplied
         # (e.g. third-party code constructing backends directly).
@@ -222,7 +222,7 @@ class BaseLLM(ABC):
 
 
 # ---------------------------------------------------------------------------
-# FIX #13: Rename LlamaCppCache → PromptCache to reflect that it is now used
+# Rename LlamaCppCache → PromptCache to reflect that it is now used
 # by all three backends.  A module-level alias preserves backward compat for
 # any external code that already imports LlamaCppCache by name.
 # ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ class PromptCache:
             self._store = {}
 
     def _save(self, store_snapshot: "dict | None" = None) -> None:
-        # FIX #4: callers pass a snapshot taken while the lock was held so
+        # Callers pass a snapshot taken while the lock was held so
         # this method can do disk I/O without holding the lock at all.
         # When called internally (e.g. _load -> corruption recovery) with no
         # snapshot, fall back to reading self._store directly; that call site
@@ -303,7 +303,7 @@ class PromptCache:
 
     def set(self, prompt: str, response: str) -> None:
         key = self._hash(prompt)
-        # FIX #4: take a snapshot of the store under the lock, then write to
+        # Take a snapshot of the store under the lock, then write to
         # disk outside it.  Holding the lock during json.dump + file rename
         # blocks every concurrent get() call for the full duration of I/O.
         with self._lock:

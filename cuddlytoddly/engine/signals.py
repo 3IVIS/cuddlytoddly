@@ -1,11 +1,7 @@
 """
-cuddly.engine.signals
-~~~~~~~~~~~~~~~~~~~~~~~~~
+cuddlytoddly.engine.signals
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Lightweight signal objects passed between the orchestrator and the executor.
-
-Keeping them here (rather than in planning/llm_executor.py) breaks the
-upward dependency that would otherwise force cuddly to import from the
-cuddlytoddly application package.
 """
 
 from dataclasses import dataclass

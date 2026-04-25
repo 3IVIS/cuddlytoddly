@@ -1,20 +1,16 @@
 """
-cuddly.utils.build_llm_client
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+toddly.utils.build_llm_client
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Construct the correct BaseLLM instance from a loaded config dict.
 
-Extracted from cuddlytoddly/__main__.py so it can be unit-tested
-independently of the full application startup.  All app-specific paths
-(data_dir) are passed as explicit parameters rather than imported from
-cuddlytoddly.config, keeping this module free of application dependencies.
+All app-specific paths (data_dir) are passed as explicit parameters so
+this module has no dependency on any particular host application.
 
 Usage::
 
-    from cuddly.utils.build_llm_client import build_llm_client
-    from cuddlytoddly.config import DATA_DIR, load_config
+    from toddly.utils.build_llm_client import build_llm_client
 
-    cfg = load_config()
-    llm = build_llm_client(cfg, run_dir=run_dir, data_dir=DATA_DIR)
+    llm = build_llm_client(cfg, run_dir=run_dir, data_dir=data_dir)
 """
 
 from __future__ import annotations

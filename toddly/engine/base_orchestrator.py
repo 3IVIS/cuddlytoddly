@@ -5,10 +5,6 @@ import threading
 import time
 from collections import deque, namedtuple
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 from toddly.core.events import (
     ADD_DEPENDENCY,
@@ -50,7 +46,6 @@ PlanningContext = namedtuple(
 )
 
 # Sentinel used to distinguish "never stored" from "stored value was None"
-_NO_PREV = object()
 
 
 class BaseOrchestrator:
@@ -85,7 +80,7 @@ class BaseOrchestrator:
 
     @property
     def token_counts(self) -> dict:
-        # FIX #3: read from the per-run counter (self._token_counter) so that
+        # Read from the per-run counter (self._token_counter) so that
         # concurrent runs in web-server mode each report their own usage.
         return {
             "prompt": self._token_counter.prompt_tokens,
@@ -109,7 +104,7 @@ class BaseOrchestrator:
         verify_timeout: float = 300.0,
         token_counter_instance: "TokenCounter | None" = None,
     ):
-        # FIX #3: use the per-run counter when provided; fall back to the
+        # Use the per-run counter when provided; fall back to the
         # module-level singleton for backward compatibility.
         self._token_counter: TokenCounter = (
             token_counter_instance if token_counter_instance is not None else token_counter
@@ -199,7 +194,7 @@ class BaseOrchestrator:
 
     def start(self):
         self._stop_event.clear()
-        # FIX: Recreate the thread pool if stop() was called previously.
+        # Recreate the thread pool if stop() was called previously.
         # ThreadPoolExecutor.shutdown() is irreversible — any subsequent
         # _pool.submit() raises RuntimeError: cannot schedule new futures after
         # shutdown.  start() is documented as restartable, so we must replace
@@ -273,7 +268,7 @@ class BaseOrchestrator:
             try:
                 event = self.event_queue.get()
 
-                # FIX: StatusEvent is a separate dataclass (kind/payload fields,
+                # StatusEvent is a separate dataclass (kind/payload fields,
                 # no .type) used for out-of-band signals like llm_load_failed.
                 # The old code fell through to `event.type` which raised
                 # AttributeError, caught silently by the except clause below —
@@ -356,13 +351,10 @@ class BaseOrchestrator:
                     continue
                 if nid not in self.graph.nodes:
                     continue
-                # FIX #1 + #5: route through _apply(RESET_NODE) instead of
-                # directly mutating node attributes.  Direct mutation bypassed
-                # the write-ahead log (WAL) so subtree resets were invisible to
-                # event-log replay on the next startup.  node.reset() (called
-                # inside the RESET_NODE reducer branch) also clears retry_after,
-                # which the previous direct-mutation path omitted — leaving nodes
-                # in a silent backoff window after a subtree reset.
+                # Route through _apply(RESET_NODE) so the reset is written to the
+                # event log and replayed correctly on restart.  Direct node mutation
+                # would also miss clearing retry_after, leaving nodes silently stuck
+                # in a backoff window after a subtree reset.
                 self._apply(Event(RESET_NODE, {"node_id": nid}))
                 logger.info("[RESET_SUBTREE] Reset: %s", nid)
 
@@ -386,7 +378,7 @@ class BaseOrchestrator:
             self.activity_started = time.time()
             logger.info("[PLAN] Expanding goal: %s", goal.id)
 
-            # FIX #7: read goal.children under the lock so the skip_scrutiny
+            # Read goal.children under the lock so the skip_scrutiny
             # flag is based on a consistent view of the graph in multi-worker
             # mode.  goal is a live node reference; reading .children outside
             # the lock races with concurrent _execution_pass / _on_node_done
@@ -414,7 +406,7 @@ class BaseOrchestrator:
                     self._apply(Event(evt["type"], evt["payload"]))
                     total += 1
 
-                # FIX #2: only mark expanded=True when the planner actually
+                # Only mark expanded=True when the planner actually
                 # produced events.  Marking it unconditionally (including when
                 # events=[] due to a planner exception) stranded the goal
                 # permanently: _get_plannable_nodes skips it forever, and
@@ -511,7 +503,7 @@ class BaseOrchestrator:
             )
             self._reporters[node.id] = reporter
 
-            # FIX C: register a sentinel in _running_futures BEFORE calling
+            # Register a sentinel in _running_futures BEFORE calling
             # _pool.submit().  If submit() returns a future that has already
             # completed (possible when the task raises immediately, e.g. during
             # a fast LLMStoppedError path), CPython fires add_done_callback
@@ -541,7 +533,7 @@ class BaseOrchestrator:
         with self.graph_lock:
             self._running_futures.pop(node_id, None)
 
-            # FIX #4: the original check used `node_id in self.current_activity`
+            # The original check used `node_id in self.current_activity`
             # which is a substring test.  A short node_id like "task_1" would
             # wrongly match an activity string for "task_10" or "task_1_abc",
             # causing the activity indicator to be cleared for the wrong node.
@@ -557,7 +549,7 @@ class BaseOrchestrator:
         try:
             result = future.result()
         except LLMStoppedError as exc:
-            # FIX: _DeferredLLM raises LLMStoppedError while the real LLM is
+            # _DeferredLLM raises LLMStoppedError while the real LLM is
             # still loading (before attach() is called).  _DeferredLLM is not a
             # BaseLLM subclass so it is not in _llm_clients, which means
             # self.llm_stopped would return False — causing the node to be
@@ -717,7 +709,7 @@ class BaseOrchestrator:
                     try:
                         tools = getattr(self.executor, "tools", None)
                         if tools:
-                            # FIX #8: validate the LLM-generated output path
+                            # Validate the LLM-generated output path
                             # against the executor's working_dir before writing.
                             # Node metadata is LLM-generated; a crafted plan
                             # could declare a path like "../../etc/passwd".
@@ -842,7 +834,7 @@ class BaseOrchestrator:
                     reporter.expose_all()
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
                 self._apply(Event(RESET_NODE, {"node_id": node_id}))
-                # FIX #4: route retry metadata through _apply / UPDATE_METADATA
+                # Route retry metadata through _apply / UPDATE_METADATA
                 # so it is persisted to the WAL event log.  The previous code
                 # wrote directly to node.metadata which bypassed apply_event and
                 # was therefore lost on restart — the retry counter silently
@@ -1080,7 +1072,7 @@ class BaseOrchestrator:
                     n = self.graph.nodes.get(node.id)
                     if n is None:
                         continue
-                    # FIX (issue 2): skip if any child is already running —
+                    # Skip if any child is already running —
                     # the orchestrator loop may have dispatched a child between
                     # the snapshot above and this lock acquisition.  Resetting
                     # a parent whose child is in-flight produces an inconsistent
@@ -1097,7 +1089,7 @@ class BaseOrchestrator:
                         continue
                     retry = n.metadata.get("retry_count", 0)
                     self._apply(Event(RESET_NODE, {"node_id": node.id}))
-                    # FIX (issue 4): route retry metadata through _apply so the
+                    # Route retry metadata through _apply so the
                     # mutations are written to the event log (WAL).  Direct dict
                     # writes bypass apply_event and are lost on the next restart.
                     self._apply(
@@ -1159,7 +1151,7 @@ class BaseOrchestrator:
                 if node.id not in self.graph.nodes:
                     continue
                 live = self.graph.nodes[node.id]
-                # FIX (issue 2): re-check for running children under the lock.
+                # Re-check for running children under the lock.
                 # Between the LLM call and this lock acquisition the orchestrator
                 # loop may have dispatched a child of this node.  Resetting the
                 # parent while a child is running produces an inconsistent graph.
@@ -1182,7 +1174,7 @@ class BaseOrchestrator:
                     )
                     retry = live.metadata.get("retry_count", 0)
                     self._apply(Event(RESET_NODE, {"node_id": node.id}))
-                    # FIX (issue 4): persist via UPDATE_METADATA so these values
+                    # Persist via UPDATE_METADATA so these values
                     # survive the next restart (direct dict writes are not WAL-logged).
                     self._apply(
                         Event(
@@ -1277,7 +1269,7 @@ class BaseOrchestrator:
             if not node or node_id in self._running_futures:
                 return
             self._apply(Event(RESET_NODE, {"node_id": node_id}))
-            # FIX: node.reset() clears retry_count and all retry metadata, so
+            # Node.reset() clears retry_count and all retry metadata, so
             # the next execution builds a prompt identical to the original run,
             # causing the LLM client to return a cached result instead of
             # re-running the model.  We stamp a _retry_nonce timestamp that
@@ -1391,7 +1383,7 @@ class BaseOrchestrator:
         apply_event(self.graph, event, event_log=self.event_log)
 
     def _is_fully_done(self) -> bool:
-        # FIX A: guard against empty graph.  all() over an empty iterable returns
+        # Guard against empty graph.  all() over an empty iterable returns
         # True, so without this check the loop would sleep at idle_sleep*4 during
         # the startup window before the first goal node is seeded — delaying the
         # first planning pass by up to 4× the configured idle sleep interval.

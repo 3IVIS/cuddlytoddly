@@ -87,7 +87,7 @@ def _eval_code(code: str) -> str:
 
 
 def _run_python(args):
-    # FIX: pop the injected working-directory key before touching user code so
+    # Pop the injected working-directory key before touching user code so
     # it never leaks into the execution namespace or appears in error messages.
     cwd = args.pop("_cwd", None)
 
@@ -103,7 +103,7 @@ def _run_python(args):
     logger.info("[RUN_PYTHON] Executing: %.500s", code)
 
     if cwd is not None:
-        # FIX: hold _PYTHON_CWD_LOCK only for the duration of in-process
+        # Hold _PYTHON_CWD_LOCK only for the duration of in-process
         # execution, not for the entire tool call.  This is much narrower than
         # the old process-wide _CWD_LOCK in llm_executor.py which was held
         # across all tool types including 30-second shell commands.
@@ -119,7 +119,6 @@ def _run_python(args):
 
 
 def _run_shell(args):
-    # FIX (three issues addressed):
     #
     # 1. ORPHAN-PROCESS LEAK — subprocess.run(timeout=...) kills only the
     #    direct child; grandchildren keep running.  We now launch in its own

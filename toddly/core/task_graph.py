@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 class TaskGraph:
     class Node:
-        # FIX #15: __slots__ reduces per-instance memory overhead for large graphs.
+        # __slots__ reduces per-instance memory overhead for large graphs.
         # All instance attributes assigned in __init__ must appear here.
         __slots__ = (
             "id",
@@ -104,7 +104,7 @@ class TaskGraph:
         def reset(self):
             self.status = "pending"
             self.result = None
-            # FIX: Clear retry metadata so that any RESET_NODE event — whether
+            # Clear retry metadata so that any RESET_NODE event — whether
             # triggered by a user edit from the UI, an LLM-pause reset, or a
             # subtree reset — does not leave stale counts behind.  Without this,
             # a node that has already retried N-1 times and is then manually

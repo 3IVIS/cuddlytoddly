@@ -29,7 +29,7 @@ STRUCTURAL_EVENTS = {
     ADD_DEPENDENCY,
     REMOVE_DEPENDENCY,
     SET_NODE_TYPE,
-    # FIX #3: DETACH_NODE mutates graph structure (removes a node's edges and
+    # DETACH_NODE mutates graph structure (removes a node's edges and
     # presence from the active node set) so it belongs in STRUCTURAL_EVENTS so
     # that structure_version is incremented and version-based invalidation in
     # the UI and any polling logic picks up the change.
@@ -53,7 +53,7 @@ EXECUTION_EVENTS = {
 
 
 def apply_event(graph: TaskGraph, event: Event, event_log=None):
-    # FIX: Write-ahead logging — persist the event to disk BEFORE mutating the
+    # Write-ahead logging — persist the event to disk BEFORE mutating the
     # in-memory graph.  The previous order (mutate first, log second) meant that
     # a process crash between the two steps left the event missing from the log
     # while the mutation had already been applied.  On the next startup, replay
@@ -171,7 +171,7 @@ def apply_event(graph: TaskGraph, event: Event, event_log=None):
             node.metadata.pop("handoff_artifact", None)
             node.metadata.pop("pending_steps", None)
 
-    # FIX #1: RESET_SUBTREE was imported, listed in EXECUTION_EVENTS, but had
+    # RESET_SUBTREE was imported, listed in EXECUTION_EVENTS, but had
     # no handler branch — any emitted event silently did nothing to the graph
     # while still incrementing the version counter.  The handler now walks the
     # subtree rooted at node_id and resets every non-running descendant.

@@ -46,7 +46,7 @@ class Orchestrator(BaseOrchestrator):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # FIX #3: track goals whose replan was deferred because children were
+        # Track goals whose replan was deferred because children were
         # still running at the time replan_goal() was called.  The set is
         # drained by _complete_deferred_replans(), which is called from
         # _post_planning_hooks() every loop iteration.
@@ -69,7 +69,7 @@ class Orchestrator(BaseOrchestrator):
         """Auto-complete finished goals; resume clarification-unblocked nodes."""
         self._complete_finished_goals()
         self._resume_unblocked_pass()
-        # FIX #3: complete any deferred replan resets once running children finish.
+        # Complete any deferred replan resets once running children finish.
         self._complete_deferred_replans()
 
     def _handle_broadening(self, node_id: str, reporter) -> "list | None":
@@ -273,7 +273,7 @@ class Orchestrator(BaseOrchestrator):
                     child = self.graph.nodes[child_id]
                     if child.status != "running":
                         to_reset.append(child_id)
-                    # FIX B: always extend the BFS queue regardless of whether
+                    # Always extend the BFS queue regardless of whether
                     # this child is running.  The old code only walked children
                     # of non-running nodes, so any "done" grandchildren below a
                     # running node were silently skipped.  Those grandchildren
@@ -318,7 +318,7 @@ class Orchestrator(BaseOrchestrator):
 
         with self.graph_lock:
             snapshot = self.graph.get_snapshot()
-            # FIX: build the awaiting list from the snapshot (an immutable copy)
+            # Build the awaiting list from the snapshot (an immutable copy)
             # rather than from self.graph.nodes (the live mutable collection).
             awaiting = [n for n in snapshot.values() if n.status == "awaiting_input"]
 
@@ -326,7 +326,7 @@ class Orchestrator(BaseOrchestrator):
         for node in awaiting:
             missing_keys = node.metadata.get("missing_fields", [])
 
-            # FIX #6: use BFS over all ancestors to find the upstream
+            # Use BFS over all ancestors to find the upstream
             # clarification node, instead of scanning only direct dependencies.
             # _patch_clarification_node already documents that the clarification
             # node "may be 2+ hops away" (e.g. attached to the goal node which
@@ -615,7 +615,7 @@ class Orchestrator(BaseOrchestrator):
                     )
                 )
             else:
-                # FIX #3: register the goal so _complete_deferred_replans()
+                # Register the goal so _complete_deferred_replans()
                 # will apply expanded=False once every running child finishes.
                 # Without this registration the deferred reset was never
                 # completed, leaving the goal permanently stuck as expanded=True

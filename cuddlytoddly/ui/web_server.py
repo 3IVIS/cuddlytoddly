@@ -338,7 +338,7 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
                     )
                 )
         if "dependents" in body:
-            # FIX 5: reuse the snapshot captured at the top of this handler
+            # Reuse the snapshot captured at the top of this handler
             # instead of taking a second get_snapshot() call.  The second call
             # produced a snapshot that could differ from the first (the
             # orchestrator may have mutated the graph between the two calls),
@@ -721,7 +721,7 @@ def _create_unified_app(
                 if mode == "existing":
 
                     def _on_graph_ready(orch, rd):
-                        # FIX: wrap all three writes in the state lock so no
+                        # Wrap all three writes in the state lock so no
                         # concurrent reader can observe ready=True while
                         # orchestrator is still None.
                         with _state_lock:
@@ -736,7 +736,7 @@ def _create_unified_app(
                     init_fn(choice, on_graph_ready=_on_graph_ready)
                 else:
                     orch, rd = init_fn(choice)
-                    # FIX: wrap all three writes in the state lock so no
+                    # Wrap all three writes in the state lock so no
                     # concurrent reader can observe ready=True while
                     # orchestrator is still None.
                     with _state_lock:
@@ -828,7 +828,7 @@ def _create_unified_app(
                 except Exception as exc:
                     logger.warning("[WEB] Could not cleanly stop old orchestrator: %s", exc)
 
-            # FIX: clear state atomically inside the lock so no concurrent
+            # Clear state atomically inside the lock so no concurrent
             # reader sees ready=True with a None or stale orchestrator.
             state["orchestrator"] = None
             state["run_dir"] = None
@@ -841,7 +841,7 @@ def _create_unified_app(
                 if mode == "existing":
 
                     def _on_graph_ready(orch, rd):
-                        # FIX: wrap all three writes in the state lock.
+                        # Wrap all three writes in the state lock.
                         with _state_lock:
                             state["orchestrator"] = orch
                             state["run_dir"] = rd
@@ -854,7 +854,7 @@ def _create_unified_app(
                     init_fn(choice, on_graph_ready=_on_graph_ready)
                 else:
                     orch, rd = init_fn(choice)
-                    # FIX: wrap all three writes in the state lock.
+                    # Wrap all three writes in the state lock.
                     with _state_lock:
                         state["orchestrator"] = orch
                         state["run_dir"] = rd
@@ -893,7 +893,7 @@ def _create_unified_app(
         last_sv = last_ev = -1
         last_paused = None
         last_activity = None
-        # FIX: track which orchestrator instance was last polled.  When
+        # Track which orchestrator instance was last polled.  When
         # /api/switch replaces the orchestrator we reset the version sentinels
         # so the new state is pushed to the client immediately, rather than
         # the WebSocket silently continuing to stream from the old (stopped)
@@ -1024,7 +1024,7 @@ def _create_unified_app(
                 orch.event_queue.put(
                     Event(ADD_DEPENDENCY, {"node_id": node_id, "depends_on": added})
                 )
-        # FIX: the original code always emitted RESET_NODE unconditionally.
+        # The original code always emitted RESET_NODE unconditionally.
         # When the user edits only the result field this wiped the edit
         # (reset() sets result=None) and SET_RESULT was never emitted, so the
         # change was silently discarded.  Mirror the logic from the eager-init

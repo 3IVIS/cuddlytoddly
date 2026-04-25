@@ -67,7 +67,7 @@ class ExecutionStepReporter:
         self._turn = turn
 
     def on_tool_start(self, tool_name: str, tool_args: dict) -> str:
-        # FIX #9: A tool may legitimately be called more than once per execution
+        # A tool may legitimately be called more than once per execution
         # (e.g. write_file called for two different output files).  The old code
         # keyed the registry on tool_name alone, so the second call reused the
         # first call's step node and its description was never updated.  We now
