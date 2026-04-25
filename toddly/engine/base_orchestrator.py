@@ -354,14 +354,16 @@ class BaseOrchestrator:
                 if nid in self._running_futures:
                     logger.debug("[RESET_SUBTREE] Skipping running node: %s", nid)
                     continue
-                node = self.graph.nodes.get(nid)
-                if not node:
+                if nid not in self.graph.nodes:
                     continue
-                node.status = "pending"
-                node.result = None
-                node.metadata.pop("verified", None)
-                node.metadata.pop("verification_failure", None)
-                node.metadata.pop("retry_count", None)
+                # FIX #1 + #5: route through _apply(RESET_NODE) instead of
+                # directly mutating node attributes.  Direct mutation bypassed
+                # the write-ahead log (WAL) so subtree resets were invisible to
+                # event-log replay on the next startup.  node.reset() (called
+                # inside the RESET_NODE reducer branch) also clears retry_after,
+                # which the previous direct-mutation path omitted — leaving nodes
+                # in a silent backoff window after a subtree reset.
+                self._apply(Event(RESET_NODE, {"node_id": nid}))
                 logger.info("[RESET_SUBTREE] Reset: %s", nid)
 
             self.graph.recompute_readiness()
@@ -384,13 +386,19 @@ class BaseOrchestrator:
             self.activity_started = time.time()
             logger.info("[PLAN] Expanding goal: %s", goal.id)
 
+            # FIX #7: read goal.children under the lock so the skip_scrutiny
+            # flag is based on a consistent view of the graph in multi-worker
+            # mode.  goal is a live node reference; reading .children outside
+            # the lock races with concurrent _execution_pass / _on_node_done
+            # threads that may be modifying the children set at the same time.
             with self.graph_lock:
                 branch = self.graph.get_branch(goal.id)
+                has_children = bool(goal.children)
 
             context = PlanningContext(
                 snapshot=branch,
                 goals=[goal],
-                skip_scrutiny=bool(goal.children),
+                skip_scrutiny=has_children,
             )
             try:
                 events = self.planner.propose(context)
@@ -405,15 +413,28 @@ class BaseOrchestrator:
                 for evt in events:
                     self._apply(Event(evt["type"], evt["payload"]))
                     total += 1
-                self._apply(
-                    Event(
-                        UPDATE_METADATA,
-                        {
-                            "node_id": goal.id,
-                            "metadata": {"expanded": True},
-                        },
+
+                # FIX #2: only mark expanded=True when the planner actually
+                # produced events.  Marking it unconditionally (including when
+                # events=[] due to a planner exception) stranded the goal
+                # permanently: _get_plannable_nodes skips it forever, and
+                # _complete_finished_goals never fires because related is empty.
+                if events:
+                    self._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": goal.id,
+                                "metadata": {"expanded": True},
+                            },
+                        )
                     )
-                )
+                else:
+                    logger.warning(
+                        "[PLAN] Goal %s — planner returned no events; "
+                        "leaving expanded=False so it will be retried next cycle",
+                        goal.id,
+                    )
 
             logger.info("[PLAN] Goal %s → %d events", goal.id, len(events))
 
@@ -490,6 +511,17 @@ class BaseOrchestrator:
             )
             self._reporters[node.id] = reporter
 
+            # FIX C: register a sentinel in _running_futures BEFORE calling
+            # _pool.submit().  If submit() returns a future that has already
+            # completed (possible when the task raises immediately, e.g. during
+            # a fast LLMStoppedError path), CPython fires add_done_callback
+            # synchronously on the calling thread before we reach the
+            # assignment on the next line.  _on_node_done then pops a key that
+            # was never inserted, silently fails, and the assignment runs
+            # afterwards — leaving a ghost entry that never gets cleaned up.
+            # The sentinel ensures the key always exists when _on_node_done
+            # fires; the real future replaces it immediately after submit().
+            self._running_futures[node.id] = None
             future = self._pool.submit(self.executor.execute, node, snapshot, reporter)
             self._running_futures[node.id] = future
             future.add_done_callback(lambda fut, nid=node.id: self._on_node_done(nid, fut))
@@ -620,6 +652,19 @@ class BaseOrchestrator:
                 )
             return
 
+        # ── FIX E (Issue 1): unwrap the pre-verified dict BEFORE the pre-flight
+        # block.  The executor signals a successful inline QG pass by returning
+        # {"result": "<str>", "_pre_verified": True} instead of a plain str.
+        # The pre-flight code at the next block uses `result` as a string for
+        # re.search(); if the unwrapping happened after that block (as it did
+        # originally) and the conditions for the auto-write path were met,
+        # re.search would receive a dict and raise TypeError.  Unwrapping here
+        # guarantees `result` is always a str by the time any string operation
+        # touches it.
+        pre_verified = isinstance(result, dict) and result.pop("_pre_verified", False)
+        if isinstance(result, dict) and "result" in result:
+            result = result["result"]
+
         # ── Domain-specific write-backs before verification (e.g. broadening).
         # Access _reporters under graph_lock: _on_node_done runs in a
         # ThreadPoolExecutor done-callback and concurrent callbacks could
@@ -658,7 +703,7 @@ class BaseOrchestrator:
 
             if expected_files and "write_file" not in tool_calls_made:
                 file_path = expected_files[0]
-                content = result
+                file_content = result
 
                 match = re.search(
                     r"(?:summary|content)\s*:\s*(.+)",
@@ -666,25 +711,50 @@ class BaseOrchestrator:
                     re.DOTALL | re.IGNORECASE,
                 )
                 if match:
-                    content = match.group(1).strip()
+                    file_content = match.group(1).strip()
 
-                if content and len(content) > 50:
+                if file_content and len(file_content) > 50:
                     try:
                         tools = getattr(self.executor, "tools", None)
                         if tools:
+                            # FIX #8: validate the LLM-generated output path
+                            # against the executor's working_dir before writing.
+                            # Node metadata is LLM-generated; a crafted plan
+                            # could declare a path like "../../etc/passwd".
+                            # Resolving against working_dir and confirming the
+                            # result is still inside it provides defence-in-depth
+                            # on top of the file_ops sandbox.
+                            safe_path = str(file_path)
+                            working_dir = getattr(self.executor, "working_dir", None)
+                            if working_dir is not None:
+                                from pathlib import Path as _Path
+
+                                resolved = (_Path(working_dir) / safe_path).resolve()
+                                base = _Path(working_dir).resolve()
+                                try:
+                                    resolved.relative_to(base)
+                                except ValueError:
+                                    logger.warning(
+                                        "[EXEC] Auto-write blocked: declared output path %r "
+                                        "resolves outside working_dir %r — skipping",
+                                        safe_path,
+                                        str(base),
+                                    )
+                                    raise RuntimeError("path outside sandbox")
+                                safe_path = str(resolved)
                             tools.execute(
                                 "write_file",
                                 {
-                                    "path": str(file_path),
-                                    "content": content,
+                                    "path": safe_path,
+                                    "content": file_content,
                                 },
                             )
-                            logger.info("[EXEC] Auto-wrote missing file output: %s", file_path)
+                            logger.info("[EXEC] Auto-wrote missing file output: %s", safe_path)
                     except Exception as e:
                         logger.warning("[EXEC] Auto-write failed for %s: %s", file_path, e)
 
         # ── LLM verification ──────────────────────────────────────────────────
-        if self.quality_gate:
+        if self.quality_gate and not pre_verified:
             with self.graph_lock:
                 if node_id not in self.graph.nodes:
                     return
@@ -694,7 +764,7 @@ class BaseOrchestrator:
             satisfied, reason = self._verify_result(node, result, snapshot)
         else:
             satisfied = True
-            reason = ""
+            reason = "pre-verified by executor inline check" if pre_verified else ""
 
         # ── Consolidate state mutation in a single lock acquisition ──────────
         with self.graph_lock:
@@ -772,18 +842,31 @@ class BaseOrchestrator:
                     reporter.expose_all()
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
                 self._apply(Event(RESET_NODE, {"node_id": node_id}))
-                # FIX: Write retry metadata AFTER RESET_NODE, not before.
-                # TaskNode.reset() now clears retry_count / retry_after /
-                # verification_failure so that user-triggered resets from the
-                # UI don't leave stale counts.  Writing the retry state here —
-                # after reset() has already run — means the orchestrator's own
-                # retry cycle still accumulates correctly while external resets
-                # start fresh.
-                n = self.graph.nodes.get(node_id)
-                if n is not None:
-                    n.metadata["verification_failure"] = reason
-                    n.metadata["retry_count"] = retry + 1
-                    n.metadata["retry_after"] = time.time() + backoff_secs
+                # FIX #4: route retry metadata through _apply / UPDATE_METADATA
+                # so it is persisted to the WAL event log.  The previous code
+                # wrote directly to node.metadata which bypassed apply_event and
+                # was therefore lost on restart — the retry counter silently
+                # reset to 0 every time the process restarted, burning through
+                # all max_retries again.  This is the same bug fixed in
+                # verify_restored_nodes ("FIX issue 4") but left unfixed in the
+                # runtime retry path.
+                #
+                # These writes happen AFTER RESET_NODE so TaskNode.reset()
+                # clears the slate first (user-triggered UI resets start fresh),
+                # while the orchestrator's own retry cycle accumulates correctly.
+                self._apply(
+                    Event(
+                        UPDATE_METADATA,
+                        {
+                            "node_id": node_id,
+                            "metadata": {
+                                "verification_failure": reason,
+                                "retry_count": retry + 1,
+                                "retry_after": time.time() + backoff_secs,
+                            },
+                        },
+                    )
+                )
                 # Fix #3: pop the reporter on every retry, not only on final
                 # failure.  The next execution cycle creates a fresh reporter
                 # anyway; keeping the stale one risks accumulating dangling
@@ -1308,8 +1391,13 @@ class BaseOrchestrator:
         apply_event(self.graph, event, event_log=self.event_log)
 
     def _is_fully_done(self) -> bool:
+        # FIX A: guard against empty graph.  all() over an empty iterable returns
+        # True, so without this check the loop would sleep at idle_sleep*4 during
+        # the startup window before the first goal node is seeded — delaying the
+        # first planning pass by up to 4× the configured idle sleep interval.
         with self.graph_lock:
-            return all(n.status in ("done", "failed") for n in self.graph.nodes.values())
+            nodes = list(self.graph.nodes.values())
+        return bool(nodes) and all(n.status in ("done", "failed") for n in nodes)
 
     # ── Hook methods ─────────────────────────────────────────────────────────
 

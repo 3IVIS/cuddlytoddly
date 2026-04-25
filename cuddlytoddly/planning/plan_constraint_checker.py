@@ -35,6 +35,7 @@ class PlanConstraintChecker:
         safe_events: list,
         active_goal_id: str,
         known_dep_id: str | None = None,
+        snapshot: dict | None = None,
     ) -> list:
         """
         Run all constraint checks on safe_events and return the repaired list.
@@ -51,13 +52,20 @@ class PlanConstraintChecker:
                           with required_input look orphaned without this) and
                           false-positive ghost detection (root tasks with no
                           batch dependents look like ghosts without this).
+        snapshot        : FIX 2: Immutable graph snapshot captured under
+                          graph_lock in _planning_pass.  Passed to
+                          _resolve_ghost_nodes so it reads existing node IDs and
+                          descriptions from the snapshot rather than from the
+                          live self.graph, eliminating the live-graph race.
         """
         events = list(safe_events)
         events = self._inject_dataflow_dependencies(events)
         events = self._dedup_edges(events)
         events = self._remove_cycles(events)
         events = self._check_required_input(events, known_dep_id=known_dep_id)
-        events = self._resolve_ghost_nodes(events, active_goal_id, known_dep_id=known_dep_id)
+        events = self._resolve_ghost_nodes(
+            events, active_goal_id, known_dep_id=known_dep_id, snapshot=snapshot
+        )
         return events
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -374,6 +382,7 @@ class PlanConstraintChecker:
         events: list,
         active_goal_id: str,
         known_dep_id: str | None = None,
+        snapshot: dict | None = None,
     ) -> list:
         """
         Detect new nodes that have no dependents (nothing depends on them) and
@@ -384,9 +393,19 @@ class PlanConstraintChecker:
         are legitimately expected to produce output for the plan and should not
         be treated as ghost nodes.  They are excluded from ghost detection when
         known_dep_id is provided.
+
+        FIX 2: snapshot (an immutable dict captured under graph_lock in
+        _planning_pass) is now used for all read-only lookups of existing node
+        IDs and descriptions instead of self.graph.  The checker runs with
+        graph_lock released; concurrent _on_node_done callbacks in the thread
+        pool may be mutating self.graph.nodes at the same time.  The snapshot
+        is safe to read without any additional locking.  Falls back to
+        self.graph when no snapshot is provided (tests, legacy callers).
         """
         new_nodes, edges = self._parse_events(events)
-        existing_ids = set(self.graph.nodes.keys())
+        # FIX 2: use snapshot for existing-node lookups when available.
+        graph_view: dict = snapshot if snapshot is not None else self.graph.nodes
+        existing_ids = set(graph_view.keys())
         new_node_ids = set(new_nodes.keys())
 
         # Build dependents map for new nodes only
@@ -414,8 +433,9 @@ class PlanConstraintChecker:
         new_summaries: dict[str, str] = {
             nid: p.get("metadata", {}).get("description", "") for nid, p in new_nodes.items()
         }
+        # FIX 2: read descriptions from snapshot, not live graph.
         existing_summaries: dict[str, str] = {
-            nid: node.metadata.get("description", "") for nid, node in self.graph.nodes.items()
+            nid: node.metadata.get("description", "") for nid, node in graph_view.items()
         }
 
         extra_edges = []
@@ -425,7 +445,9 @@ class PlanConstraintChecker:
             # Ancestors of the ghost node must be excluded from candidates to
             # prevent introducing a cycle (if X is an ancestor of ghost, adding
             # ADD_DEPENDENCY(X, depends_on=ghost) would mean ghost→...→X→ghost).
-            ancestors = self._get_ancestors(ghost_id, edges, self.graph.nodes)
+            # FIX 2: pass graph_view (snapshot) to _get_ancestors so it uses the
+            # same safe data source as the rest of this method.
+            ancestors = self._get_ancestors(ghost_id, edges, graph_view)
             valid_candidates = (
                 (set(new_nodes.keys()) | existing_ids | {active_goal_id}) - {ghost_id} - ancestors
             )

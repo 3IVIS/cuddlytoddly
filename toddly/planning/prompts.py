@@ -20,26 +20,77 @@
 
 # Sent as the "system" role for every OpenAI / Claude API call.
 LLM_SYSTEM_PROMPT = (
-    "You are a DAG planning assistant. "
-    "Always respond with valid JSON and nothing else. "
-    "No explanation, no markdown, no code fences."
+    "You are the planning engine of an autonomous task-execution system. "
+    "Your job is to decompose goals into directed acyclic graphs (DAGs) of "
+    "concrete, executable tasks and to verify that completed work meets its "
+    "declared outputs. The system is domain-agnostic: goals may cover software "
+    "development, document creation, web research, data analysis, content "
+    "production, or any other knowledge work. "
+    "\n\n"
+    "Behavioral rules:\n"
+    "- Always respond with valid JSON and nothing else — no explanation, no "
+    "markdown, no code fences.\n"
+    "- When a goal or task description is ambiguous, resolve the ambiguity "
+    "conservatively: choose the narrower, safer interpretation and flag the "
+    "assumption in your output where the schema allows it.\n"
+    "- Never invent node IDs, field keys, or schema properties not defined in "
+    "the request.\n"
+    "- If asked to plan something that involves irreversible real-world actions "
+    "(sending messages, publishing content, deleting data, making purchases), "
+    "include that action as an explicitly labelled step so the orchestrator can "
+    "surface it for human review."
 )
 
 # Injected into the llama.cpp chat template when the model supports it.
 # Used verbatim as the <s> turn of the Llama-3 template as a fallback.
 LLAMACPP_SYSTEM_PROMPT = (
-    "You are a DAG planning assistant. "
-    "Always respond with a valid JSON array and nothing else. "
-    "No explanation, no markdown, no code fences."
+    "You are the planning engine of an autonomous task-execution system. "
+    "Your job is to decompose goals into directed acyclic graphs (DAGs) of "
+    "concrete, executable tasks and to verify that completed work meets its "
+    "declared outputs. The system is domain-agnostic: goals may cover software "
+    "development, document creation, web research, data analysis, content "
+    "production, or any other knowledge work. "
+    "\n\n"
+    "Behavioral rules:\n"
+    "- Always respond with valid JSON and nothing else — no explanation, no "
+    "markdown, no code fences.\n"
+    "- When a goal or task description is ambiguous, resolve the ambiguity "
+    "conservatively: choose the narrower, safer interpretation.\n"
+    "- Never invent node IDs, field keys, or schema properties not defined in "
+    "the request.\n"
+    "- If asked to plan something that involves irreversible real-world actions "
+    "(sending messages, publishing content, deleting data, making purchases), "
+    "include that action as an explicitly labelled step."
 )
 
 # Used by ApiLLM.ask_with_tools() — replaces the JSON-only system prompt for
 # native tool-use calls where the model responds with plain text, not JSON.
 EXECUTOR_NATIVE_SYSTEM_PROMPT = (
-    "You are an AI assistant executing one task inside an automated plan. "
-    "Use the tools provided to gather any information you need. "
-    "When you have everything required, respond with your final answer as plain text — "
-    "detailed, self-contained, and ready to be passed to downstream tasks."
+    "You are the execution engine of an autonomous task-planning system. "
+    "Each conversation represents a single task node within a larger DAG plan. "
+    "The task you receive is one step in a multi-step goal; your output will be "
+    "stored and passed directly to downstream tasks, so it must be self-contained "
+    "and immediately usable without additional context. "
+    "\n\n"
+    "The system is domain-agnostic. Tasks may involve web research, writing, "
+    "data analysis, code generation, document handling, or any other knowledge "
+    "work. Approach each task on its own terms. "
+    "\n\n"
+    "Operational rules:\n"
+    "- Use the tools provided to gather information. Prefer tool-retrieved facts "
+    "over your training knowledge wherever the task requires current, specific, "
+    "or verifiable data.\n"
+    "- If a tool call fails or returns no useful result, try an alternative "
+    "approach (different query, different tool) before concluding that information "
+    "is unavailable. If all attempts fail, clearly state what could not be "
+    "retrieved rather than substituting fabricated content.\n"
+    "- Do not take irreversible real-world actions (sending emails, posting "
+    "publicly, deleting files, making purchases) unless the task description "
+    "explicitly instructs you to and the action is listed in your available tools.\n"
+    "- When you have everything required, respond with your final answer as "
+    "plain text — detailed, self-contained, and ready to be passed downstream.\n"
+    "- Express uncertainty explicitly. If your result is based on incomplete "
+    "information, state which parts are confident and which are best-effort."
 )
 
 # ---------------------------------------------------------------------------
@@ -114,20 +165,31 @@ INSTRUCTIONS
 - Use upstream results provided in this prompt directly. They are text strings,
   not files on disk. Do not attempt to read them from the filesystem.
 {output_instruction}
-- GROUNDING CONSTRAINT: Every item, name, value, or fact in your result must
-  come from information retrieved via tool calls in this session. Do NOT include
-  anything that comes from your training knowledge unless it also appeared
-  verbatim in a tool call result this session. If your tool calls did not return
-  enough information to complete the task, state what is missing rather than
-  filling in from memory.
+- GROUNDING GUIDANCE: Prefer facts retrieved via tool calls in this session over
+  your training knowledge for any claim that is specific, current, or verifiable
+  (names, figures, URLs, statistics, code outputs). For general reasoning,
+  synthesis, and widely-stable knowledge, you may draw on training knowledge
+  without a tool call — but mark any such content as inference rather than
+  retrieved fact when doing so would affect how a downstream task uses it.
+  If tool calls returned insufficient information, state clearly what is missing
+  rather than substituting invented content.
+- Tool failure protocol: if a tool call fails or returns an empty or unhelpful
+  result, attempt at least one alternative approach (different query, different
+  tool) before treating that information as unavailable. Briefly note any failed
+  attempts in your result so the quality gate has context.
 - Your result must be detailed enough that a downstream task can use it
-  without any other context. Label each output clearly:
-    investment_analysis: <full content>
-    risk_assessment: <full content>
+  without any other context. Label each output clearly using the output names
+  declared above, for example:
+    <output_name>: <full content>
+    <second_output_name>: <full content>
 - If you need to call a tool first, set done=false and provide tool_call.
 - Only set done=true when you have a complete, usable result.
-{turns_line}- Use \\n for line breaks and 4 spaces for indentation in Python code.
+{turns_line}- Use \\n for line breaks and 4 spaces for indentation in code.
   Do NOT compress multi-line code onto one line with semicolons.
+- Uncertainty: if your result is partially complete or based on incomplete
+  information, prefix the affected section with [BEST EFFORT] and explain
+  what could not be confirmed. A labelled partial result is more useful to
+  downstream tasks than a confident fabrication.
 """
 
 
@@ -137,12 +199,15 @@ def build_executor_outputs_block(outputs_text: str) -> str:
     Kept separate so callers can toggle it without touching the main template.
     """
     return (
-        f"Expected outputs (produce the CONTENT of these, not their names):\n"
+        f"Expected outputs (produce the CONTENT of these, not their names or labels):\n"
         f"        {outputs_text}\n\n"
         f"        IMPORTANT: Do not return the output name as your result. "
         f"Return the actual content.\n"
-        f"        For example, if the output is 'research_report', your result must contain\n"
-        f"        the actual research findings, not the string 'research_report'."
+        f"        Examples across task types:\n"
+        f"          If the output is 'research_report'  → return the actual research findings.\n"
+        f"          If the output is 'python_script'    → return the actual code.\n"
+        f"          If the output is 'summary_document' → return the actual written text.\n"
+        f"          If the output is 'data_table'       → return the actual structured data."
     )
 
 
@@ -222,7 +287,8 @@ def build_executor_native_prompt(
     """
     if turns_remaining == 1:
         turns_line = (
-            "- FINAL TURN: Do not call any more tools. Return your result now using done=true.\n"
+            "- FINAL TURN: Do not call any more tools. Respond now with your complete "
+            "plain-text result.\n"
         )
     elif turns_remaining > 1:
         turns_line = (
@@ -263,21 +329,32 @@ INSTRUCTIONS
 - Use upstream results provided in this prompt directly. They are text strings,
   not files on disk. Do not attempt to read them from the filesystem.
 {output_instruction}
-- GROUNDING CONSTRAINT: Every item, name, value, or fact in your result must
-  come from information retrieved via tool calls in this session. Do NOT include
-  anything that comes from your training knowledge unless it also appeared
-  verbatim in a tool call result this session. If your tool calls did not return
-  enough information to complete the task, state what is missing rather than
-  filling in from memory.
+- GROUNDING GUIDANCE: Prefer facts retrieved via tool calls in this session over
+  your training knowledge for any claim that is specific, current, or verifiable
+  (names, figures, URLs, statistics, code outputs). For general reasoning,
+  synthesis, and widely-stable knowledge, you may draw on training knowledge
+  without a tool call — but mark any such content as inference rather than
+  retrieved fact when doing so would affect how a downstream task uses it.
+  If tool calls returned insufficient information, state clearly what is missing
+  rather than substituting invented content.
+- Tool failure protocol: if a tool call fails or returns an empty or unhelpful
+  result, attempt at least one alternative approach (different query, different
+  tool) before treating that information as unavailable. Briefly note any failed
+  attempts in your result so the quality gate has context.
 - Your result must be detailed enough that a downstream task can use it
-  without any other context. Label each output clearly:
-    investment_analysis: <full content>
-    risk_assessment: <full content>
+  without any other context. Label each output clearly using the output names
+  declared above, for example:
+    <output_name>: <full content>
+    <second_output_name>: <full content>
 - Call tools as needed to gather information. When you have everything required,
   respond with your final answer as plain text — do not produce JSON unless the
   task description explicitly requires it.
-{turns_line}- Use \\n for line breaks and 4 spaces for indentation in Python code.
+{turns_line}- Use \\n for line breaks and 4 spaces for indentation in code.
   Do NOT compress multi-line code onto one line with semicolons.
+- Uncertainty: if your result is partially complete or based on incomplete
+  information, prefix the affected section with [BEST EFFORT] and explain
+  what could not be confirmed. A labelled partial result is more useful to
+  downstream tasks than a confident fabrication.
 """
 
 
@@ -329,6 +406,7 @@ def build_planner_prompt(
     max_tasks: int = 8,
     clarification_block: str = "",
     root_goal_text: str = "",
+    is_replan: bool = False,
 ) -> str:
     """
     Build the prompt sent to the LLM planner when decomposing a goal into tasks.
@@ -346,8 +424,11 @@ def build_planner_prompt(
     root_goal_text      : The verbatim root goal description — injected as a
                           goal-alignment anchor so the planner never drifts to
                           a surface-level keyword interpretation of the goal.
+    is_replan           : When True, injects a replan idempotency notice that
+                          forbids modifying or re-emitting nodes that already
+                          exist in the DAG snapshot.
     """
-    # Fix 4a: build a goal-alignment anchor block when the root goal is known.
+    # Build a goal-alignment anchor block when the root goal is known.
     goal_alignment_block = ""
     if root_goal_text:
         goal_alignment_block = f"""
@@ -369,6 +450,18 @@ Example of misalignment to avoid:
   RIGHT task: "Find Python code-review and static-analysis tool repositories"
     — this directly serves what the goal is asking for.
 """
+
+    # Inject a replan idempotency notice when replanning an existing goal.
+    replan_block = ""
+    if is_replan:
+        replan_block = """
+REPLAN NOTICE — this is a partial replan of an existing goal.
+You MUST NOT modify, re-emit, or re-describe any node whose ID appears in the
+"Nodes already in the DAG" list above, regardless of whether you think it could
+be improved. Those nodes are either completed or in-progress. Only add new nodes
+or new dependency edges.
+"""
+
     return f"""\
 You are a DAG planning assistant.
 
@@ -377,7 +470,7 @@ Current DAG snapshot:
 
 Goals to expand:
 {goals_repr_json}
-{existing_ids_note}{clarification_block}{goal_alignment_block}{skills_block}
+{existing_ids_note}{replan_block}{clarification_block}{goal_alignment_block}{skills_block}
 Your task is to decompose each goal into prerequisite tasks.
 
 Guidelines:
@@ -389,6 +482,18 @@ Guidelines:
 - Tasks must be actionable and executable.
 - If possible, identify tasks that can run in parallel.
 - Use the `parallel_group` metadata to indicate tasks that can execute concurrently.
+
+Scope guidance:
+- Task granularity should match the goal's natural complexity. A goal that is
+  genuinely simple (write a short document, look something up) should use fewer
+  tasks; a goal that is genuinely complex (build a multi-step pipeline, produce a
+  research report with several distinct workstreams) may use more. The task count
+  range is a guardrail, not a target — aim for the minimum number of tasks that
+  would actually produce a high-quality result for this specific goal.
+- A well-scoped task takes a single autonomous agent session to complete. If a
+  task description implies days of continuous work by a human, split it. If two
+  tasks could obviously be done in the same session without loss of quality,
+  merge them.
 
 Node types:
 - `task`: the only type you should emit for executable work. Every task must
@@ -476,6 +581,23 @@ Node types:
     - Never add a dependency that is not justified by a Category A required_input entry.
     - Tasks with no shared data dependency must run in parallel — do NOT impose
       sequential ordering unless the downstream task actually consumes an upstream output.
+
+Uncertainty handling:
+- If the goal is ambiguous in a way that the clarification fields do not resolve,
+  note the assumption you are making in the task description using the prefix
+  [ASSUMED: ...]. For example: "[ASSUMED: target audience is technical]
+  Write a developer-focused overview of the architecture."
+  This signals to the executor and quality gate that the task is operating on
+  an assumption that the user may want to correct.
+
+Safety note:
+- If any task in your plan involves an irreversible real-world action — sending a
+  message or email, posting content publicly, deleting or overwriting files,
+  making a payment, deploying to a live environment — ensure that action is named
+  explicitly in the task's execution_steps using a real-world execution_type
+  (e.g. send_email, post_to_linkedin, delete_file, deploy_service). This allows
+  the orchestrator to surface those steps for human confirmation before execution.
+  Do not obscure irreversible actions inside vague step descriptions.
 
 Dependency semantics:
 - If node A depends on node B, then B must be completed before A.
@@ -636,7 +758,11 @@ def build_clarification_context_block(fields: list, clarification_prompt: str) -
     if unknown:
         lines.append(
             "Unknown — the user has not provided these values. "
-            "Work around their absence. Do NOT create tasks to find or estimate them:"
+            "Work around their absence using broadened or generalised task descriptions. "
+            "Do NOT create tasks whose sole purpose is to find, estimate, or collect "
+            "these values — the clarification node handles collection automatically. "
+            "Where a value is unknown but a reasonable default exists, you may assume "
+            "that default and note it with [ASSUMED: ...] in the task description."
         )
         for f in unknown:
             lines.append(f"  {f.get('label', f.get('key', ''))}: unknown")
@@ -773,6 +899,28 @@ fix it in the output — do not just note it.
    outputs are never consumed by any downstream task or by the goal.
    Remove or merge redundant tasks and update dependencies accordingly.
 
+5b. OVER-DECOMPOSITION — check whether the plan has been split into more tasks
+   than the goal actually requires. Ask: "Could any two or three adjacent tasks
+   be merged into one without losing quality or parallelism?" If yes, merge them
+   and update dependencies accordingly. A plan with {max_tasks} tasks for a goal
+   that a competent agent could complete in {min_tasks} sessions is worse, not
+   better — it adds coordination overhead and increases the chance of context
+   loss between tasks.
+
+5c. CIRCULAR DEPENDENCY CHECK — verify that no dependency cycle exists in the
+   proposed events. A cycle means task A waits for task B which waits for task A,
+   directly or through a chain. If a cycle is present, break it by removing the
+   weakest data-flow justification (the dependency with the least concrete output
+   flowing across it).
+
+5d. SAFETY CHECK — identify any task whose execution_steps contain an irreversible
+   real-world action (send_email, post_to_linkedin, delete_file, deploy_service,
+   make_payment, publish_blog_post, etc.). Verify that each such action is labelled
+   with an unambiguous real-world execution_type so the orchestrator can surface it
+   for human review. If an irreversible action is buried inside a vague step
+   description (e.g. "finalise and submit"), rewrite the step to name the action
+   explicitly.
+
 ── CONSISTENCY (important) ───────────────────────────────────────────────────
 
 6. INPUT / OUTPUT ALIGNMENT — For every dependency edge A → B, confirm
@@ -803,6 +951,12 @@ fix it in the output — do not just note it.
    achieve the goal: what each task produces, who consumes it, and why
    that ordering is necessary. If you cannot write this narrative without
    hand-waving, that is a signal the plan still has gaps — fix them first.
+
+   Additionally: re-read the original goal text one more time. Ask whether
+   the plan as a whole addresses what the user actually wants — not just
+   whether the tasks are internally consistent. If the plan solves a well-
+   formed problem that is adjacent to but not the same as the stated goal,
+   revise the tasks closest to the goal to close that gap.
 
 ══════════════════════════════════════════════════════════════════════════════
 OUTPUT FORMAT
@@ -1036,6 +1190,30 @@ def build_verify_result_prompt(
     and cannot be traced to upstream results or clarification fields, mark as not satisfied —
     those values are likely fabricated from the model's prior knowledge.
 
+    PARTIAL RESULTS:
+    If the result is labelled [BEST EFFORT] by the executor (indicating incomplete
+    information), evaluate it by a lower bar: check that the partial result is genuinely
+    useful rather than empty or misleading, and that the executor has clearly stated what
+    is missing. A well-labelled partial result that honestly describes its gaps should be
+    marked satisfied — do not force a retry on a result that has already accurately
+    described its own limits. An unlabelled result that appears to be partially fabricated
+    should still be marked not satisfied.
+
+    FORMAT CORRECTNESS:
+    If the task's declared output type is 'json' or 'code', check that the result contains
+    valid content of that type (parseable JSON, syntactically plausible code). A result
+    that claims to be JSON but is wrapped in prose explanation, or code that is truncated
+    mid-function, should be marked not satisfied. For other output types (document, text,
+    list, data), format is not strictly checked — focus on content completeness.
+
+    USER GOAL ALIGNMENT:
+    Beyond checking declared outputs, ask whether the result would actually help the user
+    make progress on the overall plan. A result that is technically complete (all declared
+    outputs present, no fabrication) but clearly off-topic or misaligned with what a
+    downstream task needs should be marked not satisfied, with a reason that names the
+    alignment gap. Apply this check conservatively — only when the result clearly serves
+    a different purpose than what the task description intended.
+
     Respond only in JSON matching the schema.
 """
 
@@ -1066,8 +1244,18 @@ results do not provide?
 
 Rules:
 - Only flag a real, concrete gap. Do not invent requirements not stated in the task.
-- If you flag a gap, propose ONE bridging task that closes it. Keep it coarse-grained:
-  a bridging task should do substantial work, not a trivial lookup.
+- First determine the gap type:
+    STRUCTURAL GAP: no upstream task was ever planned to produce this input.
+      → Propose a bridging task that produces it.
+    QUALITY GAP: an upstream task ran but its result is empty, failed, or
+      insufficient for this task's needs.
+      → Propose a repair or retry of the upstream task rather than a new task.
+- If you flag a gap, propose ONE bridging or repair task. Keep it substantial:
+  a bridging task should do meaningful work (research, synthesis, writing, analysis),
+  not a trivial lookup or a pass-through.
+- The bridging task description must be specific enough for an executor to run
+  without further clarification. Vague descriptions like "gather more information"
+  are not acceptable — name what information, from what source, for what purpose.
 - If the task is a root task or the upstream results are sufficient, set ok=true.
 
 Respond only in JSON matching the schema.
@@ -1162,7 +1350,48 @@ CLARIFICATION CONTEXT
 
 {unknown_section}
 {failure_section}
+════════════════════════════════════════
+PRE-CHECK — ENTITY IDENTITY
+════════════════════════════════════════
+Before applying the decision rules below, ask:
+
+"Does this task need to research or gather information about a SPECIFIC named
+entity — a particular company, organisation, person, product, or location —
+rather than producing a general answer from public knowledge?"
+
+If YES:
+  a) Entity is in Known context        → proceed; the task can run.
+  b) Entity identity field is Unknown  → block; list that field in missing_fields.
+     (Identity fields: company_name, employer_name, person_name, organisation_name,
+      location, product_name. Attribute fields such as company_budget or company_
+      culture do NOT identify the entity — knowing a budget does not tell you which
+      company to search for.)
+  c) No identity field exists at all   → block; add an appropriate identity field to
+     new_fields (e.g. company_name) so the user is prompted.
+
+This pre-check applies regardless of what the REQUIRED INPUTS list says.
+
+Exception: if the subject of the task is a named public entity (a public company,
+a public figure, a published work, an open-source project, a government body) AND
+the required information is in verifiable public records, the task can proceed —
+public information is retrievable by tool even without a user-supplied value.
+Apply this exception conservatively; when in doubt, treat the entity as private.
+
+Examples that trigger this check:
+  "Gather information about the company's budget and culture" — needs company_name.
+  "Research [employer]'s salary bands"                       — needs employer_name.
+
+Examples that do NOT trigger this check:
+  "Research average salary ranges for software engineers" — general public data.
+  "Write a negotiation framework based on company culture" — general advice.
+
+If YES and the entity is identified → proceed to DECISION RULES.
+If YES and the entity is missing    → block immediately; skip DECISION RULES.
+If NO                               → proceed to DECISION RULES.
+
+════════════════════════════════════════
 DECISION RULES
+════════════════════════════════════════
 
 1. Mark blocked=false (can proceed) when the task can produce a useful result using:
    - The available tools (e.g. web search can find salary benchmarks, company news,
@@ -1194,61 +1423,25 @@ DECISION RULES
        note that the company name is needed if it is unknown.
      - "Draft a negotiation script" — can be drafted from general templates.
 
-   The ONLY exception is if the user is a named public figure AND the specific
-   information is in verifiable public records. For typical employees, assume all
-   personal records are private.
    When applying this rule, give the reason as: "This task's output is private
    personal information that only the user can provide — no tool can retrieve it."
 
-3. ENTITY IDENTIFIER CHECK — ask yourself before anything else:
-   "Does this task need to research or gather information about a SPECIFIC named
-   entity — a particular company, organisation, person, or product — rather than
-   producing a general answer from public knowledge?"
-
-   If YES, check whether that entity is identified anywhere in the context:
-     a) In the Known context → the entity is known; the task can proceed.
-     b) In the Unknown context → ONLY if the field is an IDENTITY field (i.e. its
-        key or label refers to the name or identifier of the entity itself, such as
-        company_name, employer_name, person_name, organization_name). If such a
-        field exists but is unfilled, block and list it in missing_fields.
-        DO NOT treat attribute fields (e.g. company_budget_constraints,
-        company_culture, company_budget) as satisfying the entity identity
-        requirement — knowing the company's budget does not tell you which
-        company to search for. If only attribute fields are present and no
-        identity field exists, treat as case (c).
-     c) Not present anywhere in the context (or only attribute fields exist) →
-        the entity identity is completely missing from the clarification form;
-        block and add an appropriate identity field to new_fields
-        (e.g. company_name, employer_name) so the user is prompted.
-
-   This rule applies regardless of whether the entity name is in REQUIRED INPUTS.
-   Examples that trigger this check:
-     - "Gather information about the company's budget and culture" → needs
-       company_name; if not in context, add it to new_fields.
-     - "Research [company]'s financial situation" → same.
-     - "Find out what [employer] pays for this role" → same.
-
-   Examples that do NOT trigger this check (general public knowledge):
-     - "Research average salary ranges for software engineers" — no specific
-       company needed; public benchmarks are sufficient.
-     - "Determine negotiation strategy based on company culture" — produces
-       general advice; no specific entity required.
-
-4. Mark blocked=true when a REQUIRED INPUT listed above corresponds to an unknown
+3. Mark blocked=true when a REQUIRED INPUT listed above corresponds to an unknown
    clarification field AND genuinely cannot be substituted by web search or general
    knowledge — meaning the task output would be meaningless or misleading without it.
    Do NOT apply this rule to tasks where a general or approximate answer is still
    useful even without the specific value.
 
-5. Do NOT block tasks that deal with general topics where a useful answer is
+4. Do NOT block tasks that deal with general topics where a useful answer is
    possible without user-specific details:
    - "Determine negotiation strategy based on company culture and personal style"
      → not blocked; produce general negotiation advice from public knowledge.
    - "Research average salary ranges for a role" → not blocked; search for
-     general benchmarks (but DO apply rule 3 if a specific company is needed).
+     general benchmarks (but DO apply the entity pre-check if a specific company
+     is needed).
    - "Draft a negotiation script" → not blocked; draft from general templates.
 
-6. MANDATORY: When blocked=true you MUST populate EITHER missing_fields OR
+5. MANDATORY: When blocked=true you MUST populate EITHER missing_fields OR
    new_fields (or both) — never leave both empty.
    - missing_fields: EXACT KEYS from the Unknown context above that would unblock
      this task if the user filled them in. The key appears before the parentheses
@@ -1259,8 +1452,16 @@ DECISION RULES
    If you cannot identify any specific field that would unblock the task, set
    blocked=false instead — a block with no actionable fields is never useful.
 
-7. Your reason string must be plain English with no surrounding quotes, no trailing
+6. Your reason string must be plain English with no surrounding quotes, no trailing
    apostrophe-comma sequences, and no string-delimiter characters. End with a period.
+
+7. PARTIAL CONFIDENCE — if the task can proceed (blocked=false) but will produce a
+   lower-quality result because one or more unknown fields would have refined it,
+   note this in your reason string:
+     "Can proceed with general approach; result quality would improve if
+      [field_name] were provided."
+   This allows the quality gate to apply appropriate leniency when verifying the
+   result against its declared outputs.
 
 8. BROADENED DESCRIPTION — required whenever blocked=true:
    Produce a broadened_description: a complete, standalone rephrasing of the task
@@ -1408,6 +1609,15 @@ UNAVAILABLE INPUTS: {missing_text}
 
 {known_section}
 
+MINIMUM QUALITY FLOOR:
+Before writing the broadened description, ask: "Is there any version of this task
+that produces genuinely useful output given only the known context above?" If the
+answer is no — if the task is so dependent on the missing inputs that any broadened
+version would be empty or trivially unhelpful — set broadened_description to an
+empty string and broadened_steps to an empty array. The system will then skip this
+task until the user provides the missing information rather than executing a
+placeholder task.
+
 Produce two things:
 
 1. broadened_description: a complete, standalone rephrasing of this task
@@ -1522,12 +1732,28 @@ For every field (from both steps):
       budget        → "e.g. £50,000–£60,000, or leave blank if unsure"
       target_audience → "e.g. senior engineers, junior devs, non-technical stakeholders"
 
+Field prioritisation:
+  - Fields whose absence would make the entire plan significantly less useful or
+    force the broadened-execution fallback should be marked with a (*) at the
+    start of their label. Limit (*) fields to at most 3. All other fields are
+    optional — the user may leave them blank without preventing execution.
+  - Order fields so the most impactful (*) fields appear first.
+  - Aim for the minimum number of fields that would genuinely improve the plan.
+    Do not ask for information the plan could reasonably assume or that the
+    available tools can retrieve. Fewer, higher-quality fields are better than
+    many vague ones.
+
 Always include a final field with:
   key:      "additional_context"
   label:    "Anything else I should know?"
   value:    "unknown"
   rationale: "Free-form context that does not fit the fields above."
+  hint:     "e.g. deadlines, hard constraints, preferences, or background the plan should know about"
 
-Return between {min_fields} and {max_fields} fields total (including the additional_context field).
+Return between {min_fields} and {max_fields} fields total (including the
+additional_context field). Fields marked (*) significantly improve plan quality
+when filled in. All other fields are optional — leaving them blank will cause
+the executor to proceed with a generalised approach for that task, which is
+acceptable.
 Respond only in JSON matching the schema.
 """

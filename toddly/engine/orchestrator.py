@@ -44,6 +44,14 @@ class Orchestrator(BaseOrchestrator):
     BaseOrchestrator (generic) and this subclass (domain-specific).
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # FIX #3: track goals whose replan was deferred because children were
+        # still running at the time replan_goal() was called.  The set is
+        # drained by _complete_deferred_replans(), which is called from
+        # _post_planning_hooks() every loop iteration.
+        self._pending_replan_goals: set[str] = set()
+
     # ── Hook overrides ────────────────────────────────────────────────────────
 
     def _is_executable_node(self, node) -> bool:
@@ -61,6 +69,8 @@ class Orchestrator(BaseOrchestrator):
         """Auto-complete finished goals; resume clarification-unblocked nodes."""
         self._complete_finished_goals()
         self._resume_unblocked_pass()
+        # FIX #3: complete any deferred replan resets once running children finish.
+        self._complete_deferred_replans()
 
     def _handle_broadening(self, node_id: str, reporter) -> "list | None":
         """
@@ -263,7 +273,13 @@ class Orchestrator(BaseOrchestrator):
                     child = self.graph.nodes[child_id]
                     if child.status != "running":
                         to_reset.append(child_id)
-                        queue.extend(child.children)
+                    # FIX B: always extend the BFS queue regardless of whether
+                    # this child is running.  The old code only walked children
+                    # of non-running nodes, so any "done" grandchildren below a
+                    # running node were silently skipped.  Those grandchildren
+                    # retained stale "done" results from the old plan after the
+                    # goal was re-expanded, leaving the subtree inconsistent.
+                    queue.extend(child.children)
 
                 for desc_id in to_reset:
                     self._apply(Event(RESET_NODE, {"node_id": desc_id}))
@@ -310,13 +326,29 @@ class Orchestrator(BaseOrchestrator):
         for node in awaiting:
             missing_keys = node.metadata.get("missing_fields", [])
 
-            # Find the upstream clarification node
+            # FIX #6: use BFS over all ancestors to find the upstream
+            # clarification node, instead of scanning only direct dependencies.
+            # _patch_clarification_node already documents that the clarification
+            # node "may be 2+ hops away" (e.g. attached to the goal node which
+            # feeds an intermediate task which feeds this awaiting node).  The
+            # previous direct-dep scan silently missed those cases, leaving the
+            # awaiting_input node permanently stuck even after the user filled
+            # in the required fields.
             clar_node = None
-            for dep_id in node.dependencies:
+            bfs_queue = list(node.dependencies)
+            bfs_visited: set[str] = set(bfs_queue)
+            while bfs_queue and clar_node is None:
+                dep_id = bfs_queue.pop(0)
                 dep = snapshot.get(dep_id)
-                if dep and dep.node_type == "clarification" and dep.result:
+                if dep is None:
+                    continue
+                if dep.node_type == "clarification" and dep.result:
                     clar_node = dep
                     break
+                for ancestor_id in dep.dependencies:
+                    if ancestor_id not in bfs_visited:
+                        bfs_visited.add(ancestor_id)
+                        bfs_queue.append(ancestor_id)
 
             if not clar_node:
                 continue
@@ -552,14 +584,12 @@ class Orchestrator(BaseOrchestrator):
             if not goal or goal.node_type != "goal":
                 return
 
-            # FIX #7: check whether any children are currently running before
-            # removing idle children and clearing the expanded flag.
             running_children = [cid for cid in goal.children if cid in self._running_futures]
             if running_children:
                 logger.warning(
                     "[ORCHESTRATOR] replan_goal(%s): %d child(ren) still running "
-                    "(%s) — removing idle children but deferring expanded=False "
-                    "to avoid a mid-execution re-plan.",
+                    "(%s) — removing idle children and registering goal for "
+                    "deferred replan once all running children complete.",
                     goal_id,
                     len(running_children),
                     running_children,
@@ -574,6 +604,7 @@ class Orchestrator(BaseOrchestrator):
                     self._apply(Event(REMOVE_NODE, {"node_id": cid}))
 
             if not running_children:
+                # No children running — apply the reset immediately.
                 self._apply(
                     Event(
                         UPDATE_METADATA,
@@ -583,3 +614,56 @@ class Orchestrator(BaseOrchestrator):
                         },
                     )
                 )
+            else:
+                # FIX #3: register the goal so _complete_deferred_replans()
+                # will apply expanded=False once every running child finishes.
+                # Without this registration the deferred reset was never
+                # completed, leaving the goal permanently stuck as expanded=True
+                # with no children and never replanned.
+                self._pending_replan_goals.add(goal_id)
+                logger.info(
+                    "[ORCHESTRATOR] replan_goal(%s): deferred reset registered — "
+                    "will fire after running children %s complete",
+                    goal_id,
+                    running_children,
+                )
+
+    def _complete_deferred_replans(self) -> None:
+        """
+        Complete deferred replan resets registered by replan_goal().
+
+        Called from _post_planning_hooks() every loop iteration.  For each
+        goal in _pending_replan_goals, if no children are currently running,
+        set expanded=False so _planning_pass picks it up for re-expansion.
+        """
+        if not self._pending_replan_goals:
+            return
+
+        with self.graph_lock:
+            to_clear = []
+            for goal_id in list(self._pending_replan_goals):
+                goal = self.graph.nodes.get(goal_id)
+                if goal is None:
+                    # Goal was removed — discard silently.
+                    to_clear.append(goal_id)
+                    continue
+                still_running = [cid for cid in goal.children if cid in self._running_futures]
+                if not still_running:
+                    # All previously-running children have finished; apply reset.
+                    self._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": goal_id,
+                                "metadata": {"expanded": False},
+                            },
+                        )
+                    )
+                    to_clear.append(goal_id)
+                    logger.info(
+                        "[ORCHESTRATOR] Deferred replan for %s complete — "
+                        "expanded=False applied, goal will be replanned next cycle",
+                        goal_id,
+                    )
+            for goal_id in to_clear:
+                self._pending_replan_goals.discard(goal_id)

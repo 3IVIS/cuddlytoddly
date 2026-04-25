@@ -5,7 +5,6 @@ from __future__ import annotations
 # Remote API backend:
 #   - ApiLLM — OpenAI-compatible and Anthropic Claude
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -262,6 +261,25 @@ class ApiLLM(BaseLLM):
 
     # ── Public interface ──────────────────────────────────────────────────────
 
+    def _interruptible_sleep(self, seconds: float) -> None:
+        """
+        Sleep for up to `seconds` while checking the stop flag every 0.5 s.
+
+        FIX 4: replaces bare time.sleep(backoff) in rate-limit retry paths.
+        A plain time.sleep(60) is completely unresponsive to the user pressing
+        pause — the stop flag is set but the sleeping thread cannot observe it.
+        By polling in short increments we give sub-second pause responsiveness
+        even at maximum backoff duration.
+        """
+        import time as _time
+
+        deadline = _time.monotonic() + seconds
+        while _time.monotonic() < deadline:
+            if self._stop_event.is_set():
+                logger.info("[API] Stop flag set during backoff sleep — aborting sleep")
+                raise LLMStoppedError("LLM paused during rate-limit backoff")
+            _time.sleep(min(0.5, deadline - _time.monotonic()))
+
     def ask(self, prompt: str, schema: dict | None = None) -> str:
         self._check_stop()
         logger.info("[API] ask() called  provider=%s  model=%s", self.provider, self.model)
@@ -305,7 +323,13 @@ class ApiLLM(BaseLLM):
                         _API_MAX_ATTEMPTS,
                         backoff,
                     )
-                    time.sleep(backoff)
+                    # FIX 4: sleep in short increments so the stop flag is
+                    # checked frequently.  A bare time.sleep(backoff) blocks for
+                    # up to 60 s; the user pressing pause cannot interrupt it and
+                    # the orchestrator's llm_stopped flag has no effect until the
+                    # sleep completes.  Polling every 0.5 s gives sub-second
+                    # pause responsiveness even at maximum backoff.
+                    self._interruptible_sleep(backoff)
                     continue
                 logger.error("[API] Request failed on attempt %d: %s", attempt + 1, e)
                 if attempt == 0:
@@ -588,6 +612,14 @@ class ApiLLM(BaseLLM):
             kind="tool_call"  — model wants to invoke a tool; executor should
                                 run it and append the result to history.
             kind="text"       — model produced a final plain-text answer.
+
+        FIX 3: wraps the provider call in a retry loop matching the logic in
+        ask().  Previously any transient error (rate limit, network blip)
+        during a native tool-use turn propagated immediately to the executor,
+        which returned None and caused the orchestrator to mark the node failed
+        and start its own exponential backoff retry cycle.  The ask() path
+        handles the same errors transparently with up to _API_MAX_ATTEMPTS
+        retries; ask_with_tools() now does the same.
         """
         self._check_stop()
         self._load()
@@ -598,10 +630,43 @@ class ApiLLM(BaseLLM):
             len(history),
         )
 
-        if self.provider == "claude":
-            return self._ask_with_tools_claude(task_prompt, tools, history)
-        else:
-            return self._ask_with_tools_openai(task_prompt, tools, history)
+        for attempt in range(_API_MAX_ATTEMPTS):
+            try:
+                if self.provider == "claude":
+                    return self._ask_with_tools_claude(task_prompt, tools, history)
+                else:
+                    return self._ask_with_tools_openai(task_prompt, tools, history)
+            except LLMStoppedError:
+                raise  # always propagate stop immediately — no retry
+            except Exception as e:
+                if self._is_rate_limit_error(e):
+                    backoff = min(
+                        _API_RATE_LIMIT_INITIAL_BACKOFF * (2**attempt),
+                        _API_RATE_LIMIT_MAX_BACKOFF,
+                    )
+                    logger.warning(
+                        "[API] ask_with_tools() rate limit on attempt %d/%d "
+                        "— sleeping %.0fs before retry",
+                        attempt + 1,
+                        _API_MAX_ATTEMPTS,
+                        backoff,
+                    )
+                    self._interruptible_sleep(backoff)
+                    continue
+                logger.error(
+                    "[API] ask_with_tools() request failed on attempt %d: %s",
+                    attempt + 1,
+                    e,
+                )
+                if attempt == 0:
+                    logger.warning("[API] ask_with_tools() retrying after transient error…")
+                    continue
+                raise
+
+        # Exhausted all attempts — this path is only reached when every attempt
+        # raised a non-rate-limit exception and was re-raised; the raise above
+        # means we never actually reach here, but satisfy the type checker.
+        raise RuntimeError(f"[API] ask_with_tools() exhausted {_API_MAX_ATTEMPTS} attempts")
 
     def _ask_with_tools_claude(
         self,

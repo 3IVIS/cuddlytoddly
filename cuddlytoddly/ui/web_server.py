@@ -1,7 +1,3 @@
-# --- FILE: cuddlytoddly/ui/web_server.py ---
-
-# --- FILE: cuddlytoddly/ui/web_server.py ---
-
 # ui/web_server.py
 """
 FastAPI + WebSocket server — drop-in replacement for the curses UI.
@@ -342,9 +338,15 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
                     )
                 )
         if "dependents" in body:
-            snap2 = orchestrator.get_snapshot()
-            old_deps = {nid for nid, n in snap2.items() if node_id in n.dependencies}
-            new_deps = {d for d in body["dependents"] if d in snap2 and d != node_id}
+            # FIX 5: reuse the snapshot captured at the top of this handler
+            # instead of taking a second get_snapshot() call.  The second call
+            # produced a snapshot that could differ from the first (the
+            # orchestrator may have mutated the graph between the two calls),
+            # making old_deps/new_deps inconsistent with the node object read
+            # from snap — potentially emitting wrong REMOVE_DEPENDENCY or
+            # ADD_DEPENDENCY events for the dependents edit.
+            old_deps = {nid for nid, n in snap.items() if node_id in n.dependencies}
+            new_deps = {d for d in body["dependents"] if d in snap and d != node_id}
             for removed in old_deps - new_deps:
                 orchestrator.event_queue.put(
                     Event(

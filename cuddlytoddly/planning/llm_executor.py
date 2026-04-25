@@ -1378,11 +1378,16 @@ class LLMExecutor:
                         "partial_result": result,
                     }
 
-                # ── Issue 6: inline quality gate verification ─────────────────
-                # Verify the result within the executor's own turn budget before
-                # returning it.  If it fails and turns remain, inject the failure
-                # reason as a correction so the model can revise without a full
-                # node restart from the orchestrator.
+                # ── Issue 6 / FIX E: inline quality gate verification ─────────
+                # Verify the result within the executor's own turn budget.
+                # On failure we inject a correction turn so the model can
+                # revise without a full orchestrator retry cycle (backoff etc).
+                # On success we tag the return value with _pre_verified=True so
+                # the orchestrator skips its own redundant verification call for
+                # this result — preventing the double-LLM-call problem (FIX E).
+                # The tag is a wrapper dict; _on_node_done unwraps it before
+                # any downstream processing.
+                _pre_verified = False
                 if self.quality_gate and not is_final_turn:
                     _ok, _reason = self.quality_gate.verify_result(node, result, snapshot)
                     if not _ok:
@@ -1406,9 +1411,11 @@ class LLMExecutor:
                         )
                         unsuccessful_turn_count += 1
                         continue
+                    # Inline verification passed — signal the orchestrator so it
+                    # does not run a second redundant verification call.
+                    _pre_verified = True
 
                 logger.info("[EXECUTOR] Node %s completed. Result: %.120s", node.id, result)
-                # ── Fix 7: persist failed queries before returning ────────────
                 # ── Fix 7: persist failed queries before returning ────────────
                 if failed_queries and reporter:
                     reporter._apply(
@@ -1420,6 +1427,10 @@ class LLMExecutor:
                             },
                         )
                     )
+                # FIX E: wrap result with pre-verification flag when the inline
+                # quality gate ran and passed so _on_node_done skips its own call.
+                if _pre_verified:
+                    return {"result": result, "_pre_verified": True}
                 return result
 
             tool_call = response.get("tool_call")
@@ -1865,11 +1876,11 @@ class LLMExecutor:
                         "partial_result": result,
                     }
 
-                # ── Issue 6: inline quality gate verification ─────────────────
-                # Verify the result within the executor's own turn budget before
-                # returning it.  If it fails and turns remain, inject the failure
-                # reason as a correction so the model can revise without a full
-                # node restart from the orchestrator.
+                # ── Issue 6 / FIX E: inline quality gate verification ─────────
+                # Same logic as the legacy path above: inject a correction on
+                # failure, or tag a successful result with _pre_verified=True so
+                # _on_node_done skips the redundant orchestrator-level call.
+                _pre_verified = False
                 if self.quality_gate and not is_final_turn:
                     _ok, _reason = self.quality_gate.verify_result(node, result, snapshot)
                     if not _ok:
@@ -1892,6 +1903,8 @@ class LLMExecutor:
                         )
                         unsuccessful_turn_count += 1
                         continue
+                    # Inline verification passed.
+                    _pre_verified = True
 
                 logger.info(
                     "[EXECUTOR] Node %s completed (native). Result: %.120s",
@@ -1909,6 +1922,9 @@ class LLMExecutor:
                             },
                         )
                     )
+                # FIX E: wrap with pre-verification tag when inline check passed.
+                if _pre_verified:
+                    return {"result": result, "_pre_verified": True}
                 return result
 
             tool_name = response.tool_name

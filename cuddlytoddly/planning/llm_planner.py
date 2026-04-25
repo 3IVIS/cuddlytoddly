@@ -42,6 +42,25 @@ def _clarification_node_id(goal_id: str) -> str:
     return f"clarification_{goal_id}"
 
 
+class _SnapshotGraphProxy:
+    """
+    Thin read-only wrapper that presents a snapshot dict as a graph object.
+
+    LLMOutputValidator only needs graph.nodes to call .keys() and .items()
+    for building existing_ids and goal_ids.  Passing this proxy instead of
+    the live TaskGraph eliminates the live-graph race described in FIX D:
+    propose() runs with graph_lock released, so reads on the live graph race
+    with concurrent _on_node_done mutations in the thread pool.  The snapshot
+    is an immutable copy captured under graph_lock in _planning_pass, so it
+    is safe to read here without any additional locking.
+    """
+
+    __slots__ = ("nodes",)
+
+    def __init__(self, snapshot: dict) -> None:
+        self.nodes = snapshot
+
+
 class LLMPlanner:
     # Clarification-field defaults are intentionally kept here as a documented
     # fallback for callers that instantiate LLMPlanner directly without going
@@ -107,7 +126,16 @@ class LLMPlanner:
         clarif_fields: list = []
         clarif_prompt: str = ""
 
-        existing_clarif = self.graph.nodes.get(clarif_id)
+        # FIX D: read the clarification node from the immutable snapshot rather
+        # than from self.graph directly.  propose() is called from _planning_pass
+        # with graph_lock released; concurrent _on_node_done callbacks in the
+        # thread pool may be mutating self.graph.nodes at the same time.  A
+        # direct .get() on the live dict is GIL-safe in CPython but undefined
+        # behaviour on other runtimes and misleads static analysis.  The
+        # snapshot (captured under graph_lock in _planning_pass) already
+        # contains the clarification node when one exists, so using it is both
+        # correct and thread-safe.
+        existing_clarif = snapshot.get(clarif_id)
         if existing_clarif is not None:
             try:
                 clarif_fields = json.loads(existing_clarif.result or "[]")
@@ -171,7 +199,13 @@ class LLMPlanner:
 
         # ── Validate and constrain plan events ────────────────────────────────
         raw_events = self._normalize_events(raw_events)
-        validator = LLMOutputValidator(self.graph)
+        # FIX D (continued): LLMOutputValidator reads graph.nodes.keys() and
+        # graph.nodes.items() to build existing_ids and goal_ids.  Pass a thin
+        # proxy backed by the immutable snapshot instead of the live graph so
+        # those reads are also GIL-race-free.  The proxy exposes only the .nodes
+        # attribute; validator never mutates the graph, so read-only access is
+        # sufficient.  _SnapshotGraphProxy is defined at module level below.
+        validator = LLMOutputValidator(_SnapshotGraphProxy(snapshot))
         safe_events = validator.validate_and_normalize(raw_events, forced_origin="planning")
         # Pass clarif_id so the checker knows root tasks will get a dependency
         # on the clarification node even though it is not in this event batch.
@@ -181,6 +215,7 @@ class LLMPlanner:
             safe_events,
             active_goal.id,
             known_dep_id=clarif_id,
+            snapshot=snapshot,  # FIX 2: pass snapshot so checker avoids live-graph reads
         )
 
         # ── Wire clarification node as dependency of all root task nodes ───────

@@ -172,6 +172,14 @@ class QualityGate:
         Find clarification nodes upstream of this node and return a formatted
         string listing any fields whose value was unknown.
 
+        FIX G: uses a BFS over the full ancestor chain instead of scanning only
+        direct dependencies.  The clarification node may be 2+ hops away (e.g.
+        attached to the goal node which feeds an intermediate task which feeds
+        this one).  The previous single-hop scan silently omitted unknown-field
+        context for those cases, causing the verifier to lack the information
+        it needs to flag fabricated values — potentially passing results that
+        invented values for fields the user never provided.
+
         Returns an empty string when no upstream clarification nodes exist or
         all fields were known — the prompt helper omits the section in that case.
         """
@@ -188,26 +196,39 @@ class QualityGate:
             "",
         }
         unknown_fields = []
+        visited_clar_ids: set[str] = set()
 
-        for dep_id in node.dependencies:
+        # BFS over all ancestors — mirrors _patch_clarification_node and
+        # _resume_unblocked_pass so the same clarification nodes are found.
+        bfs_queue = list(node.dependencies)
+        bfs_visited: set[str] = set(bfs_queue)
+        while bfs_queue:
+            dep_id = bfs_queue.pop(0)
             dep = snapshot.get(dep_id)
-            if not dep or dep.node_type != "clarification" or not dep.result:
+            if dep is None:
                 continue
-            try:
-                fields = _json.loads(dep.result)
-            except Exception:
-                continue
-            for f in fields:
-                if not isinstance(f, dict):
-                    continue
-                val = str(f.get("value", "")).strip().lower()
-                if val in _PLACEHOLDERS:
-                    unknown_fields.append(
-                        {
-                            "label": f.get("label") or f.get("key", "?"),
-                            "hint": f.get("hint", "").strip(),
-                        }
-                    )
+            if dep.node_type == "clarification" and dep.result and dep_id not in visited_clar_ids:
+                visited_clar_ids.add(dep_id)
+                try:
+                    fields = _json.loads(dep.result)
+                except Exception:
+                    fields = []
+                for f in fields:
+                    if not isinstance(f, dict):
+                        continue
+                    val = str(f.get("value", "")).strip().lower()
+                    if val in _PLACEHOLDERS:
+                        unknown_fields.append(
+                            {
+                                "label": f.get("label") or f.get("key", "?"),
+                                "hint": f.get("hint", "").strip(),
+                            }
+                        )
+            # Keep walking regardless — there may be a clarification node further up.
+            for ancestor_id in getattr(dep, "dependencies", []):
+                if ancestor_id not in bfs_visited:
+                    bfs_visited.add(ancestor_id)
+                    bfs_queue.append(ancestor_id)
 
         if not unknown_fields:
             return ""
@@ -294,16 +315,51 @@ class QualityGate:
 
     def _resolve_output_path(self, path: str) -> str:
         """
-        FIX #5: Resolve a declared output path against self.working_dir if set,
-        so that bare filenames like "report.md" are checked in the executor's
-        working directory rather than the process CWD.
+        Resolve a declared output path against self.working_dir when set.
 
-        Absolute paths are returned unchanged.
+        Relative paths are joined to working_dir so bare filenames like
+        "report.md" are checked in the executor's output directory rather
+        than the process CWD.
+
+        FIX F: absolute paths are no longer returned unchanged.  A crafted
+        plan could declare an absolute output path (e.g. "/etc/passwd") and
+        the old code would check existence at that raw host-filesystem location,
+        potentially passing verification for a file that the task never wrote.
+        We now apply the same sandbox guard used in the auto-write path:
+          • absolute paths that resolve INSIDE working_dir are accepted.
+          • absolute paths that resolve OUTSIDE working_dir are rejected —
+            _resolve_output_path returns a path inside working_dir that will
+            not exist, so the file-existence check fails and verification is
+            marked unsatisfied.
+        Relative paths are resolved against working_dir as before.
         """
         p = Path(path)
-        if p.is_absolute() or self.working_dir is None:
+        if self.working_dir is None:
+            # No sandbox configured — return as-is (backward compat for tests).
             return str(p)
-        return str(self.working_dir / p)
+
+        base = Path(self.working_dir).resolve()
+
+        if p.is_absolute():
+            resolved = p.resolve()
+            try:
+                resolved.relative_to(base)
+                # Path is inside the sandbox — allow it.
+                return str(resolved)
+            except ValueError:
+                # FIX F: absolute path escapes working_dir.  Return a synthetic
+                # path inside the sandbox that will never exist on disk, so the
+                # subsequent _file_exists() call returns False and verification
+                # fails rather than accidentally passing on a host-level file.
+                logger.warning(
+                    "[QUALITY] Declared output path %r resolves outside working_dir %r "
+                    "— treating as missing for verification",
+                    path,
+                    str(base),
+                )
+                return str(base / "__rejected_absolute_path__")
+
+        return str(base / p)
 
     def _build_tool_results_context(self, node, snapshot) -> tuple[str, str]:
         """
