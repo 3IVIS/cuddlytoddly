@@ -581,6 +581,9 @@ Node types:
     - Never add a dependency that is not justified by a Category A required_input entry.
     - Tasks with no shared data dependency must run in parallel — do NOT impose
       sequential ordering unless the downstream task actually consumes an upstream output.
+    - If a task has no required inputs at all, emit ``required_input: []`` (an empty
+      array). Never use placeholder names such as ``"None"``, ``"none"``, ``"null"``,
+      or ``"N/A"`` — these are not valid input names and will cause executor errors.
 
 Uncertainty handling:
 - If the goal is ambiguous in a way that the clarification fields do not resolve,

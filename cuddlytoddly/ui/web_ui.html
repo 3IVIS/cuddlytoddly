@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1332,6 +1331,23 @@ function updatePanel() {
       </div>`);
   }
 
+  // ── FAILURE REASON ────────────────────────────────────────────────────────
+  if (node.status === 'failed') {
+    const failReason   = node.metadata?.verification_failure || '';
+    const retryCount   = node.metadata?.retry_count ?? null;
+    const retryLabel   = retryCount != null
+      ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px">Failed after ${retryCount} attempt${retryCount === 1 ? '' : 's'}</div>`
+      : '';
+    const reasonBody   = failReason
+      ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">${esc(failReason)}</div>`
+      : `<div style="font-size:11px;color:var(--text-dim);font-style:italic;margin-top:4px">No reason recorded.</div>`;
+    html += row('Failure reason', `
+      <div style="border:1px solid var(--s-failed)40;border-left:3px solid var(--s-failed);border-radius:4px;padding:8px 10px">
+        <div style="font-size:10px;color:var(--s-failed);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">✗ Node failed</div>
+        ${reasonBody}${retryLabel}
+      </div>`);
+  }
+
   // ── RESULT ────────────────────────────────────────────────────────────────
   if (result != null) {
     html += row(domainResultLabel(node), `<div class="result-box">${esc(String(result))}</div>`);
@@ -2299,28 +2315,54 @@ function domainBuildContent(node, { row, esc, trunc }) {
       };
     })(tabId, _activeCSS, _inactiveCSS);
 
-    // Running badge: shown on whichever tab is currently executing.
-    // Only rendered while status === 'running' and _active_tab is set.
-    const runBadge = isRunning && activeTab
-      ? `<span style="font-size:9px;font-weight:700;color:#0b1120;background:var(--s-running);border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;letter-spacing:0.3px">▶ RUNNING</span>`
-      : '';
-    const origRunBadge  = (isRunning && activeTab === 'original')  ? runBadge : '';
-    const broadRunBadge = (isRunning && activeTab === 'broadened') ? runBadge : '';
+    // Determine which tab should be shown on initial render.
+    // While running: show the tab that is executing.
+    // After a run (done/failed/awaiting): show the tab that ran last (_active_tab
+    // persists through MARK_DONE and MARK_FAILED; it is only cleared by RESET_NODE).
+    // If _active_tab is null (never run or just reset): default to broadened.
+    const showOrig = activeTab === 'original';
+
+    // isActive controls whether step icons show completion ticks (✓) or type
+    // labels (⚙/👤).  Each tab is active when it is the one that ran / is running.
+    const origIsActive  = activeTab === 'original';
+    const broadIsActive = activeTab === 'broadened' || activeTab === null;
+
+    // ── Option A: outcome badge on whichever tab _active_tab names ────────────
+    // While running    → amber ▶ RUNNING badge on the running tab.
+    // After done       → green ✓ done badge on the tab that completed.
+    // After failed     → red   ✗ failed badge on the tab that failed.
+    // After awaiting_u → orange ⏳ badge on the relevant tab.
+    // The other tab gets no badge (it has not run in the most recent attempt).
+    function tabBadge(tabName) {
+      if (!activeTab || activeTab !== tabName) return '';
+      if (isRunning)
+        return `<span style="font-size:9px;font-weight:700;color:#0b1120;background:var(--s-running);border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;letter-spacing:0.3px">▶ RUNNING</span>`;
+      const st = node.status;
+      if (st === 'done')
+        return `<span style="font-size:9px;font-weight:700;color:#0b1120;background:#10b981;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;letter-spacing:0.3px">✓ done</span>`;
+      if (st === 'failed')
+        return `<span style="font-size:9px;font-weight:700;color:#fff;background:var(--s-failed);border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;letter-spacing:0.3px">✗ failed</span>`;
+      if (st === 'awaiting_user')
+        return `<span style="font-size:9px;font-weight:700;color:#0b1120;background:#f97316;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;letter-spacing:0.3px">⏳ awaiting</span>`;
+      return '';
+    }
+    const origBadge  = tabBadge('original');
+    const broadBadge = tabBadge('broadened');
 
     html += `
       <div style="display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border-subtle);padding-bottom:0">
         <button id="${tabId}-btn-orig"
           onclick="${switchFn}('orig')"
-          style="font-size:11px;padding:4px 10px;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--text-muted);cursor:pointer;font-weight:400;margin-bottom:-1px">
-          Original${origRunBadge}
+          style="${showOrig ? _activeCSS : _inactiveCSS}">
+          Original${origBadge}
         </button>
         <div style="position:relative;display:inline-block">
           <button id="${tabId}-btn-broad"
             onclick="${switchFn}('broad')"
             onmouseenter="document.getElementById('${tooltipId}').style.display='block'"
             onmouseleave="document.getElementById('${tooltipId}').style.display='none'"
-            style="font-size:11px;padding:4px 10px;border:none;border-bottom:2px solid var(--text);background:transparent;color:var(--text);cursor:pointer;font-weight:600;margin-bottom:-1px">
-            ⟳ Broadened${broadRunBadge}
+            style="${showOrig ? _inactiveCSS : _activeCSS}">
+            ⟳ Broadened${broadBadge}
           </button>
           <div id="${tooltipId}" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px;min-width:220px;max-width:280px;box-shadow:0 4px 12px rgba(0,0,0,0.15);pointer-events:none">
             <div style="font-size:10px;font-weight:600;color:var(--s-running);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">⟳ Why this goal was generalised</div>
@@ -2331,27 +2373,27 @@ function domainBuildContent(node, { row, esc, trunc }) {
 
     // ── 2. DESCRIPTION (tab-aware) ──────────────────────────────────────────
     html += row('Description', `
-      <div id="${tabId}-orig-desc" style="display:none">
+      <div id="${tabId}-orig-desc" style="display:${showOrig ? 'block' : 'none'}">
         <span class="info-value prominent">${esc(desc)}</span>
       </div>
-      <div id="${tabId}-broad-desc" style="display:block">
+      <div id="${tabId}-broad-desc" style="display:${showOrig ? 'none' : 'block'}">
         <span class="info-value prominent">${esc(broadDesc)}</span>
       </div>`);
 
     // ── 4. PLAN / STEPS (tab-aware) ─────────────────────────────────────────
     html += row('Plan', `
-      <div id="${tabId}-orig-steps" style="display:none">
-        ${origSteps.length ? renderStepList(origSteps, false) : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No steps defined.</div>'}
+      <div id="${tabId}-orig-steps" style="display:${showOrig ? 'block' : 'none'}">
+        ${origSteps.length ? renderStepList(origSteps, origIsActive) : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No steps defined.</div>'}
       </div>
-      <div id="${tabId}-broad-steps" style="display:block">
-        ${hasBroadSteps ? renderStepList(broadSteps, true) : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No broadened steps available.</div>'}
+      <div id="${tabId}-broad-steps" style="display:${showOrig ? 'none' : 'block'}">
+        ${hasBroadSteps ? renderStepList(broadSteps, broadIsActive) : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No broadened steps available.</div>'}
       </div>`);
 
     // ── 6. REQUIRES (tab-aware) ─────────────────────────────────────────────
     if (reqIn.length || broadenedReqIn.length) {
       html += row('Requires', `
-        <div id="${tabId}-orig-req" style="display:none">${renderInlineRequires(reqIn)}</div>
-        <div id="${tabId}-broad-req" style="display:block">${
+        <div id="${tabId}-orig-req" style="display:${showOrig ? 'block' : 'none'}">${renderInlineRequires(reqIn)}</div>
+        <div id="${tabId}-broad-req" style="display:${showOrig ? 'none' : 'block'}">${
           broadenedReqIn.length ? renderInlineRequires(broadenedReqIn)
           : '<div style="font-size:11px;color:var(--text-dim);font-style:italic">No inputs required for broadened goal.</div>'
         }</div>`);
@@ -2361,8 +2403,8 @@ function domainBuildContent(node, { row, esc, trunc }) {
     const effectiveBroadOutput = broadenedOutput.length ? broadenedOutput : output;
     if (output.length || effectiveBroadOutput.length) {
       html += row('Outputs', `
-        <div id="${tabId}-orig-out" style="display:none">${renderInlineOutputs(output)}</div>
-        <div id="${tabId}-broad-out" style="display:block">${renderInlineOutputs(effectiveBroadOutput)}</div>`);
+        <div id="${tabId}-orig-out" style="display:${showOrig ? 'block' : 'none'}">${renderInlineOutputs(output)}</div>
+        <div id="${tabId}-broad-out" style="display:${showOrig ? 'none' : 'block'}">${renderInlineOutputs(effectiveBroadOutput)}</div>`);
     }
 
   } else {
@@ -2554,4 +2596,3 @@ connect();
 
 </body>
 </html>
-

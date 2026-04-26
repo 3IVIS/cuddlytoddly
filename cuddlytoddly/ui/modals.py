@@ -8,6 +8,7 @@ functions, plus export_results_to_markdown.
 from __future__ import annotations
 
 import curses
+import json as _json
 import textwrap
 
 from cuddlytoddly.ui.ui_config import UIConfig
@@ -423,13 +424,11 @@ def open_clarification_modal(current_node, snapshot, event_queue, set_modal):
     """
     Per-field editing modal for clarification nodes.
 
-    Fields are shown one at a time with their label, current value, and
-    rationale.  Tab / arrow keys navigate between fields.  Pressing Enter
-    on the "Confirm & rerun" field commits the edits and triggers a rerun
-    of all direct children of this clarification node.
+    Fields are shown one at a time with their label, hint, rationale, and
+    current value.  Tab / arrow keys navigate between fields.  Pressing Enter
+    commits the edits and triggers a rerun of direct children (excluding any
+    already in awaiting_input status, consistent with the web UI handler).
     """
-    import json as _json
-
     node = snapshot[current_node]
     try:
         fields = _json.loads(node.result or "[]")
@@ -470,10 +469,11 @@ def open_clarification_modal(current_node, snapshot, event_queue, set_modal):
             )
         )
 
-        # Reset direct children only
+        # Reset direct children only, skipping awaiting_input nodes — consistent
+        # with the web /api/node/{id}/clarification/confirm handler.
         for child_id in node.children:
             child = snapshot.get(child_id)
-            if child and child.node_type != "clarification":
+            if child and child.node_type != "clarification" and child.status != "awaiting_input":
                 event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
 
         # Mark parent goal unexpanded for partial replan
@@ -494,26 +494,26 @@ def open_clarification_modal(current_node, snapshot, event_queue, set_modal):
 
     # Build one ModalField per clarification field.
     # The label encodes the field index so on_submit can match values back.
+    # Hint and rationale are folded into the label so they're visible while editing.
     modal_fields = []
     for i, f in enumerate(draft):
-        label = f"Field {i + 1}: {f.get('label', f['key'])}"
+        base_label = f"Field {i + 1}: {f.get('label', f['key'])}"
+        hint = f.get("hint", "")
+        rationale = f.get("rationale", "")
+        # Append hint/rationale inline so the user sees context while editing.
+        if hint:
+            base_label = f"{base_label}  [{hint}]"
+        if rationale:
+            base_label = f"{base_label}  ({rationale})"
         cur_value = f.get("value", "unknown")
         if cur_value == "unknown":
             cur_value = ""
         modal_fields.append(
             ModalField(
-                label=label,
+                label=base_label,
                 value=cur_value,
             )
         )
-
-    # Final read-only info field telling the user what Confirm does
-    modal_fields.append(
-        ModalField(
-            label="→ Press Enter on last field or submit to confirm & rerun",
-            value="",
-        )
-    )
 
     set_modal(
         Modal(
@@ -533,6 +533,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal, config: UICo
         nid for nid, n in snapshot.items() if current_node in n.dependencies
     )
     current_result = node.result or ""
+    current_steps_json = _json.dumps(node.metadata.get("execution_steps", []))
 
     def on_submit(values):
         new_id = values["ID"].strip()
@@ -541,6 +542,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal, config: UICo
         new_status = values["Status"].strip()
         new_dep_raw = values["Dependents"].strip()
         new_result = values["Result"].strip()
+        new_steps_raw = values["Steps (JSON)"].strip()
 
         new_deps = [d.strip() for d in new_deps_raw.split(",") if d.strip()]
         new_deps = [d for d in new_deps if d in snapshot]
@@ -553,19 +555,33 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal, config: UICo
         new_dependents_set = set(new_dependents)
         old_dependents = {nid for nid, n in snapshot.items() if current_node in n.dependencies}
 
+        # Parse execution steps — accept empty string as empty list; silently
+        # ignore malformed JSON rather than blocking the submit.
+        try:
+            new_steps = _json.loads(new_steps_raw) if new_steps_raw else []
+            if not isinstance(new_steps, list):
+                new_steps = []
+        except Exception:
+            new_steps = node.metadata.get("execution_steps", [])
+
+        # Build metadata update — always include execution_steps so an explicit
+        # clear (user empties the field) is respected.
         event_queue.put(
             Event(
                 UPDATE_METADATA,
                 {
                     "node_id": current_node,
                     "origin": "user",
-                    "metadata": {"description": new_desc},
+                    "metadata": {
+                        "description": new_desc,
+                        "execution_steps": new_steps,
+                    },
                 },
             )
         )
 
         if new_status in (
-            config.valid_status_values if config else ("pending", "done", "running", "failed")
+            config.valid_status_values if config else ("pending", "running", "done", "failed")
         ):
             event_queue.put(
                 Event(
@@ -625,22 +641,12 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal, config: UICo
 
         # ── Cascade decision ──────────────────────────────────────────────
         # Only cascade when something that feeds into the downstream LLM
-        # prompt actually changed: result, description, or dependencies.
+        # prompt actually changed: result, description, dependencies, or steps.
         # Status-only changes do not affect LLM input → no cascade.
-        #
-        # Lazy cascade strategy:
-        # • result changed  → SET_RESULT (node keeps status) + RESET_NODE on
-        #                     each done direct child only.  When each child
-        #                     reruns, _on_node_done compares its new result to
-        #                     its previous result and cascades further only if
-        #                     it changed — propagating all the way to leaf nodes.
-        # • desc/deps changed → RESET_NODE on the node itself only.  After it
-        #                     reruns, the same _on_node_done logic cascades to
-        #                     done children if the result changes.
-        # • status-only     → no cascade at all.
         result_changed = new_result != current_result
         desc_changed = new_desc != node.metadata.get("description", "")
         deps_changed = new_deps_set != old_deps
+        steps_changed = new_steps != node.metadata.get("execution_steps", [])
         is_rename = bool(new_id and new_id != current_node and new_id not in snapshot)
 
         if result_changed:
@@ -659,7 +665,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal, config: UICo
                 child = snapshot.get(child_id)
                 if child and child.status == "done":
                     event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
-        elif (desc_changed or deps_changed) and not is_rename:
+        elif (desc_changed or deps_changed or steps_changed) and not is_rename:
             # Reset the node itself only; _on_node_done cascades if result changes.
             event_queue.put(Event(RESET_NODE, {"node_id": current_node}))
 
@@ -707,6 +713,7 @@ def open_edit_modal(current_node, snapshot, event_queue, set_modal, config: UICo
                     ),
                 ),
                 ModalField("Result", value=current_result),
+                ModalField("Steps (JSON)", value=current_steps_json),
             ],
             on_submit=on_submit,
             on_cancel=lambda: set_modal(None),

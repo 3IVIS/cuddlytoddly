@@ -204,9 +204,44 @@ class BaseOrchestrator:
         if getattr(self._pool, "_shutdown", False):
             self._pool = ThreadPoolExecutor(max_workers=self.max_workers)
             logger.info("[ORCHESTRATOR] Thread pool recreated after previous shutdown")
+        self._warn_parallel_limit()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="simple-orchestrator")
         self._thread.start()
         logger.info("[ORCHESTRATOR] Started (background thread)")
+
+    def _warn_parallel_limit(self) -> None:
+        """
+        Warn when max_workers > 1 but the LLM backend serialises inference.
+
+        LlamaCppLLM uses a single ``_inference_lock`` because the llama.cpp C
+        backend is not thread-safe — only one matrix multiplication can run on
+        the GPU/CPU at a time.  When multiple task nodes are in the same
+        ``parallel_group`` the orchestrator submits them to the thread pool
+        concurrently, but every LLM call immediately blocks on that lock.  The
+        result is sequential execution at LLM-call granularity rather than true
+        parallelism; wall-clock time is no better than max_workers=1 and the
+        extra threads add unnecessary overhead.
+
+        Web-search I/O can still overlap between tasks (the lock is only held
+        during the actual inference call), but since most time is spent in the
+        LLM the benefit is marginal.
+
+        To suppress this warning: set ``max_workers = 1`` in ``[orchestrator]``
+        in config.toml.  For true parallel task execution, switch to an API
+        backend (``[llm] backend = "anthropic"`` or ``"openai"``).
+        """
+        if self.max_workers <= 1:
+            return
+        for client in self._llm_clients:
+            if hasattr(client, "_inference_lock"):
+                logger.warning(
+                    "[ORCHESTRATOR] max_workers=%d but the LLM backend (llamacpp) serialises "
+                    "inference via a single _inference_lock — parallel_group tasks will NOT "
+                    "run concurrently at the LLM level. Set max_workers=1 in config.toml to "
+                    "suppress this warning, or switch to an API backend for true parallelism.",
+                    self.max_workers,
+                )
+                break
 
     def run_on_main_thread(self):
         """Run the loop on the calling thread (blocks).
@@ -601,6 +636,24 @@ class BaseOrchestrator:
                 # Genuine failure (max turns, JSON parse error, tool error, …)
                 if reporter:
                     reporter.expose_all()
+                # Persist the failure reason so the UI can display it.  We write
+                # it before MARK_FAILED because MARK_FAILED only sets status and
+                # does not carry a reason payload.
+                self._apply(
+                    Event(
+                        UPDATE_METADATA,
+                        {
+                            "node_id": node_id,
+                            "metadata": {
+                                "verification_failure": (
+                                    "Executor returned no result — likely caused by an "
+                                    "LLM error, JSON parse failure, or the tool-use "
+                                    "turn limit being reached with no successful result."
+                                ),
+                            },
+                        },
+                    )
+                )
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
                 logger.warning("[EXEC] Failed: %s", node_id)
             return
@@ -817,6 +870,27 @@ class BaseOrchestrator:
                     )
                     if reporter:
                         reporter.expose_all()
+                    # Persist the final failure reason before MARK_FAILED so the
+                    # UI can display it.  Without this the reason would be lost:
+                    # MARK_FAILED does not carry a reason payload, and the
+                    # UPDATE_METADATA from the last retry cycle was written before
+                    # that cycle's RESET_NODE, which clears verification_failure.
+                    self._apply(
+                        Event(
+                            UPDATE_METADATA,
+                            {
+                                "node_id": node_id,
+                                "metadata": {
+                                    "verification_failure": reason,
+                                    # Do NOT increment here: retry_count tracks the number of
+                                    # resets-for-retry that actually occurred.  The permanent-fail
+                                    # branch fires *before* any further increment, so the value
+                                    # stays at `retry` (== max_retries - 1 for a full run).
+                                    "retry_count": retry,
+                                },
+                            },
+                        )
+                    )
                     self._apply(Event(MARK_FAILED, {"node_id": node_id}))
                     self._reporters.pop(node_id, None)
                     return

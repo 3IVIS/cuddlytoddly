@@ -235,7 +235,7 @@ def dag_interface(
 
                 # Node-type symbol map — build a single dict from config.node_symbol_fn
                 # (or keep no overrides if no config is provided, leaving all nodes as "*").
-                symbol_positions: dict = {}  # line_idx -> (col, symbol_char)
+                symbol_positions: dict = {}
                 if config and config.node_symbol_fn:
                     for node_id, line_idx in node_to_line.items():
                         node = snapshot.get(node_id)
@@ -337,10 +337,11 @@ def dag_interface(
                     activity_str = ""
 
                 status_line = (
-                    "Up/Down/Left/Right/[/]: move | "
-                    f"j/k </> scroll info | "
-                    f"e: edit | a: add | x: remove | p: export | "
-                    f"s: {'resume' if llm_paused else 'pause'} | g: switch goal | q: quit"
+                    "↑↓←→/[]: navigate | j/k <>: scroll | "
+                    "e:edit a:add x:remove | "
+                    "r:retry c:confirm R:replan | "
+                    f"p:export P:html | "
+                    f"s:{'resume' if llm_paused else 'pause'} g:switch q:quit"
                     f"{paused_indicator}"
                 )
                 tc = orchestrator.token_counts
@@ -476,6 +477,48 @@ def dag_interface(
             if current_node:
                 open_remove_modal(current_node, snapshot, event_queue, set_modal)
 
+        elif k == ord("r"):
+            # Retry a failed or done node — mirrors web UI's retryNode()
+            if current_node:
+                node = snapshot.get(current_node)
+                if node and node.status in ("failed", "done"):
+                    try:
+                        orchestrator.retry_node(current_node)
+                        export_notice = (f"Retry scheduled: {current_node}", time.time() + 3)
+                    except Exception as ex:
+                        export_notice = (f"Retry failed: {ex}", time.time() + 4)
+                        logger.error("[RETRY] Failed: %s", ex, exc_info=True)
+
+        elif k == ord("c"):
+            # Confirm an awaiting_user node — mirrors web UI's confirm button
+            if current_node:
+                node = snapshot.get(current_node)
+                if node and node.status == "awaiting_user":
+                    try:
+                        confirmed = orchestrator.confirm_node(current_node)
+                        if confirmed:
+                            export_notice = (f"Confirmed: {current_node}", time.time() + 3)
+                        else:
+                            export_notice = (
+                                f"Cannot confirm {current_node} (not awaiting_user?)",
+                                time.time() + 4,
+                            )
+                    except Exception as ex:
+                        export_notice = (f"Confirm failed: {ex}", time.time() + 4)
+                        logger.error("[CONFIRM] Failed: %s", ex, exc_info=True)
+
+        elif k == ord("R"):
+            # Replan a goal node — mirrors web UI's replanGoal()
+            if current_node:
+                node = snapshot.get(current_node)
+                if node and node.node_type == "goal":
+                    try:
+                        orchestrator.replan_goal(current_node)
+                        export_notice = (f"Replan scheduled: {current_node}", time.time() + 3)
+                    except Exception as ex:
+                        export_notice = (f"Replan failed: {ex}", time.time() + 4)
+                        logger.error("[REPLAN] Failed: %s", ex, exc_info=True)
+
         elif k == ord("p"):
             if run_dir and snapshot:
                 try:
@@ -484,6 +527,24 @@ def dag_interface(
                 except Exception as ex:
                     export_notice = (f"Export failed: {ex}", time.time() + 4)
                     logger.error("[EXPORT] Failed: %s", ex, exc_info=True)
+
+        elif k == ord("P"):
+            # HTML snapshot export — mirrors web UI's exportHTML() / /api/export/html
+            if run_dir and snapshot:
+                try:
+                    from cuddlytoddly.ui.web_server import (
+                        _build_static_html,
+                        _serialize_snapshot,
+                    )
+
+                    serialized = _serialize_snapshot(snapshot, config)
+                    _, out_path = _build_static_html(
+                        serialized, run_dir, orchestrator.token_counts, config
+                    )
+                    export_notice = (f"HTML → {out_path.name}", time.time() + 4)
+                except Exception as ex:
+                    export_notice = (f"HTML export failed: {ex}", time.time() + 4)
+                    logger.error("[EXPORT HTML] Failed: %s", ex, exc_info=True)
 
         elif k in (curses.KEY_PPAGE, ord("<")):  # Page Up
             info_scroll = max(0, info_scroll - (h - 4))
@@ -547,6 +608,63 @@ def draw_info_panel(
         f" Origin: {node.origin}",
         " ",
     ]
+
+    # ── Status-specific blocks ────────────────────────────────────────────────
+
+    if node.status == "awaiting_input":
+        reason = node.metadata.get("awaiting_input_reason", "")
+        missing = node.metadata.get("missing_fields", [])
+        lines.append(" ⏳ Awaiting input")
+        if reason:
+            for wrapped in textwrap.wrap(f"   Reason: {reason}", width=max(1, panel_w - 2)):
+                lines.append(wrapped)
+        if missing:
+            lines.append(f"   Missing: {', '.join(missing)}")
+        lines.append("   → Edit clarification node ('e') to unblock")
+        lines.append(" ")
+
+    elif node.status == "awaiting_user":
+        pending_set = set(node.metadata.get("pending_steps", []))
+        artifact = node.metadata.get("handoff_artifact", "")
+        # Use whichever plan actually ran, matching web UI's _active_tab logic.
+        active_tab = node.metadata.get("_active_tab")
+        if active_tab == "broadened":
+            exec_steps = node.metadata.get("broadened_steps", [])
+        else:
+            exec_steps = node.metadata.get("execution_steps", [])
+        lines.append(" 🙋 Awaiting user action")
+        if exec_steps and pending_set:
+            # Per-step ⏳ / ✓ — mirrors web UI's pending_steps colouring.
+            for s in exec_steps:
+                etype = s.get("execution_type", "")
+                sdesc = s.get("description", "")
+                is_pending = etype in pending_set
+                icon = "⏳" if is_pending else "✓ "
+                desc_str = sdesc if sdesc else etype
+                type_tag = f" [{etype}]" if etype else ""
+                lines.append(f"   {icon}{type_tag} {desc_str}")
+        elif pending_set:
+            lines.append(f"   Pending: {', '.join(sorted(pending_set))}")
+        if artifact:
+            lines.append("   Artifact:")
+            for wrapped in textwrap.wrap(artifact, width=max(1, panel_w - 6)):
+                lines.append(f"     {wrapped}")
+        lines.append("   → Press 'c' to confirm when done")
+        lines.append(" ")
+
+    elif node.status == "failed":
+        fail_reason = node.metadata.get("verification_failure", "")
+        retry_count = node.metadata.get("retry_count")
+        lines.append(" ✗ Node failed")
+        if retry_count is not None:
+            lines.append(f"   Failed after {retry_count} attempt{'s' if retry_count != 1 else ''}")
+        if fail_reason:
+            lines.append("   Reason:")
+            for wrapped in textwrap.wrap(fail_reason, width=max(1, panel_w - 6)):
+                lines.append(f"     {wrapped}")
+        lines.append("   → Press 'r' to retry")
+        lines.append(" ")
+
     notes = node.metadata.get("reflection_notes", [])
     if notes:
         lines.append(" Notes:")
@@ -563,24 +681,24 @@ def draw_info_panel(
         # --- RESULTS ---
         lines.append(" Results:")
         for nid in selected_nodes:
-            node = snapshot.get(nid)
-            if not node:
+            node_s = snapshot.get(nid)
+            if not node_s:
                 continue
 
-            if node.result is not None:
+            if node_s.result is not None:
                 lines.append(f"   [{nid}]")
-                for wrapped_line in textwrap.wrap(str(node.result), width=panel_w - 5):
+                for wrapped_line in textwrap.wrap(str(node_s.result), width=panel_w - 5):
                     lines.append(f"   {wrapped_line}")
             else:
                 # Node has no result (e.g. a goal) — show direct deps' results instead
-                for dep_id in node.dependencies:
+                for dep_id in node_s.dependencies:
                     dep = snapshot.get(dep_id)
                     if dep and dep.result is not None:
                         lines.append(f"   [{dep_id}]")
                         for wrapped_line in textwrap.wrap(str(dep.result), width=panel_w - 5):
                             lines.append(f"   {wrapped_line}")
 
-    # After showing the node's own result, show any visible execution steps.
+    # ── Execution steps ───────────────────────────────────────────────────────
     # Use snapshot_filter_fn to decide which nodes are "visible" — the same
     # predicate used by the web and git layers.  Falls back to excluding
     # hidden nodes when no config is provided.
@@ -599,7 +717,12 @@ def draw_info_panel(
         lines.append(" Execution steps:")
         for step in step_children:
             status_icon = "✓" if step.status == "done" else "✗" if step.status == "failed" else "…"
-            lines.append(f"   {status_icon} {step.metadata.get('description', step.id)}")
+            etype = step.metadata.get("execution_type", "")
+            etype_str = f"[{etype}] " if etype else ""
+            lines.append(f"   {status_icon} {etype_str}{step.metadata.get('description', step.id)}")
+            produces = step.metadata.get("produces", "")
+            if produces:
+                lines.append(f"     → {produces}")
             attempts = step.metadata.get("attempts", [])
             if len(attempts) > 1:
                 lines.append(f"     ({len(attempts)} attempts)")

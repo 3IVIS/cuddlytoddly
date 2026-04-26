@@ -562,6 +562,13 @@ class LLMExecutor:
                         if isinstance(o, dict) and o.get("name"):
                             dag_output_names.add(o["name"])
 
+        # Sentinel names the LLM emits when a task genuinely has no required
+        # inputs.  Instead of emitting required_input: [] the model sometimes
+        # produces [{"name": "None", ...}] as a placeholder.  These names must
+        # never become clarification fields — they carry no user-facing meaning
+        # and would surface as confusing "None" form fields in the UI.
+        _SENTINEL_INPUT_NAMES = frozenset({"none", "null", "", "n/a", "unknown"})
+
         def _make_new_field(r: dict) -> dict:
             name = r.get("name", "")
             label = name.replace("_", " ").title()
@@ -576,6 +583,7 @@ class LLMExecutor:
             _make_new_field(r)
             for r in required_inputs
             if r.get("name")
+            and r.get("name").lower() not in _SENTINEL_INPUT_NAMES
             and r.get("name") not in all_clar_keys
             and r.get("name") not in upstream_output_names
             # Fix 6: never promote a data-flow output name to a clarification

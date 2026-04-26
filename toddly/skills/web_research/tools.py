@@ -1,5 +1,6 @@
 # skills/web_research/tools.py
 
+import random
 import re
 
 from toddly.infra.logging import get_logger
@@ -209,13 +210,27 @@ def _web_search(args: dict) -> str:
     import time
 
     last_error = None
-    for attempt in range(3):
+    for attempt in range(5):
         if attempt > 0:
-            time.sleep(2**attempt)  # 2s, 4s backoff on retry
+            # Longer backoff with jitter to give DDG rate-limit windows time to
+            # clear.  Formula: 5s * 2^(attempt-1) ± up to 2s jitter.
+            # Sequence: ~5s, ~10s, ~20s, ~40s (attempts 1-4).
+            sleep_secs = 5 * (2 ** (attempt - 1)) + random.uniform(0, 2)
+            logger.info(
+                "[WEB_SEARCH] Backing off %.1fs before attempt %d for: %r",
+                sleep_secs,
+                attempt + 1,
+                query,
+            )
+            time.sleep(sleep_secs)
         try:
             results = []
             with DDGS() as ddgs:
-                for r in ddgs.text(query, max_results=max_results):
+                for r in ddgs.text(
+                    query,
+                    max_results=max_results,
+                    region="wt-wt",  # worldwide — prevents geo-biased results
+                ):
                     results.append(
                         f"Title: {r.get('title', '')}\n"
                         f"URL:   {r.get('href', '')}\n"
@@ -224,7 +239,7 @@ def _web_search(args: dict) -> str:
             if results:
                 combined = "\n\n---\n\n".join(results)
 
-                # ── Fix: relevance check ──────────────────────────────────────
+                # ── Relevance check ───────────────────────────────────────────
                 # DuckDuckGo occasionally returns results that are syntactically
                 # non-empty but semantically unrelated to the query (e.g. a page
                 # about Python's @ decorator returned for a "Python package
@@ -239,9 +254,10 @@ def _web_search(args: dict) -> str:
                 #   2. successful_searches in the executor counts zero hits →
                 #      correction turn injected if the model tries to finish.
                 #
-                # We do NOT retry — DuckDuckGo will return the same index
-                # for the same query, so retrying wastes time.  The model
-                # should try a meaningfully different query instead.
+                # Since we now pass region="wt-wt" globally, geo-biased results
+                # should be rare.  We allow one retry after a relevance failure
+                # (DDG may serve a different result set on a fresh connection)
+                # before giving up and asking the model to rephrase.
                 if not _results_are_relevant(query, combined):
                     first_title = results[0].split("\n")[0] if results else "(unknown)"
                     logger.warning(
@@ -257,7 +273,13 @@ def _web_search(args: dict) -> str:
                         "Try a different search query with more specific or "
                         "different keywords."
                     )
-                    # No point retrying — same index, same results.
+                    # Allow one retry on relevance failure — a fresh DDG
+                    # connection after a short pause sometimes returns a better
+                    # result set.  If the second attempt is also irrelevant, stop
+                    # here so the model tries a different query instead.
+                    if attempt == 0:
+                        logger.info("[WEB_SEARCH] Relevance failure on attempt 1 — retrying once")
+                        continue
                     break
 
                 logger.info(
@@ -274,7 +296,7 @@ def _web_search(args: dict) -> str:
             # the model sees a clean result, assumes the search worked, and
             # proceeds to fabricate specific URLs and names.
             logger.warning("[WEB_SEARCH] No results on attempt %d for: %r", attempt + 1, query)
-            last_error = f'ERROR: no results found for "{query}" (attempt {attempt + 1}/3)'
+            last_error = f'ERROR: no results found for "{query}" (attempt {attempt + 1}/5)'
         except Exception as e:
             logger.error("[WEB_SEARCH] Attempt %d failed: %s", attempt + 1, e)
             last_error = f"ERROR: web search failed — {e}"

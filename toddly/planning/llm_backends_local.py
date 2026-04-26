@@ -453,11 +453,91 @@ class LlamaCppLLM(BaseLLM):
         )
         return raw
 
-    # ── Truncation repair ─────────────────────────────────────────────────────
+    # ── JSON repair ───────────────────────────────────────────────────────────
 
-    def _repair_truncated_json(self, text: str):
+    def _repair_json(self, text: str):
+        """
+        Attempt to recover valid JSON from malformed LLM output.
+
+        Two repair strategies are tried in order:
+
+        1. Prose-wrapper strip — the model sometimes wraps the JSON payload in
+           markdown fences or preamble text (e.g. "Here is the result:\\n```json\\n
+           {...}\\n```").  We scan for the first ``{`` or ``[`` and the matching
+           closing bracket, extract that substring, and try to parse it.  This
+           catches the most common unconstrained-inference failure mode where
+           ``json.loads`` fails at position 0 because the output starts with a
+           letter, not a brace.
+
+        2. Truncation repair — when constrained generation runs out of token
+           budget mid-array, the output is a valid-prefix ``[`` followed by one
+           or more complete objects and then an abrupt cut.  We walk backwards
+           from the last ``}`` and try to close the array, recovering however
+           many complete events were emitted before the truncation.
+
+        Returns the repaired JSON string on success, or None if both strategies
+        fail.
+        """
+        import re as _re
+
         text = text.strip()
+
+        # ── Strategy 1: strip prose wrapper / markdown fences ─────────────────
+        # Strip ```json ... ``` or ``` ... ``` fences first so the bracket
+        # search below finds the real payload rather than fence punctuation.
+        stripped = _re.sub(r"```(?:json)?\s*", "", text).strip()
+
+        # Find the first opening bracket and its matching closer.
+        for opener, closer in (("{", "}"), ("[", "]")):
+            start = stripped.find(opener)
+            if start == -1:
+                continue
+            # Walk forward tracking nesting depth to find the matching closer.
+            depth = 0
+            end = -1
+            in_string = False
+            escape_next = False
+            for i, ch in enumerate(stripped[start:], start=start):
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == "\\" and in_string:
+                    escape_next = True
+                    continue
+                if ch == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == opener:
+                    depth += 1
+                elif ch == closer:
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+            if end != -1:
+                candidate = stripped[start : end + 1]
+                try:
+                    parsed = json.loads(candidate)
+                    if parsed is not None:
+                        logger.warning(
+                            "[LLAMACPP] Prose-wrapped output repaired: extracted %s "
+                            "from %d-char response",
+                            type(parsed).__name__,
+                            len(text),
+                        )
+                        return candidate
+                except json.JSONDecodeError:
+                    pass
+
+        # ── Strategy 2: truncated array repair ────────────────────────────────
+        # Only applies to array output (EVENT_LIST_SCHEMA, PLAN_SCHEMA events).
         if not text.startswith("["):
+            logger.error(
+                "[LLAMACPP] Could not repair output. Increase max_tokens (currently %d).",
+                self.max_tokens,
+            )
             return None
         pos = len(text) - 1
         while pos >= 0:
@@ -486,6 +566,15 @@ class LlamaCppLLM(BaseLLM):
 
     # ── Public interface ──────────────────────────────────────────────────────
 
+    # Appended to the prompt on the unconstrained retry when constrained
+    # generation produced invalid JSON.  The reminder tells the model to emit
+    # raw JSON rather than prose so _repair_json has something to work with.
+    _JSON_RETRY_HINT: str = (
+        "\n\n[IMPORTANT: Your previous response was not valid JSON. "
+        "Respond ONLY with valid JSON — no prose, no markdown, no code fences. "
+        "Begin your response immediately with { or [ as required by the schema.]"
+    )
+
     def ask(self, prompt: str, schema: dict | None = None) -> str:
         self._check_stop()
         logger.info("[LLAMACPP] ask() called")
@@ -506,7 +595,32 @@ class LlamaCppLLM(BaseLLM):
         self._load_model()
 
         for attempt in range(2):
-            response_text = self._run_model(prompt, constrained_schema)
+            # On the retry (attempt 1), switch to unconstrained inference with
+            # an explicit JSON format reminder appended.  The grammar-constrained
+            # path already failed once; giving the model a plain-language
+            # instruction is more likely to produce parseable output than
+            # repeating the constrained call verbatim.
+            if attempt == 0:
+                run_prompt = prompt
+                run_schema = constrained_schema
+            else:
+                run_prompt = prompt + self._JSON_RETRY_HINT
+                run_schema = None  # unconstrained — grammar already failed once
+                logger.info("[LLAMACPP] Retrying with unconstrained inference + JSON hint")
+
+            response_text = self._run_model(run_prompt, run_schema)
+
+            # When no schema was requested (generate() / plain ask()), the
+            # caller expects raw prose — skip JSON validation entirely and
+            # return immediately.  Applying json.loads here would cause all
+            # generate() calls to fail whenever the model writes a natural
+            # language response, which is always the case without a schema.
+            if schema is None:
+                if self._cache is not None:
+                    self._cache.set(cache_key, response_text)
+                return response_text
+
+            # Schema was requested — validate that the response is parseable JSON.
             try:
                 parsed = json.loads(response_text)
                 # Mirror the ApiLLM fix — only reject a genuinely null
@@ -523,12 +637,12 @@ class LlamaCppLLM(BaseLLM):
             except Exception as e:
                 logger.warning("[LLAMACPP] Invalid JSON on attempt %d: %s", attempt + 1, e)
                 if attempt == 0:
-                    repaired = self._repair_truncated_json(response_text)
+                    repaired = self._repair_json(response_text)
                     if repaired is not None:
                         if self._cache is not None:
                             self._cache.set(cache_key, repaired)
                         return repaired
-                    logger.warning("[LLAMACPP] Repair failed -- retrying full generation")
+                    logger.warning("[LLAMACPP] Repair failed -- retrying with JSON hint")
 
         raise ValueError("Model repeatedly returned invalid JSON")
 

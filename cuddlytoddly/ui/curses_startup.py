@@ -197,20 +197,20 @@ def _cursor_pos(text: str, cursor: int, wrap_w: int) -> tuple[int, int]:
 
 # ── Tab 3 — Manual plan ───────────────────────────────────────────────────────
 
+# Placeholder uses the bullet format that parse_manual_plan actually understands.
 _MANUAL_PLACEHOLDER = """\
-task: Task_One
-desc: First thing to do
+My Goal Description
 
-task: Task_Two
-desc: Second thing to do
-deps: Task_One"""
+- Research: Research competitors and pricing
+- Design: Design the solution  [depends: Research]
+- Build: Implement the design  [depends: Design]
+- Test: Validate the result    [depends: Build]"""
 
 _MANUAL_HELP = [
     "Format:",
-    "  First lines (before any 'task:') = goal description",
-    "  task: Task_ID",
-    "  desc: One sentence description",
-    "  deps: Dep1, Dep2   (optional)",
+    "  First non-bullet line = goal description",
+    "  - Task_ID: description",
+    "  - Task_ID: description  [depends: Other_Task, Another]",
 ]
 
 
@@ -279,7 +279,7 @@ def _draw_manual_tab(
 
 # ── Tab bar ───────────────────────────────────────────────────────────────────
 
-_TABS = ["Resume run", "New goal", "Manual plan"]
+_TABS = ["Existing runs", "New goal", "Manual plan"]
 
 
 def _draw_tab_bar(win, active_tab: int):
@@ -415,7 +415,7 @@ def _startup_screen(
             elif k in (10, 13) and runs:
                 run = runs[resume_sel]
                 return StartupChoice(
-                    mode="resume",
+                    mode="existing",  # was "resume" — fixed to match StartupChoice contract
                     run_dir=Path(run.path),
                     goal_text=run.goal,
                     is_fresh=False,
@@ -463,7 +463,7 @@ def _startup_screen(
                 else:
                     _, tasks = parse_manual_plan(plan)
                     if not tasks:
-                        manual_error = "No tasks found. Use 'task: Name' lines."
+                        manual_error = "No tasks found. Use '- Task_ID: description' lines."
                     else:
                         return StartupChoice(
                             mode="manual_plan",
