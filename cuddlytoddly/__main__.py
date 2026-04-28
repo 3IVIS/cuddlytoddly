@@ -556,6 +556,26 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
 
     orchestrator.start()
 
+    # Attach load-progress callback to the LLM if it supports it (LlamaCppLLM
+    # only — API backends don't load a local file, so the attribute is absent).
+    # Fires StatusEvents that _handle_status_event() converts to current_activity
+    # updates, keeping the status panel informed during the 10-30s model load.
+    # Called here (after orchestrator.start) because the event_queue is now live;
+    # the actual callback only fires on the first ask(), so there is no race.
+    def _attach_llm_progress(llm):
+        if not hasattr(llm, "status_callback"):
+            return
+        _queue = orchestrator.event_queue
+
+        def _cb(kind, payload):
+            from toddly.infra.event_queue import StatusEvent
+
+            _queue.put(StatusEvent(kind, payload))
+
+        llm.status_callback = _cb
+
+    _attach_llm_progress(shared_llm)
+
     if use_deferred:
         on_graph_ready(orchestrator, run_dir)
 
@@ -563,6 +583,10 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
             _logger.info("[STARTUP] Background LLM load starting…")
             try:
                 real_llm = _build_llm_client(cfg, run_dir, run_id_gen, run_token_counter)
+                # Attach progress callback before attaching to the deferred wrapper
+                # so the very first load — triggered by verify_restored_nodes() —
+                # is already instrumented.
+                _attach_llm_progress(real_llm)
                 deferred_llm.attach(real_llm)
                 _logger.info("[STARTUP] LLM ready — starting background verification")
                 orchestrator.verify_restored_nodes()

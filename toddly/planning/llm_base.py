@@ -185,6 +185,10 @@ class BaseLLM(ABC):
     """
 
     supports_native_tools: bool = False
+    # Set to True by backends that implement on_token / on_heartbeat streaming.
+    # When False the executor does not pass those kwargs so legacy/stub LLMs
+    # (e.g. FakeLLM in tests) keep working without changes.
+    supports_streaming: bool = False
 
     def __init__(self, token_counter_instance: "TokenCounter | None" = None):
         self._stop_event = threading.Event()
@@ -213,11 +217,31 @@ class BaseLLM(ABC):
             raise LLMStoppedError("LLM calls are paused — resume before retrying")
 
     @abstractmethod
-    def ask(self, prompt: str) -> str:
-        """Send a prompt, block until a response is available, return raw text."""
+    def ask(self, prompt: str, schema=None, *, on_token=None, on_heartbeat=None) -> str:
+        """Send a prompt, block until a response is available, return raw text.
 
-    def generate(self, prompt: str) -> str:
-        """Alias for ask() — kept for backward compatibility."""
+        Parameters
+        ----------
+        prompt        : The prompt text.
+        schema        : Optional JSON schema; when supplied the backend must
+                        return a JSON string conforming to it.
+        on_token      : Optional ``(chunk: str) -> None`` callback fired for
+                        each output token/chunk as it is generated.  Only
+                        forwarded by the executor when ``supports_streaming``
+                        is True; ignored silently by non-streaming backends.
+        on_heartbeat  : Optional ``(elapsed: float) -> None`` callback fired
+                        every ~2 s during inference.  Same gating as on_token.
+        """
+
+    def generate(self, prompt: str, *, on_token=None, on_heartbeat=None) -> str:
+        """Alias for ask() without schema — kept for backward compatibility.
+
+        Streaming kwargs are only forwarded when this backend sets
+        supports_streaming = True, so subclasses that only define
+        ask(self, prompt) continue to work without modification.
+        """
+        if self.supports_streaming:
+            return self.ask(prompt, on_token=on_token, on_heartbeat=on_heartbeat)
         return self.ask(prompt)
 
 

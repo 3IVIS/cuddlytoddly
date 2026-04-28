@@ -35,6 +35,9 @@ _VOLATILE_METADATA_KEYS = {
     "missing_inputs",
     "reflection_notes",
     "coverage_checked",
+    # Transient UI state — never belongs in a planning prompt.
+    "_planning_live_status",
+    "_live_status",
 }
 
 
@@ -102,6 +105,82 @@ class LLMPlanner:
             else self._DEFAULT_MAX_CLARIFICATION_FIELDS
         )
         self.constraint_checker = PlanConstraintChecker(graph, llm_client)
+        # Lock reference injected by the orchestrator after construction so
+        # _set_planning_live / _clear_planning_live can safely mutate node
+        # metadata from the planner thread.  None-safe: helpers no-op when unset.
+        self._graph_lock = None
+        # Monotonically incrementing counter that produces a unique call_id for
+        # each individual LLM call inside propose(). The UI uses it to decide
+        # when to start a fresh fold section vs. updating the current one.
+        self._call_seq: int = 0
+
+    # ── Planning live-status helpers ─────────────────────────────────────────
+
+    def _set_planning_live(
+        self,
+        goal_id: str,
+        *,
+        label: str,
+        prompt: str,
+        streaming: str = "",
+    ) -> None:
+        """Write transient planning progress directly to the goal node's metadata.
+
+        Uses direct mutation (never _apply / events) so the state is never
+        persisted to events.jsonl.  Bumps graph.execution_version so the
+        WebSocket push delivers the update within its next 250ms poll cycle.
+
+        Must be called with self._graph_lock already held.
+        """
+        node = self.graph.nodes.get(goal_id)
+        if node:
+            self._call_seq += 1
+            node.metadata["_planning_live_status"] = {
+                "call_id": self._call_seq,
+                "label": label,
+                # Full prompt — no truncation. The UI renders it inside a
+                # scrollable <pre> so length is never a display problem.
+                "input": prompt,
+                "streaming": streaming,
+            }
+            self.graph.execution_version += 1
+
+    def _clear_planning_live(self, goal_id: str) -> None:
+        """Remove _planning_live_status from the goal node after planning ends.
+
+        Must be called with self._graph_lock already held.
+        """
+        node = self.graph.nodes.get(goal_id)
+        if node and "_planning_live_status" in node.metadata:
+            del node.metadata["_planning_live_status"]
+            self.graph.execution_version += 1
+
+    def _make_token_cb(self, goal_id: str, label: str, prompt: str):
+        """Return an on_token callback that streams output into _planning_live_status.
+
+        Accumulates token chunks and flushes to the goal node's metadata on
+        every call.  The WebSocket poll (250ms) naturally throttles the rate at
+        which the browser sees updates, so no additional rate-limiting is needed
+        here.
+
+        Safe to call from any thread — acquires self._graph_lock internally.
+        """
+        _buf: list[str] = []
+        _lock = self._graph_lock  # capture reference; may be None in tests
+
+        def _on_token(chunk: str) -> None:
+            _buf.append(chunk)
+            if _lock is None:
+                return
+            with _lock:
+                node = self.graph.nodes.get(goal_id)
+                if node:
+                    ls = node.metadata.get("_planning_live_status") or {}
+                    ls["streaming"] = "".join(_buf)
+                    node.metadata["_planning_live_status"] = ls
+                    self.graph.execution_version += 1
+
+        return _on_token
 
     def propose(self, context):
         snapshot = context.snapshot
@@ -156,7 +235,15 @@ class LLMPlanner:
             clarif_fields=clarif_fields,
             clarif_prompt=clarif_prompt,
         )
-        llm_output = self.llm.ask(prompt, schema=PLAN_SCHEMA)
+        if self._graph_lock is not None:
+            with self._graph_lock:
+                self._set_planning_live(active_goal.id, label="Planning", prompt=prompt)
+        _sk = (
+            {"on_token": self._make_token_cb(active_goal.id, "Planning", prompt)}
+            if self._graph_lock is not None
+            else {}
+        )
+        llm_output = self.llm.ask(prompt, schema=PLAN_SCHEMA, **_sk)
 
         # ── Call 3: scrutiny (skipped on partial replans) ─────────────────────
         if self.scrutinize_plan and not skip_scrutiny:
@@ -288,8 +375,17 @@ class LLMPlanner:
         )
         logger.info("[PLANNER] Generating clarification node for goal %s", goal_id)
 
+        if self._graph_lock is not None:
+            with self._graph_lock:
+                self._set_planning_live(goal_id, label="Clarification", prompt=prompt)
+        _sk = (
+            {"on_token": self._make_token_cb(goal_id, "Clarification", prompt)}
+            if self._graph_lock is not None
+            else {}
+        )
+
         try:
-            raw = self.llm.ask(prompt, schema=CLARIFICATION_GENERATION_SCHEMA)
+            raw = self.llm.ask(prompt, schema=CLARIFICATION_GENERATION_SCHEMA, **_sk)
             parsed = json.loads(raw)
             fields = parsed.get("fields", [])
         except Exception as exc:
@@ -357,8 +453,30 @@ class LLMPlanner:
         )
 
         logger.info("[PLANNER] Running plan scrutiny pass")
+        _goal_id: str | None = None
+        if self._graph_lock is not None:
+            # Determine the goal id from the current graph state — the
+            # scrutinizer is only called from propose() which already set the
+            # live status on the goal, so we reuse whatever goal currently
+            # has _planning_live_status set rather than threading the id through.
+            _goal_id = next(
+                (
+                    nid
+                    for nid, n in self.graph.nodes.items()
+                    if "_planning_live_status" in n.metadata
+                ),
+                None,
+            )
+            if _goal_id is not None:
+                with self._graph_lock:
+                    self._set_planning_live(_goal_id, label="Scrutiny", prompt=scrutinizer_prompt)
+        _sk = (
+            {"on_token": self._make_token_cb(_goal_id, "Scrutiny", scrutinizer_prompt)}
+            if self._graph_lock is not None and _goal_id is not None
+            else {}
+        )
         try:
-            improved = self.llm.ask(scrutinizer_prompt, schema=PLAN_SCHEMA)
+            improved = self.llm.ask(scrutinizer_prompt, schema=PLAN_SCHEMA, **_sk)
         except Exception as exc:
             logger.warning("[PLANNER] Scrutiny LLM call failed (%s) — using draft", exc)
             return draft_json

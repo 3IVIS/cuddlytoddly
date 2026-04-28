@@ -303,5 +303,7 @@ llm_prompts.txt
 llm_responses.txt
 concat.py
 bundle.py
+.vtcode/
+vtcode.toml
 
 

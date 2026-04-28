@@ -192,7 +192,9 @@ class FileBasedLLM(BaseLLM):
 
             time.sleep(self.poll_interval)
 
-    def ask(self, prompt: str) -> str:
+    def ask(self, prompt: str, schema=None, *, on_token=None, on_heartbeat=None) -> str:
+        # on_token / on_heartbeat are not applicable to the file-poll backend
+        # and are accepted only to satisfy the BaseLLM interface.
         self._check_stop()
         logger.info("[LLM] ask() called")
 
@@ -289,6 +291,12 @@ class LlamaCppLLM(BaseLLM):
         self._load_lock = threading.Lock()
         self._inference_lock = threading.Lock()
 
+        # Optional progress callback — set this attribute after construction,
+        # before the first ask() call.  Signature: (kind: str, payload: dict) -> None
+        # kind "llm_loading" fires at start and every ~2s during load.
+        # kind "llm_ready"   fires once loading completes.
+        self.status_callback = None
+
     # ── Model loading ─────────────────────────────────────────────────────────
 
     def _load_model(self):
@@ -309,14 +317,69 @@ class LlamaCppLLM(BaseLLM):
                 ) from e
 
             model_path = str(Path(self.model_path).expanduser().resolve())
-            logger.info("[LLAMACPP] Loading model (first call -- may take 10-30s)...")
-            self._llama = Llama(
-                model_path=model_path,
-                n_ctx=self.n_ctx,
-                n_gpu_layers=self.n_gpu_layers,
-                verbose=False,
-            )
-            logger.info("[LLAMACPP] Model loaded")
+
+            # Human-readable file size for the loading message
+            try:
+                size_gb = Path(model_path).stat().st_size / (1024**3)
+                size_str = f"{size_gb:.1f} GB"
+            except OSError:
+                size_str = ""
+
+            logger.info("[LLAMACPP] Loading model (first call — may take 10-30s)...")
+
+            # Notify UI that loading is starting
+            if self.status_callback:
+                base_msg = f"Loading model ({size_str})" if size_str else "Loading model"
+                self.status_callback(
+                    "llm_loading",
+                    {
+                        "message": f"{base_msg}…",
+                        "elapsed": 0,
+                    },
+                )
+
+            # Watchdog: fires a heartbeat every 2s while Llama() blocks so
+            # the status panel keeps updating with elapsed time.
+            _done = threading.Event()
+            _t0 = time.time()
+            _base_msg = f"Loading model ({size_str})" if size_str else "Loading model"
+
+            def _watch():
+                while not _done.wait(timeout=2.0):
+                    elapsed = int(time.time() - _t0)
+                    logger.info("[LLAMACPP] Still loading model… %ds elapsed", elapsed)
+                    if self.status_callback:
+                        self.status_callback(
+                            "llm_loading",
+                            {
+                                "message": f"{_base_msg}… {elapsed}s",
+                                "elapsed": elapsed,
+                            },
+                        )
+
+            threading.Thread(target=_watch, daemon=True, name="llm-load-watchdog").start()
+
+            try:
+                self._llama = Llama(
+                    model_path=model_path,
+                    n_ctx=self.n_ctx,
+                    n_gpu_layers=self.n_gpu_layers,
+                    verbose=False,
+                )
+            finally:
+                _done.set()
+
+            elapsed = round(time.time() - _t0, 1)
+            logger.info("[LLAMACPP] Model loaded in %.1fs", elapsed)
+
+            if self.status_callback:
+                self.status_callback(
+                    "llm_ready",
+                    {
+                        "message": f"Model ready ({elapsed}s)",
+                        "elapsed": elapsed,
+                    },
+                )
 
     def _load_outlines(self):
         if self._outlines_model is not None:
@@ -330,8 +393,18 @@ class LlamaCppLLM(BaseLLM):
                 import outlines
             except ImportError as e:
                 raise ImportError("outlines is not installed. Run: pip install outlines") from e
+            if self.status_callback:
+                self.status_callback(
+                    "llm_loading",
+                    {
+                        "message": "Initialising constrained generator…",
+                        "elapsed": 0,
+                    },
+                )
             self._outlines_model = outlines.from_llamacpp(self._llama)
             logger.info("[LLAMACPP] Outlines model wrapper ready")
+            if self.status_callback:
+                self.status_callback("llm_ready", {"message": "Constrained generator ready"})
 
     def _load(self):
         self._load_model()
@@ -390,37 +463,72 @@ class LlamaCppLLM(BaseLLM):
 
     # ── Generation ────────────────────────────────────────────────────────────
 
-    def _run_watchdog(self):
-        done = threading.Event()
-
-        def _watch():
-            start = time.time()
-            while not done.wait(timeout=30):
-                logger.info("[LLAMACPP] Still generating... %.0fs elapsed", time.time() - start)
-
-        t = threading.Thread(target=_watch, daemon=True, name="llm-watchdog")
-        t.start()
-        return done
-
-    def _run_unconstrained(self, prompt: str, safe_max: int) -> str:
+    def _run_unconstrained(self, prompt: str, safe_max: int, *, on_token=None) -> str:
+        """Unconstrained inference.  Streams token-by-token when on_token is set."""
         logger.info("[LLAMACPP] Running unconstrained inference (max_tokens=%d)...", safe_max)
-        result = self._llama(
-            prompt,
-            max_tokens=safe_max,
-            temperature=self.temperature,
-            echo=False,
-        )
-        return result["choices"][0]["text"]
+        if on_token is not None:
+            chunks: list[str] = []
+            for chunk in self._llama(
+                prompt,
+                max_tokens=safe_max,
+                temperature=self.temperature,
+                echo=False,
+                stream=True,
+            ):
+                if self._stop_event.is_set():
+                    raise LLMStoppedError("LLM stop requested mid-stream")
+                text = chunk["choices"][0]["text"]
+                if text:
+                    chunks.append(text)
+                    on_token(text)
+            return "".join(chunks)
+        else:
+            result = self._llama(
+                prompt,
+                max_tokens=safe_max,
+                temperature=self.temperature,
+                echo=False,
+            )
+            return result["choices"][0]["text"]
 
-    def _run_constrained(self, prompt: str, schema: dict, safe_max: int) -> str:
+    def _run_constrained(self, prompt: str, schema: dict, safe_max: int, *, on_token=None) -> str:
+        """Constrained inference via outlines with optional per-token streaming.
+
+        outlines.Generator exposes a ``.stream()`` method that yields one token
+        string at a time, giving us the same token-level granularity as the
+        unconstrained llama.cpp path.  When ``on_token`` is provided we iterate
+        the stream and fire the callback for each chunk; otherwise we call the
+        generator directly for a single-shot result (unchanged behaviour).
+        """
         logger.info("[LLAMACPP] Running constrained inference (max_tokens=%d)...", safe_max)
         generator = self._get_generator(schema)
-        raw = generator(prompt, max_tokens=safe_max)
+
+        if on_token is not None:
+            chunks: list[str] = []
+            for token in generator.stream(prompt, max_tokens=safe_max):
+                if self._stop_event.is_set():
+                    raise LLMStoppedError("LLM stop requested mid-stream")
+                text = token if isinstance(token, str) else json.dumps(token)
+                if text:
+                    chunks.append(text)
+                    on_token(text)
+            raw = "".join(chunks)
+        else:
+            raw = generator(prompt, max_tokens=safe_max)
+
         if isinstance(raw, str):
             return raw
         return json.dumps(raw)
 
-    def _run_model(self, prompt: str, constrained_schema=None) -> str:
+    def _run_model(
+        self, prompt: str, constrained_schema=None, *, on_token=None, on_heartbeat=None
+    ) -> str:
+        """Run inference, emitting callbacks for streaming and heartbeat.
+
+        The heartbeat thread replaces the old 30s-interval _run_watchdog:
+        it fires on_heartbeat every 2s so progress indicators stay alive
+        during long constrained-inference calls where no tokens are emitted.
+        """
         formatted = self._apply_chat_template(prompt)
         prompt_tokens = len(self._llama.tokenize(formatted.encode("utf-8")))
 
@@ -433,21 +541,38 @@ class LlamaCppLLM(BaseLLM):
         safe_max = min(self.max_tokens, safe_max)
 
         with self._inference_lock:
-            done = self._run_watchdog()
-            t0 = time.time()
+            # Heartbeat watchdog — fires every 2s regardless of constrained vs
+            # unconstrained path.  For constrained inference it's the only
+            # signal that anything is happening; for unconstrained it runs in
+            # parallel with the on_token stream.
+            _done = threading.Event()
+            _t0 = time.time()
+
+            def _watch():
+                while not _done.wait(timeout=2.0):
+                    elapsed = time.time() - _t0
+                    logger.info("[LLAMACPP] Still generating… %.0fs elapsed", elapsed)
+                    if on_heartbeat is not None:
+                        on_heartbeat(elapsed)
+
+            threading.Thread(target=_watch, daemon=True, name="llm-watchdog").start()
+
+            t0 = _t0
             try:
                 if constrained_schema is None:
-                    raw = self._run_unconstrained(formatted, safe_max)
+                    raw = self._run_unconstrained(formatted, safe_max, on_token=on_token)
                 else:
-                    raw = self._run_constrained(formatted, constrained_schema, safe_max)
+                    raw = self._run_constrained(
+                        formatted, constrained_schema, safe_max, on_token=on_token
+                    )
             finally:
-                done.set()
+                _done.set()
 
         completion_tokens = len(self._llama.tokenize(raw.encode("utf-8")))
         self._token_counter.add(prompt_tokens, completion_tokens)
 
         logger.info(
-            "[LLAMACPP] Inference complete in %.1fs -- %d chars",
+            "[LLAMACPP] Inference complete in %.1fs — %d chars",
             time.time() - t0,
             len(raw),
         )
@@ -575,7 +700,9 @@ class LlamaCppLLM(BaseLLM):
         "Begin your response immediately with { or [ as required by the schema.]"
     )
 
-    def ask(self, prompt: str, schema: dict | None = None) -> str:
+    def ask(
+        self, prompt: str, schema: dict | None = None, *, on_token=None, on_heartbeat=None
+    ) -> str:
         self._check_stop()
         logger.info("[LLAMACPP] ask() called")
 
@@ -608,7 +735,12 @@ class LlamaCppLLM(BaseLLM):
                 run_schema = None  # unconstrained — grammar already failed once
                 logger.info("[LLAMACPP] Retrying with unconstrained inference + JSON hint")
 
-            response_text = self._run_model(run_prompt, run_schema)
+            # on_token is forwarded on both paths: _run_unconstrained streams
+            # tokens natively; _run_constrained uses generator.stream() for
+            # the same effect on the outlines-constrained path.
+            response_text = self._run_model(
+                run_prompt, run_schema, on_token=on_token, on_heartbeat=on_heartbeat
+            )
 
             # When no schema was requested (generate() / plain ask()), the
             # caller expects raw prose — skip JSON validation entirely and
@@ -647,12 +779,18 @@ class LlamaCppLLM(BaseLLM):
         raise ValueError("Model repeatedly returned invalid JSON")
 
     supports_native_tools: bool = True  # ask_with_tools() implemented below
+    supports_streaming: bool = (
+        True  # both _run_unconstrained and _run_constrained stream via on_token
+    )
 
     def ask_with_tools(
         self,
         task_prompt: str,
         tools: list,
         history: list[dict],
+        *,
+        on_token=None,
+        on_heartbeat=None,
     ) -> "NativeToolResponse":
         """
         Native tool-use for llama.cpp using constrained JSON generation.
@@ -713,7 +851,7 @@ class LlamaCppLLM(BaseLLM):
             len(tools),
             len(history),
         )
-        raw = self.ask(combined_prompt, schema=EXECUTION_TURN_SCHEMA)
+        raw = self.ask(combined_prompt, schema=EXECUTION_TURN_SCHEMA, on_heartbeat=on_heartbeat)
         parsed = json.loads(raw)
 
         if parsed.get("done"):
@@ -733,3 +871,6 @@ class LlamaCppLLM(BaseLLM):
             logger.info("[LLAMACPP] Cache cleared")
         else:
             logger.info("[LLAMACPP] Cache is disabled -- nothing to clear")
+
+
+# --- FILE: toddly/planning/llm_base.py ---

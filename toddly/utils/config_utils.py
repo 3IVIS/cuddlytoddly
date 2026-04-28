@@ -117,7 +117,7 @@ def get_planner_cfg(cfg: dict) -> dict:
     return {
         "min_tasks_per_goal": c.get("min_tasks_per_goal", 3),
         "max_tasks_per_goal": _get(cfg, "max_tasks_per_goal", "planner", 15, 8),
-        "scrutinize_plan": c.get("scrutinize_plan", False),
+        "scrutinize_plan": c.get("scrutinize_plan", True),
         "min_clarification_fields": c.get("min_clarification_fields", 2),
         "max_clarification_fields": c.get("max_clarification_fields", 6),
     }

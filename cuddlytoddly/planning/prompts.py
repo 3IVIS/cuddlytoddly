@@ -1509,6 +1509,21 @@ DECISION RULES
    - The steps must be coherent with broadened_description — they are the concrete
      actions needed to produce the broadened_output.
    - Must have at least one step. A broadened_description with no steps is invalid.
+   - execution_type MUST be one of the canonical values listed below. Never use a
+     tool name (e.g. "web_search", "fetch_url") as an execution_type — those are
+     tool identifiers, not step types. Using a tool name will cause the step to be
+     misrouted and the node will stall waiting for user input.
+
+     Valid execution_type values:
+       "search_web"      — retrieve information from the web
+       "fetch_url"       — fetch the contents of a specific URL
+       "write_plan"      — produce a structured plan or outline
+       "write_document"  — produce a written document or report
+       "write_analysis"  — produce an analytical write-up
+       "write_code"      — produce executable code
+       "analyse_data"    — analyse structured data
+       "summarise"       — summarise existing content
+       "synthesise"      — combine multiple inputs into a unified output
 
    Examples of matching broadened_description + broadened_steps:
    - Original desc:   "Research Acme Corp's GitHub repositories."

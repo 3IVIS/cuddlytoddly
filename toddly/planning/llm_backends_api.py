@@ -49,6 +49,7 @@ class ApiLLM(BaseLLM):
     """
 
     supports_native_tools: bool = True
+    supports_streaming: bool = True  # streaming paths in _ask_openai / _ask_claude
 
     # Reference the named constants so there is one canonical source.
     _DEFAULTS = {
@@ -165,7 +166,7 @@ class ApiLLM(BaseLLM):
 
     # ── OpenAI call ───────────────────────────────────────────────────────────
 
-    def _ask_openai(self, prompt: str, schema: dict | None) -> str:
+    def _ask_openai(self, prompt: str, schema: dict | None, *, on_token=None) -> str:
         if schema is not None:
             prompt_to_send = self._inject_schema_into_prompt(prompt, schema)
         else:
@@ -191,23 +192,49 @@ class ApiLLM(BaseLLM):
             kwargs["response_format"] = {"type": "json_object"}
 
         logger.debug(
-            "[API] Sending OpenAI request  model=%s  schema=%s  json_mode=%s",
+            "[API] Sending OpenAI request  model=%s  schema=%s  json_mode=%s  stream=%s",
             self.model,
             "yes" if schema else "no",
             "yes" if self.base_url is None else "no (custom base_url)",
+            "yes" if on_token else "no",
         )
-        response = self._client.chat.completions.create(**kwargs)
 
-        if response.usage:
-            self._token_counter.add(response.usage.prompt_tokens, response.usage.completion_tokens)
-        content = response.choices[0].message.content or ""
-        logger.info("[API] OpenAI response received (%d chars)", len(content))
-        logger.debug("[API] Raw response:\n%s", content)
-        return content
+        if on_token is not None:
+            # Streaming path — collect chunks and fire callback per chunk.
+            # Usage data is not available per-chunk on all providers; track
+            # via token-count approximation and fall back gracefully.
+            stream = self._client.chat.completions.create(**kwargs, stream=True)
+            chunks: list[str] = []
+            pt = ct = 0
+            for chunk in stream:
+                if self._stop_event.is_set():
+                    raise LLMStoppedError("LLM stop requested mid-stream")
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    chunks.append(delta)
+                    on_token(delta)
+                if chunk.usage:
+                    pt = chunk.usage.prompt_tokens or pt
+                    ct = chunk.usage.completion_tokens or ct
+            content = "".join(chunks)
+            if pt or ct:
+                self._token_counter.add(pt, ct)
+            logger.info("[API] OpenAI streaming response received (%d chars)", len(content))
+            return content
+        else:
+            response = self._client.chat.completions.create(**kwargs)
+            if response.usage:
+                self._token_counter.add(
+                    response.usage.prompt_tokens, response.usage.completion_tokens
+                )
+            content = response.choices[0].message.content or ""
+            logger.info("[API] OpenAI response received (%d chars)", len(content))
+            logger.debug("[API] Raw response:\n%s", content)
+            return content
 
     # ── Claude call ───────────────────────────────────────────────────────────
 
-    def _ask_claude(self, prompt: str, schema: dict | None) -> str:
+    def _ask_claude(self, prompt: str, schema: dict | None, *, on_token=None) -> str:
         if schema is not None:
             augmented_prompt = self._inject_schema_into_prompt(prompt, schema)
             prefill = self._schema_prefill(schema)
@@ -218,23 +245,53 @@ class ApiLLM(BaseLLM):
             )
             prefill = "{"
 
-        logger.debug("[API] Sending Anthropic request  model=%s  prefill=%r", self.model, prefill)
-        response = self._client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=self.system_prompt,
-            messages=[
-                {"role": "user", "content": augmented_prompt},
-                {"role": "assistant", "content": prefill},
-            ],
-            temperature=self.temperature,
+        logger.debug(
+            "[API] Sending Anthropic request  model=%s  prefill=%r  stream=%s",
+            self.model,
+            prefill,
+            "yes" if on_token else "no",
         )
-        self._token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
-        raw = response.content[0].text
-        content = prefill + raw
-        logger.info("[API] Claude response received (%d chars)", len(content))
-        logger.debug("[API] Raw response:\n%s", content)
-        return content
+
+        msgs = [
+            {"role": "user", "content": augmented_prompt},
+            {"role": "assistant", "content": prefill},
+        ]
+
+        if on_token is not None:
+            # Streaming path — Anthropic SDK context manager yields text chunks.
+            chunks: list[str] = []
+            with self._client.messages.stream(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=self.system_prompt,
+                messages=msgs,
+                temperature=self.temperature,
+            ) as stream:
+                for text in stream.text_stream:
+                    if self._stop_event.is_set():
+                        raise LLMStoppedError("LLM stop requested mid-stream")
+                    if text:
+                        chunks.append(text)
+                        on_token(text)
+                final_msg = stream.get_final_message()
+            self._token_counter.add(final_msg.usage.input_tokens, final_msg.usage.output_tokens)
+            content = prefill + "".join(chunks)
+            logger.info("[API] Claude streaming response received (%d chars)", len(content))
+            return content
+        else:
+            response = self._client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=self.system_prompt,
+                messages=msgs,
+                temperature=self.temperature,
+            )
+            self._token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
+            raw = response.content[0].text
+            content = prefill + raw
+            logger.info("[API] Claude response received (%d chars)", len(content))
+            logger.debug("[API] Raw response:\n%s", content)
+            return content
 
     # ── Rate-limit detection ──────────────────────────────────────────────────
 
@@ -280,7 +337,9 @@ class ApiLLM(BaseLLM):
                 raise LLMStoppedError("LLM paused during rate-limit backoff")
             _time.sleep(min(0.5, deadline - _time.monotonic()))
 
-    def ask(self, prompt: str, schema: dict | None = None) -> str:
+    def ask(
+        self, prompt: str, schema: dict | None = None, *, on_token=None, on_heartbeat=None
+    ) -> str:
         self._check_stop()
         logger.info("[API] ask() called  provider=%s  model=%s", self.provider, self.model)
         self._load()
@@ -300,9 +359,9 @@ class ApiLLM(BaseLLM):
         for attempt in range(_API_MAX_ATTEMPTS):
             try:
                 if self.provider == "openai":
-                    raw = self._ask_openai(prompt, schema)
+                    raw = self._ask_openai(prompt, schema, on_token=on_token)
                 else:
-                    raw = self._ask_claude(prompt, schema)
+                    raw = self._ask_claude(prompt, schema, on_token=on_token)
             except LLMStoppedError:
                 raise
             except Exception as e:
@@ -363,7 +422,7 @@ class ApiLLM(BaseLLM):
             f"[API] {self.provider} returned invalid JSON after {_API_MAX_ATTEMPTS} attempts"
         )
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, on_token=None, on_heartbeat=None) -> str:
         """
         Free-text completion — does NOT inject JSON instructions or an assistant
         prefill.
@@ -390,27 +449,62 @@ class ApiLLM(BaseLLM):
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-            response = self._client.chat.completions.create(**kwargs)
-            if response.usage:
-                self._token_counter.add(
-                    response.usage.prompt_tokens, response.usage.completion_tokens
-                )
-            content = response.choices[0].message.content or ""
-            logger.info("[API] generate() OpenAI response received (%d chars)", len(content))
-            return content
+            if on_token is not None:
+                stream = self._client.chat.completions.create(**kwargs, stream=True)
+                chunks: list[str] = []
+                for chunk in stream:
+                    if self._stop_event.is_set():
+                        raise LLMStoppedError("LLM stop requested mid-stream")
+                    delta = chunk.choices[0].delta.content if chunk.choices else None
+                    if delta:
+                        chunks.append(delta)
+                        on_token(delta)
+                content = "".join(chunks)
+                logger.info("[API] generate() OpenAI streaming response (%d chars)", len(content))
+                return content
+            else:
+                response = self._client.chat.completions.create(**kwargs)
+                if response.usage:
+                    self._token_counter.add(
+                        response.usage.prompt_tokens, response.usage.completion_tokens
+                    )
+                content = response.choices[0].message.content or ""
+                logger.info("[API] generate() OpenAI response received (%d chars)", len(content))
+                return content
 
         else:  # claude
-            response = self._client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.temperature,
-            )
-            self._token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
-            text = response.content[0].text
-            logger.info("[API] generate() Claude response received (%d chars)", len(text))
-            return text
+            if on_token is not None:
+                chunks_c: list[str] = []
+                with self._client.messages.stream(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=self.system_prompt,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.temperature,
+                ) as stream:
+                    for text in stream.text_stream:
+                        if self._stop_event.is_set():
+                            raise LLMStoppedError("LLM stop requested mid-stream")
+                        if text:
+                            chunks_c.append(text)
+                            on_token(text)
+                    final_msg = stream.get_final_message()
+                self._token_counter.add(final_msg.usage.input_tokens, final_msg.usage.output_tokens)
+                text_out = "".join(chunks_c)
+                logger.info("[API] generate() Claude streaming response (%d chars)", len(text_out))
+                return text_out
+            else:
+                response = self._client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=self.system_prompt,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.temperature,
+                )
+                self._token_counter.add(response.usage.input_tokens, response.usage.output_tokens)
+                text_out = response.content[0].text
+                logger.info("[API] generate() Claude response received (%d chars)", len(text_out))
+                return text_out
 
     # ── Native tool-use API ───────────────────────────────────────────────────
 
@@ -591,6 +685,9 @@ class ApiLLM(BaseLLM):
         task_prompt: str,
         tools: list,
         history: list[dict],
+        *,
+        on_token=None,
+        on_heartbeat=None,
     ) -> NativeToolResponse:
         """
         Send a single executor turn using the provider's native tool-use API.
@@ -605,6 +702,12 @@ class ApiLLM(BaseLLM):
         history : list[dict]
             Tool-call history accumulated so far this execution.  Each entry:
               {"name": str, "args": dict, "result": str, "tool_use_id": str}
+        on_token : callable | None
+            Streaming token callback (chunk: str) -> None.  Fired for text
+            response chunks; not called during tool-call turns.
+        on_heartbeat : callable | None
+            Not used by ApiLLM (no blocking constrained path) — accepted to
+            satisfy the uniform interface.
 
         Returns
         -------
@@ -633,9 +736,13 @@ class ApiLLM(BaseLLM):
         for attempt in range(_API_MAX_ATTEMPTS):
             try:
                 if self.provider == "claude":
-                    return self._ask_with_tools_claude(task_prompt, tools, history)
+                    return self._ask_with_tools_claude(
+                        task_prompt, tools, history, on_token=on_token
+                    )
                 else:
-                    return self._ask_with_tools_openai(task_prompt, tools, history)
+                    return self._ask_with_tools_openai(
+                        task_prompt, tools, history, on_token=on_token
+                    )
             except LLMStoppedError:
                 raise  # always propagate stop immediately — no retry
             except Exception as e:
@@ -673,6 +780,8 @@ class ApiLLM(BaseLLM):
         task_prompt: str,
         tools: list,
         history: list[dict],
+        *,
+        on_token=None,
     ) -> NativeToolResponse:
         from toddly.planning.prompts import EXECUTOR_NATIVE_SYSTEM_PROMPT
 
@@ -719,7 +828,10 @@ class ApiLLM(BaseLLM):
                 tool_use_id=tool_block.id,
             )
 
+        # Final text answer — fire on_token if a callback was supplied
         text = next((b.text for b in response.content if b.type == "text"), "")
+        if on_token and text:
+            on_token(text)
         logger.info("[API/Claude] Final answer (%d chars)", len(text))
         return NativeToolResponse(kind="text", text=text)
 
@@ -728,6 +840,8 @@ class ApiLLM(BaseLLM):
         task_prompt: str,
         tools: list,
         history: list[dict],
+        *,
+        on_token=None,
     ) -> NativeToolResponse:
         from toddly.planning.prompts import EXECUTOR_NATIVE_SYSTEM_PROMPT
 
@@ -779,7 +893,10 @@ class ApiLLM(BaseLLM):
                 tool_use_id=tc.id,
             )
 
+        # Final text answer — fire on_token if a callback was supplied
         text = msg.content or ""
+        if on_token and text:
+            on_token(text)
         logger.info("[API/OpenAI] Final answer (%d chars)", len(text))
         return NativeToolResponse(kind="text", text=text)
 

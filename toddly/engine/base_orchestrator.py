@@ -126,8 +126,16 @@ class BaseOrchestrator:
 
         # UI contract
         self.graph_lock = threading.RLock()
+        # Inject the graph lock into the planner so it can write transient
+        # _planning_live_status to goal nodes during LLM calls without racing
+        # against other threads that also hold the lock.
+        if self.planner is not None and hasattr(self.planner, "_graph_lock"):
+            self.planner._graph_lock = self.graph_lock
         self.current_activity: str | None = None
         self.activity_started: float | None = None
+        # Tracks which node_id currently owns current_activity so _on_node_done
+        # can clear it correctly without parsing the (now richer) display string.
+        self._activity_node_id: str | None = None
 
         # Internals
         self._pool = ThreadPoolExecutor(max_workers=max_workers)
@@ -350,6 +358,24 @@ class BaseOrchestrator:
             self.current_activity = f"LLM load failed: {error_msg}"
             self.activity_started = None
 
+        elif event.kind == "llm_loading":
+            # Progressive load feedback from LlamaCppLLM._load_model().
+            # Fires once at start, then every ~2s from the watchdog thread.
+            self.current_activity = event.payload.get("message", "Loading model…")
+            # Record when loading started on the very first event so elapsed
+            # time shown in the panel header is meaningful.
+            if self.activity_started is None:
+                self.activity_started = time.time()
+
+        elif event.kind == "llm_ready":
+            # Model finished loading — clear the loading banner.  The
+            # orchestrator loop will set a new current_activity string as
+            # soon as planning or execution begins, so the panel won't stay
+            # empty for long.
+            if self.current_activity and "oad" in self.current_activity:
+                self.current_activity = None
+                self.activity_started = None
+
     def get_status_events(self) -> list:
         """
         Return and clear all buffered StatusEvents.
@@ -433,14 +459,36 @@ class BaseOrchestrator:
                 logger.error("[PLAN] Planner failed for %s: %s", goal.id, e)
                 events = []
             finally:
+                # Clear any transient planning live-status the planner wrote
+                # to the goal node during LLM calls.  Done in finally so it is
+                # always cleaned up even if propose() raises.
+                with self.graph_lock:
+                    node = self.graph.nodes.get(goal.id)
+                    if node and "_planning_live_status" in node.metadata:
+                        del node.metadata["_planning_live_status"]
+                        self.graph.execution_version += 1
                 self.current_activity = None
                 self.activity_started = None
 
-            with self.graph_lock:
-                for evt in events:
+            # Apply events one at a time, releasing graph_lock between each.
+            # Every _apply(ADD_NODE / ADD_DEPENDENCY) bumps structure_version,
+            # which triggers a WebSocket push within 250ms so the user watches
+            # the DAG grow node-by-node rather than seeing the whole plan appear
+            # at once.
+            #
+            # Safety: during planning no nodes are in "done" status, so
+            # _execution_pass cannot make any node runnable in the brief windows
+            # between lock acquisitions — readiness requires all dependencies
+            # to be done, which cannot happen until execution begins.
+            for evt in events:
+                with self.graph_lock:
                     self._apply(Event(evt["type"], evt["payload"]))
-                    total += 1
+                total += 1
 
+            # Mark the goal expanded under the lock.  Done separately so the
+            # final structure_version bump is isolated — this also triggers a
+            # WebSocket push that refreshes the goal node's status.
+            with self.graph_lock:
                 # Only mark expanded=True when the planner actually
                 # produced events.  Marking it unconditionally (including when
                 # events=[] due to a planner exception) stranded the goal
@@ -529,12 +577,14 @@ class BaseOrchestrator:
             logger.info("[EXEC] Launching: %s", node.id)
             self.current_activity = f"Executing: {node.id}"
             self.activity_started = time.time()
+            self._activity_node_id = node.id
 
             reporter = ExecutionStepReporter(
                 parent_node_id=node.id,
                 apply_fn=self._apply,
                 graph_lock=self.graph_lock,
                 graph=self.graph,
+                activity_setter=self._update_activity,
             )
             self._reporters[node.id] = reporter
 
@@ -568,16 +618,17 @@ class BaseOrchestrator:
         with self.graph_lock:
             self._running_futures.pop(node_id, None)
 
-            # The original check used `node_id in self.current_activity`
-            # which is a substring test.  A short node_id like "task_1" would
-            # wrongly match an activity string for "task_10" or "task_1_abc",
-            # causing the activity indicator to be cleared for the wrong node.
-            # Use an exact string comparison instead.
-            if self.current_activity == f"Executing: {node_id}":
+            # Use _activity_node_id (set in _execution_pass) rather than
+            # parsing current_activity.  The display string is now richer
+            # ("Executing: X · web_search (turn 3)") so an exact-string or
+            # startswith check against node_id would be fragile.
+            if self._activity_node_id == node_id:
                 if self._running_futures:
                     other = next(iter(self._running_futures))
+                    self._activity_node_id = other
                     self.current_activity = f"Executing: {other}"
                 else:
+                    self._activity_node_id = None
                     self.current_activity = None
                     self.activity_started = None
 
@@ -1455,6 +1506,16 @@ class BaseOrchestrator:
             if node_id:
                 self._reset_node_ids.add(node_id)
         apply_event(self.graph, event, event_log=self.event_log)
+
+    def _update_activity(self, text: str) -> None:
+        """Update current_activity from an executor thread (via ExecutionStepReporter).
+
+        Called from ThreadPoolExecutor workers after each tool call completes.
+        graph_lock is NOT held by the caller — a simple attribute write is
+        GIL-safe in CPython, and current_activity is a display-only string
+        with no structural invariants that require lock protection.
+        """
+        self.current_activity = text
 
     def _is_fully_done(self) -> bool:
         # Guard against empty graph.  all() over an empty iterable returns

@@ -125,20 +125,200 @@ body {
 .count-pill.has-value { opacity: 1; }
 .count-pill .dot { width: 6px; height: 6px; border-radius: 50%; }
 
-#toolbar-activity {
+/* ── Status Panel (floating, bottom-left) ───────────────────────────── */
+#status-panel {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  width: 320px;
+  min-width: 240px;
+  min-height: 80px;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.13);
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: opacity 0.2s;
+}
+#status-panel.hidden { display: none; }
+#status-panel.minimized #sp-body,
+#status-panel.minimized #sp-footer { display: none; }
+
+#sp-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-  max-width: 220px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  padding: 0 10px;
-  border-left: 1px solid var(--border2);
-  border-right: 1px solid var(--border2);
+  gap: 7px;
+  padding: 8px 10px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
 }
+#sp-activity {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sp-elapsed {
+  font-size: 10px;
+  color: var(--s-running);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#sp-toggle-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+#sp-toggle-btn:hover { color: var(--text); }
+
+#sp-body {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+#sp-body::-webkit-scrollbar { width: 3px; }
+#sp-body::-webkit-scrollbar-track { background: transparent; }
+#sp-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+/* ── Status message log ──────────────────────────────────────────────── */
+.sp-msg {
+  display: grid;
+  grid-template-columns: auto 14px 1fr;
+  gap: 4px;
+  align-items: baseline;
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.sp-msg:hover { background: var(--surface2); }
+.sp-msg-ts {
+  font-family: var(--mono);
+  color: var(--text-dim);
+  white-space: nowrap;
+  font-size: 9px;
+}
+.sp-msg-icon { text-align: center; font-size: 9px; }
+.sp-msg-text { color: var(--text); word-break: break-word; }
+/* kind-specific accent colours */
+.sp-msg[data-kind="ready"]    .sp-msg-icon { color: #4ade80; }
+.sp-msg[data-kind="error"]    .sp-msg-icon { color: #f87171; }
+.sp-msg[data-kind="error"]    .sp-msg-text { color: #f87171; }
+.sp-msg[data-kind="loading"]  .sp-msg-icon { color: #60a5fa; }
+.sp-msg[data-kind="planning"] .sp-msg-icon { color: #a78bfa; }
+.sp-msg[data-kind="exec"]     .sp-msg-icon { color: #34d399; }
+.sp-msg[data-kind="verify"]   .sp-msg-icon { color: #fbbf24; }
+.sp-msg[data-kind="done"]     .sp-msg-icon { color: #94a3b8; }
+.sp-msg[data-kind="info"]     .sp-msg-icon { color: #94a3b8; }
+/* ── Planning live: folded input/output sections ────────────────────── */
+.sp-fold-section {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.sp-fold-summary {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 5px 8px;
+  background: var(--surface2);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.sp-fold-summary::-webkit-details-marker { display: none; }
+.sp-fold-summary::before { content: '▶'; font-size: 8px; color: var(--text-dim); }
+details[open] > .sp-fold-summary::before { content: '▼'; }
+/* Historical (completed) call sections are visually dimmed */
+.sp-fold-section.sp-fold-history > .sp-fold-summary { opacity: 0.55; }
+.sp-fold-body {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: #94a3b8;
+  background: var(--bg-code);
+  padding: 6px 8px;
+  /* No max-height cap — full prompt is visible when the section is open.
+     The containing #sp-body is scrollable so long content never overflows. */
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+.sp-fold-body::-webkit-scrollbar { width: 3px; }
+.sp-fold-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+/* ── Status panel resize handle (bottom-right corner) ───────────────── */
+#sp-resize-handle {
+  position: absolute;
+  bottom: 0; right: 0;
+  width: 16px; height: 16px;
+  cursor: nwse-resize;
+  z-index: 20;
+  background:
+    linear-gradient(135deg,
+      transparent 0%, transparent 40%,
+      var(--border2) 40%, var(--border2) 50%,
+      transparent 50%, transparent 65%,
+      var(--border2) 65%, var(--border2) 75%,
+      transparent 75%);
+  border-radius: 0 0 var(--radius) 0;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+#sp-resize-handle:hover { opacity: 1; }
+
+#sp-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#sp-tokens {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+#sp-tokens b { font-weight: 600; color: var(--text-dim); }
+#sp-pause-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+#sp-pause-btn:hover { background: var(--surface3); color: var(--text); }
+#sp-pause-btn.active { background: var(--s-running); color: #fff; border-color: var(--s-running); font-weight: 600; }
 
 .spinner {
   width: 10px; height: 10px;
@@ -210,8 +390,8 @@ body {
 /* ── Zoom controls ───────────────────────────────────────────────────── */
 #zoom-controls {
   position: absolute;
-  bottom: 16px;
-  left: 16px;
+  top: 16px;
+  right: 16px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -241,7 +421,6 @@ body {
 .pill-init-hidden { display: none; }
 
 /* Misc helpers */
-#activity-text      { color: var(--text-muted); }
 .form-hint-inline   { display: inline; margin-left: 6px; }
 .form-textarea-code { font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; }
 .form-input-code    { background: var(--bg-code); font-family: 'SF Mono', 'Fira Code', monospace; }
@@ -404,6 +583,12 @@ body {
 .step-icon { flex-shrink: 0; padding-top: 1px; }
 .step-desc { color: var(--text-dim); line-height: 1.4; }
 .step-result { color: var(--text-muted); font-size: 10px; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+.step-tool-name { font-family: var(--mono); font-size: 10px; font-weight: 600; color: var(--accent); }
+.step-args     { font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-dur      { font-size: 9px; color: var(--text-muted); white-space: nowrap; margin-left: 4px; }
+.step-dur-bar  { display: inline-block; height: 3px; background: var(--border2); border-radius: 2px; vertical-align: middle; margin-left: 3px; }
+.step-retry    { font-size: 9px; color: var(--text-dim); margin-top: 1px; }
+.step-running  { animation: pulse-glow 1.2s ease-in-out infinite; }
 
 /* ── Modal ───────────────────────────────────────────────────────────── */
 #modal-overlay {
@@ -846,9 +1031,6 @@ body {
     <div class="dot dot-accent"></div>
     <span id="cnt-tokens">0</span> tokens
   </div>
-  <div id="toolbar-activity"><span id="activity-text">idle</span></div>
-
-  <button class="toolbar-btn" id="btn-llm-toggle" onclick="toggleLLM()">⏸ Pause</button>
   <button class="toolbar-btn" onclick="addNodePrompt()">＋ Add Node</button>
   <div class="export-wrap" id="export-wrap">
   <button class="toolbar-btn primary export-main" onclick="exportMD()">↓ Export</button>
@@ -874,6 +1056,23 @@ body {
     <button class="zoom-btn" onclick="zoomIn()" title="Zoom in">+</button>
     <button class="zoom-btn zoom-btn-fit" onclick="zoomReset()" title="Fit to screen">⊡</button>
     <button class="zoom-btn" onclick="zoomOut()" title="Zoom out">−</button>
+  </div>
+
+  <!-- ── Status Panel ───────────────────────────────────────────────────── -->
+  <div id="status-panel" class="hidden">
+    <div id="sp-header">
+      <div class="spinner" id="sp-spinner" style="display:none"></div>
+      <span id="sp-activity">idle</span>
+      <span id="sp-elapsed"></span>
+      <button id="sp-toggle-btn" onclick="toggleStatusPanel()" title="Minimise">−</button>
+    </div>
+    <div id="sp-body">
+    </div>
+    <div id="sp-footer">
+      <span id="sp-tokens"><b>0</b> tokens</span>
+      <button id="sp-pause-btn" onclick="toggleLLM()">⏸ Pause</button>
+    </div>
+    <div id="sp-resize-handle" title="Drag to resize"></div>
   </div>
 </div>
 
@@ -984,12 +1183,16 @@ function handleMessage(data) {
   nodes = data.nodes || {};
   paused = data.paused || false;
 
+  // Status panel — tokens
   if (data.tokens) {
     const t = data.tokens.total;
     document.getElementById('cnt-tokens').textContent =
       t >= 1_000_000 ? `${(t/1_000_000).toFixed(1)}M`
       : t >= 1_000   ? `${(t/1_000).toFixed(1)}K`
       : t;
+    const tokLabel = t >= 1_000_000 ? `${(t/1_000_000).toFixed(1)}M`
+      : t >= 1_000 ? `${(t/1_000).toFixed(1)}K` : String(t);
+    document.getElementById('sp-tokens').innerHTML = `<b>${tokLabel}</b> tokens`;
   }
 
   // Toolbar counts
@@ -1010,22 +1213,8 @@ function handleMessage(data) {
   goalEl.style.display = goalDesc ? '' : 'none';
   goalEl.title = goalDesc ? `Current goal: ${goalDesc} — click to switch` : '';
 
-  // Activity
-  const actEl = document.getElementById('activity-text');
-  if (data.activity) {
-    const spin = `<span class="spinner"></span>`;
-    const elapsed = data.elapsed != null ? ` (${data.elapsed}s)` : '';
-    actEl.innerHTML = `${spin} ${esc(data.activity)}${elapsed}`;
-  } else {
-    actEl.innerHTML = paused
-      ? '<span style="color:var(--s-running)">⏸ Paused</span>'
-      : '<span style="color:var(--text-muted)">idle</span>';
-  }
-
-  // LLM button
-  const llmBtn = document.getElementById('btn-llm-toggle');
-  llmBtn.textContent = paused ? '▶ Resume' : '⏸ Pause';
-  llmBtn.classList.toggle('active', paused);
+  // Status panel — activity
+  updateStatusPanel(data);
 
   // Empty state
   const hasNodes = Object.keys(nodes).length > 0;
@@ -1038,6 +1227,533 @@ function handleMessage(data) {
   if (selectedId && nodes[selectedId]) updatePanel();
   else if (selectedId && !nodes[selectedId]) closePanel();
 }
+
+// ── Status message log ────────────────────────────────────────────────────────
+// All entries append directly to #sp-body in arrival order so log messages,
+// planning fold sections, and execution fold sections form one chronological
+// stream.  There is no separate container that would push folds to the bottom.
+
+const _MSG_LOG_MAX = 300;
+const _msgLog = [];          // {ts, kind, text} — in-memory mirror
+let   _lastActivity    = null;   // last data.activity value seen
+let   _lastActivityBase = null;  // base activity (stripped of heartbeat suffix)
+let   _currentActivityEl = null; // DOM row for the current in-progress activity
+// Execution fold state — tracks which node/turn we've last persisted so we
+// only create a new result fold when a tool call actually completes.
+let   _execState = { nodeId: null, turn: null };
+
+// Strip the variable-suffix part of an activity string so heartbeat ticks
+// ("Executing: X · generating… 4s") and tool turns ("… · web_search (turn 3)")
+// compare equal to the base ("Executing: X").
+function _activityBase(s) {
+  if (!s) return null;
+  return s.replace(/\s·.*$/, '').trim();
+}
+
+function _classifyActivity(activity) {
+  if (!activity) return null;
+  const a = activity.toLowerCase();
+  if (a.startsWith('planning'))  return { kind: 'planning', icon: '◈' };
+  if (a.startsWith('executing')) return { kind: 'exec',     icon: '▶' };
+  if (a.startsWith('verifying')) return { kind: 'verify',   icon: '◎' };
+  if (a.includes('load failed') || a.includes('error')) return { kind: 'error', icon: '✕' };
+  if (a.includes('loading') || a.includes('initialising')) return { kind: 'loading', icon: '⟳' };
+  if (a.includes('ready'))       return { kind: 'ready',    icon: '✓' };
+  if (a.includes('paused'))      return { kind: 'info',     icon: '⏸' };
+  return { kind: 'info', icon: '·' };
+}
+
+function _classifyEvent(kind) {
+  switch (kind) {
+    case 'llm_loading':    return { kind: 'loading', icon: '⟳' };
+    case 'llm_ready':      return { kind: 'ready',   icon: '✓' };
+    case 'llm_load_failed':return { kind: 'error',   icon: '✕' };
+    default:               return { kind: 'info',    icon: '·' };
+  }
+}
+
+// Append a new log row to #sp-body and return the created element.
+function _appendMsg(ts, kind, icon, text) {
+  _msgLog.push({ ts, kind, text });
+  if (_msgLog.length > _MSG_LOG_MAX) _msgLog.shift();
+
+  const spBody = document.getElementById('sp-body');
+  if (!spBody) return null;
+
+  const fmtTime = new Date(ts).toTimeString().slice(0, 8);
+  const row = document.createElement('div');
+  row.className = 'sp-msg';
+  row.dataset.kind = kind;
+  // Build with DOM API — no innerHTML risk for arbitrary text content.
+  const tsSpan = document.createElement('span');
+  tsSpan.className = 'sp-msg-ts';
+  tsSpan.textContent = fmtTime;
+  const iconSpan = document.createElement('span');
+  iconSpan.className = 'sp-msg-icon';
+  iconSpan.textContent = icon;
+  const textSpan = document.createElement('span');
+  textSpan.className = 'sp-msg-text';
+  textSpan.textContent = text;
+  row.appendChild(tsSpan);
+  row.appendChild(iconSpan);
+  row.appendChild(textSpan);
+  spBody.appendChild(row);
+
+  // Trim oldest .sp-msg rows (never remove fold sections)
+  const msgs = spBody.querySelectorAll('.sp-msg');
+  if (msgs.length > _MSG_LOG_MAX) msgs[0].remove();
+
+  _scrollIfNearBottom(spBody);
+  return row;
+}
+
+// Update an existing row's text in place (used for heartbeat ticks).
+function _updateMsg(el, text) {
+  if (!el) return;
+  const textSpan = el.querySelector('.sp-msg-text');
+  if (textSpan) textSpan.textContent = text;
+}
+
+function _scrollIfNearBottom(spBody) {
+  if (spBody.scrollHeight - spBody.scrollTop - spBody.clientHeight < 60) {
+    spBody.scrollTop = spBody.scrollHeight;
+  }
+}
+
+// ── Status Panel ─────────────────────────────────────────────────────────────
+
+// Client-side activity timer — ticks every second independently of WS pushes.
+// The server sends activity_started_ms (epoch ms) whenever an activity is
+// active; the client stores it and resets the interval on change.
+let _activityStartedAt = null;   // ms since epoch, or null
+let _timerInterval     = null;   // setInterval handle
+
+function _startTimer(startedMs) {
+  if (_activityStartedAt === startedMs) return;  // already running for this activity
+  _activityStartedAt = startedMs;
+  if (_timerInterval) clearInterval(_timerInterval);
+  if (!startedMs) { _timerInterval = null; return; }
+  const elapsEl = document.getElementById('sp-elapsed');
+  function _tick() {
+    const total = Math.max(0, Math.round((Date.now() - _activityStartedAt) / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const pad = n => String(n).padStart(2, '0');
+    elapsEl.textContent = h > 0
+      ? `${h}:${pad(m)}:${pad(s)}`
+      : `${m}:${pad(s)}`;
+  }
+  _tick();
+  _timerInterval = setInterval(_tick, 1000);
+}
+
+function _stopTimer() {
+  if (_timerInterval) { clearInterval(_timerInterval); _timerInterval = null; }
+  _activityStartedAt = null;
+  const elapsEl = document.getElementById('sp-elapsed');
+  if (elapsEl) elapsEl.textContent = '';
+}
+
+// Format a JSON string — works on both complete and partial (mid-stream) output.
+// For complete valid JSON, uses JSON.parse → JSON.stringify for canonical output.
+// For partial streams, falls back to a character-by-character depth tracker that
+// adds indentation and newlines after structural characters without needing to
+// fully parse the input.  String contents (including \n, \", \\, \uXXXX escapes)
+// are passed through verbatim so _setPreContent can decode them for display.
+function _formatPartialJSON(s) {
+  if (!s) return s;
+
+  // Fast path: complete valid JSON — use the engine's own serialiser.
+  try { return JSON.stringify(JSON.parse(s), null, 2); } catch (_) {}
+
+  // Partial stream path: structural formatter.
+  const INDENT = '  ';
+  let out      = '';
+  let depth    = 0;
+  let inStr    = false;   // inside a JSON string value / key
+  let escaped  = false;   // previous char was backslash inside a string
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    // ── Inside a string: pass characters through, track escape state ───────
+    if (inStr) {
+      out += ch;
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inStr = false;
+      }
+      continue;
+    }
+
+    // ── Outside a string ────────────────────────────────────────────────────
+    // Skip whitespace — we supply our own.
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') continue;
+
+    if (ch === '"') {
+      inStr = true;
+      out += ch;
+    } else if (ch === '{' || ch === '[') {
+      out += ch;
+      depth++;
+      // Peek ahead: if the next non-whitespace char closes immediately, keep
+      // empty containers on one line (e.g. {} or []).
+      let j = i + 1;
+      while (j < s.length && (s[j] === ' ' || s[j] === '\t')) j++;
+      const closes = s[j] === '}' || s[j] === ']';
+      if (!closes) out += '\n' + INDENT.repeat(depth);
+    } else if (ch === '}' || ch === ']') {
+      depth = Math.max(0, depth - 1);
+      out += '\n' + INDENT.repeat(depth) + ch;
+    } else if (ch === ',') {
+      out += ch + '\n' + INDENT.repeat(depth);
+    } else if (ch === ':') {
+      out += ': ';
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+// Set the textContent of an existing <pre> element, interpreting escape
+// sequences that the server serialised as literal backslash sequences:
+//   \n  →  newline     \"  →  "     \\  →  \
+// Unicode escapes (\uXXXX) are also decoded so → renders as → not \u2192.
+function _setPreContent(preEl, text) {
+  if (!text) { preEl.textContent = ''; return; }
+  // Replace JSON-style escape sequences with their real characters.
+  let decoded = text
+    .replace(/\\n/g,  '\n')
+    .replace(/\\t/g,  '\t')
+    .replace(/\\r/g,  '\r')
+    .replace(/\\"/g,  '"')
+    .replace(/\\\\/g, '\\')
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  // textContent assigns the raw string — the browser renders it literally
+  // inside <pre> without any further HTML-entity encoding needed.
+  preEl.textContent = decoded;
+}
+
+function updateStatusPanel(data) {
+  const panel   = document.getElementById('status-panel');
+  const spinner = document.getElementById('sp-spinner');
+  const actEl   = document.getElementById('sp-activity');
+  const elapsEl = document.getElementById('sp-elapsed');
+  const pauseBtn = document.getElementById('sp-pause-btn');
+  const spBody  = document.getElementById('sp-body');
+
+  // Pause button state
+  pauseBtn.textContent = paused ? '▶ Resume' : '⏸ Pause';
+  pauseBtn.classList.toggle('active', paused);
+
+  // ── Message log: server StatusEvents ────────────────────────────────────
+  const now = Date.now();
+  for (const ev of (data.status_events || [])) {
+    const { kind, icon } = _classifyEvent(ev.kind);
+    const msg =
+      ev.payload?.message || ev.payload?.error ||
+      ev.kind.replace(/_/g, ' ');
+    // llm_loading events arrive every 2s — update the last loading row in
+    // place rather than appending a fresh one on every tick.
+    if (ev.kind === 'llm_loading' && _currentActivityEl?.dataset.kind === 'loading') {
+      _updateMsg(_currentActivityEl, msg);
+    } else {
+      _currentActivityEl = _appendMsg(ev.ts || now, kind, icon, msg);
+    }
+  }
+
+  // ── Message log: activity transitions (detected client-side) ────────────
+  // Strip the variable heartbeat suffix ("· generating… 4s", "· web_search
+  // (turn 2)") before comparing so ticks on the same activity update the
+  // existing row instead of spawning a new one every 2 seconds.
+  const newBase = _activityBase(data.activity);
+
+  if (newBase !== _lastActivityBase) {
+    // Base changed — new phase or new node.
+    if (_lastActivityBase && !data.activity) {
+      // Activity cleared: mark the current row as done.
+      if (_currentActivityEl) {
+        _currentActivityEl.dataset.kind = 'done';
+        const iconSpan = _currentActivityEl.querySelector('.sp-msg-icon');
+        if (iconSpan) iconSpan.textContent = '✓';
+      }
+    }
+    if (data.activity) {
+      const { kind, icon } = _classifyActivity(data.activity);
+      _currentActivityEl = _appendMsg(now, kind, icon, data.activity);
+    }
+    _lastActivityBase = newBase;
+  } else if (newBase && data.activity !== _lastActivity) {
+    // Same base, different suffix — heartbeat tick: update in place.
+    _updateMsg(_currentActivityEl, data.activity);
+  }
+
+  _lastActivity = data.activity;
+
+  if (data.activity) {
+    panel.classList.remove('hidden');
+    spinner.style.display = '';
+    actEl.textContent = data.activity;
+    _startTimer(data.activity_started_ms ?? null);
+  } else if (paused) {
+    panel.classList.remove('hidden');
+    spinner.style.display = 'none';
+    actEl.textContent = 'Paused';
+    _stopTimer();
+  } else {
+    panel.classList.add('hidden');
+    spinner.style.display = 'none';
+    _stopTimer();
+  }
+
+  // ── Execution live status (running node with _live_status) ─────────────
+  // Each completed tool call is persisted as a collapsed fold section so the
+  // full history of tool calls stays visible as the user scrolls up.
+  // The live LLM streaming section updates in place (one per node, reused
+  // across turns) so only the current generation is "live".
+  const runningNode = Object.values(nodes).find(
+    n => n.status === 'running' && n.metadata?._live_status
+  );
+
+  if (runningNode) {
+    const ls      = runningNode.metadata._live_status;
+    const nodeId  = runningNode.id;
+    // Sanitise node ID for use in element IDs (replace non-alphanumeric with -)
+    const safeId  = nodeId.replace(/[^a-zA-Z0-9]/g, '-');
+    const turn    = ls.turn ?? 0;
+
+    // ── New execution node: clean up any stale exec sections from a previous
+    //    run so they don't appear at the top of a fresh execution.
+    if (nodeId !== _execState.nodeId) {
+      _execState = { nodeId, turn: null };
+    }
+
+    // ── Persist completed tool-call result ───────────────────────────────
+    // When turn advances (a tool just returned), create a collapsed fold for
+    // the result if we haven't already done so for this turn.
+    if (ls.tool && ls.preview && turn !== _execState.turn) {
+      const resultId = `sp-exec-${safeId}-turn${turn}`;
+      if (!document.getElementById(resultId)) {
+        const section = document.createElement('details');
+        section.id = resultId;
+        section.className = 'sp-fold-section sp-fold-history';
+        section.dataset.live = '0';
+        // Start collapsed — user can expand to review any past tool result.
+        section.open = false;
+        const summary = document.createElement('summary');
+        summary.className = 'sp-fold-summary';
+        summary.textContent = `Turn ${turn} · ${ls.tool}`;
+        const body = document.createElement('pre');
+        body.className = 'sp-fold-body';
+        _setPreContent(body, ls.preview);
+        section.appendChild(summary);
+        section.appendChild(body);
+        // Insert BEFORE the live streaming section so the result appears
+        // above the next generation, maintaining chronological order.
+        const streamSection = document.getElementById(`sp-exec-${safeId}-stream`);
+        if (streamSection) {
+          spBody.insertBefore(section, streamSection);
+        } else {
+          spBody.appendChild(section);
+        }
+        _scrollIfNearBottom(spBody);
+      }
+      _execState.turn = turn;
+    }
+
+    // ── Live streaming section (one per node, reused across turns) ───────
+    const streamSectionId = `sp-exec-${safeId}-stream`;
+    let streamSection = document.getElementById(streamSectionId);
+    if (!streamSection) {
+      streamSection = document.createElement('details');
+      streamSection.id = streamSectionId;
+      streamSection.open = true;
+      streamSection.className = 'sp-fold-section';
+      streamSection.dataset.live = '1';
+      const summary = document.createElement('summary');
+      summary.className = 'sp-fold-summary';
+      summary.textContent = 'Generating…';
+      const body = document.createElement('pre');
+      body.className = 'sp-fold-body';
+      body.id = `${streamSectionId}-body`;
+      streamSection.appendChild(summary);
+      streamSection.appendChild(body);
+      spBody.appendChild(streamSection);
+      _scrollIfNearBottom(spBody);
+    }
+    const streamBody = document.getElementById(`${streamSectionId}-body`);
+    if (streamBody) {
+      const newText = ls.streaming || '';
+      if (streamBody.dataset.lastText !== newText) {
+        streamBody.dataset.lastText = newText;
+        _setPreContent(streamBody, newText);
+        if (streamSection.dataset.live === '1') {
+          streamBody.scrollTop = streamBody.scrollHeight;
+        }
+      }
+    }
+
+  } else {
+    // No running node — finalize any live execution sections.
+    spBody.querySelectorAll('.sp-fold-section[data-live="1"]').forEach(el => {
+      if (el.id?.startsWith('sp-exec-')) {
+        el.dataset.live = '0';
+        el.classList.add('sp-fold-history');
+        el.open = false;
+      }
+    });
+    if (_execState.nodeId) _execState = { nodeId: null, turn: null };
+  }
+
+  // ── Planning live status (_planning_live_status on the goal node) ────────
+  // Find the goal node that currently has live planning state.  There is at
+  // most one at any time (only one goal is planned at once).
+  const planningNode = Object.values(nodes).find(
+    n => n.node_type === GOAL_NODE_TYPE && n.metadata?._planning_live_status
+  );
+
+  if (planningNode) {
+    const pls = planningNode.metadata._planning_live_status;
+    const callId = pls.call_id ?? 0;
+
+    // ── Input section — keyed on call_id so each LLM call gets its own ─────
+    // section that survives as collapsed history once the call completes.
+    const inputId  = `sp-planning-input-${callId}`;
+    const streamId = `sp-planning-stream-${callId}`;
+
+    // Mark any previous live PLANNING sections (different call_id) as history.
+    // Use an id-prefix filter so execution streaming sections are never touched.
+    spBody.querySelectorAll('.sp-fold-section[data-live="1"]').forEach(el => {
+      if (!el.id.startsWith('sp-planning-')) return;
+      if (el.id !== inputId && el.id !== streamId) {
+        el.dataset.live = '0';
+        el.classList.add('sp-fold-history');
+        el.open = false;
+      }
+    });
+
+    let inputSection = document.getElementById(inputId);
+    if (!inputSection) {
+      inputSection = document.createElement('details');
+      inputSection.id = inputId;
+      inputSection.className = 'sp-fold-section';
+      inputSection.dataset.live = '1';
+      // Build structure with DOM API so textContent handles all special chars.
+      const summary = document.createElement('summary');
+      summary.className = 'sp-fold-summary';
+      const body = document.createElement('pre');
+      body.className = 'sp-fold-body';
+      body.id = `${inputId}-body`;
+      inputSection.appendChild(summary);
+      inputSection.appendChild(body);
+      spBody.appendChild(inputSection);
+    }
+    // Only update when label or input text actually changed to avoid collapsing
+    // a user-opened <details> on every 250ms tick.
+    const inputKey = `${pls.label || ''}||${pls.input || ''}`;
+    if (inputSection.dataset.contentKey !== inputKey) {
+      inputSection.dataset.contentKey = inputKey;
+      inputSection.querySelector('.sp-fold-summary').textContent = pls.label || 'LLM Input';
+      _setPreContent(inputSection.querySelector('.sp-fold-body'), pls.input || '');
+    }
+
+    // ── Output / streaming section — one per call, content grows in place ──
+    let streamSection = document.getElementById(streamId);
+    if (!streamSection) {
+      streamSection = document.createElement('details');
+      streamSection.id = streamId;
+      streamSection.open = true;
+      streamSection.className = 'sp-fold-section';
+      streamSection.dataset.live = '1';
+      const summary = document.createElement('summary');
+      summary.className = 'sp-fold-summary';
+      summary.textContent = 'Output';
+      const body = document.createElement('pre');
+      body.className = 'sp-fold-body';
+      body.id = `${streamId}-body`;
+      streamSection.appendChild(summary);
+      streamSection.appendChild(body);
+      spBody.appendChild(streamSection);
+      _scrollIfNearBottom(spBody);
+    }
+    const streamBody = document.getElementById(`${streamId}-body`);
+    if (streamBody) {
+      const newText = pls.streaming || '';
+      // Pretty-print JSON output; decode escape sequences for all content.
+      _setPreContent(streamBody, _formatPartialJSON(newText));
+      // Only auto-scroll while the call is still active (data-live="1").
+      if (streamSection.dataset.live === '1') {
+        streamBody.scrollTop = streamBody.scrollHeight;
+      }
+    }
+  } else {
+    // Planning finished — collapse and dim any remaining live PLANNING sections.
+    spBody.querySelectorAll('.sp-fold-section[data-live="1"]').forEach(el => {
+      if (!el.id.startsWith('sp-planning-')) return;
+      el.dataset.live = '0';
+      el.classList.add('sp-fold-history');
+      el.open = false;
+    });
+  }
+}
+
+function toggleStatusPanel() {
+  const panel = document.getElementById('status-panel');
+  const btn   = document.getElementById('sp-toggle-btn');
+  const minimized = panel.classList.toggle('minimized');
+  btn.textContent = minimized ? '+' : '−';
+  btn.title = minimized ? 'Expand' : 'Minimise';
+}
+
+// Status panel drag
+(function() {
+  let dragging = false, ox, oy;
+  const panel  = document.getElementById('status-panel');
+  const handle = document.getElementById('sp-header');
+  handle.addEventListener('mousedown', e => {
+    if (e.target.id === 'sp-toggle-btn') return;
+    dragging = true;
+    const r = panel.getBoundingClientRect();
+    ox = e.clientX - r.left;
+    oy = e.clientY - r.top;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    panel.style.left   = (e.clientX - ox) + 'px';
+    panel.style.top    = (e.clientY - oy) + 'px';
+    panel.style.bottom = 'auto';
+  });
+  document.addEventListener('mouseup', () => { dragging = false; });
+})();
+
+// Status panel resize (bottom-right handle)
+(function() {
+  let resizing = false, startX, startY, startW, startH;
+  const panel  = document.getElementById('status-panel');
+  const handle = document.getElementById('sp-resize-handle');
+  handle.addEventListener('mousedown', e => {
+    resizing = true;
+    startX = e.clientX; startY = e.clientY;
+    const r = panel.getBoundingClientRect();
+    startW = r.width; startH = r.height;
+    e.preventDefault(); e.stopPropagation();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!resizing) return;
+    const w = Math.max(240, startW + (e.clientX - startX));
+    const h = Math.max(80,  startH + (e.clientY - startY));
+    panel.style.width     = w + 'px';
+    panel.style.height    = h + 'px';
+    panel.style.maxHeight = 'none';
+  });
+  document.addEventListener('mouseup', () => { resizing = false; });
+})();
 
 // ── Layout + Render ──────────────────────────────────────────────────────────
 
@@ -1293,6 +2009,41 @@ function updatePanel() {
     } else {
       html += statusRow;
       if (deps.length) html += depsRow;
+    }
+  }
+
+  // ── LIVE EXECUTION STATUS (running nodes only) ────────────────────────────
+  if (node.status === 'running') {
+    const ls = node.metadata?._live_status;
+    if (ls) {
+      const toolBadge = ls.tool
+        ? `<span style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:3px;
+                        background:var(--surface3);border:1px solid var(--border2);
+                        color:var(--accent)">${esc(ls.tool)}</span>` : '';
+      const turnLabel = ls.turn
+        ? `<span style="font-size:10px;color:var(--text-muted);margin-left:5px">turn ${ls.turn}</span>` : '';
+      const previewHtml = ls.preview
+        ? `<pre style="font-size:10px;font-family:var(--mono);color:#94a3b8;
+                       white-space:pre-wrap;margin-top:6px;max-height:80px;
+                       overflow-y:auto;background:var(--bg-code);padding:6px 8px;
+                       border-radius:4px;border:1px solid var(--border);line-height:1.5">${esc(ls.preview)}</pre>`
+        : '';
+      // Streaming tokens — show the growing response text
+      const streamHtml = ls.streaming
+        ? `<pre style="font-size:10px;font-family:var(--mono);color:#94a3b8;
+                       white-space:pre-wrap;margin-top:4px;max-height:100px;
+                       overflow-y:auto;background:var(--bg-code);padding:6px 8px;
+                       border-radius:4px;border:1px solid var(--border);line-height:1.5;
+                       word-break:break-word">${esc(ls.streaming)}</pre>`
+        : '';
+      html += row('In progress',
+        `<div style="border:1px solid var(--s-running)40;border-left:3px solid var(--s-running);
+                     border-radius:4px;padding:8px 10px">
+           <div style="display:flex;align-items:center;flex-wrap:wrap;gap:2px;margin-bottom:2px">
+             ${toolBadge}${turnLabel}
+           </div>
+           ${previewHtml}${streamHtml}
+         </div>`);
     }
   }
 
@@ -2430,25 +3181,84 @@ function domainResultLabel(node) {
 // Returns HTML appended after result and notes — used for execution step
 // children in cuddlytoddly.  Return '' to add nothing.
 function domainPanelBottom(node, { row, esc, trunc }) {
-  const stepChildren = Object.values(nodes).filter(n =>
-    n.node_type === 'execution_step' &&
-    n.dependencies.includes(selectedId) &&
-    !n.metadata?.hidden
-  );
+  const stepChildren = Object.values(nodes)
+    .filter(n =>
+      n.node_type === 'execution_step' &&
+      n.dependencies.includes(selectedId) &&
+      !n.metadata?.hidden
+    )
+    .sort((a, b) => {
+      // Sort by first-attempt timestamp so the timeline reads chronologically
+      const ta = a.metadata?.attempts?.[0]?.timestamp || '';
+      const tb = b.metadata?.attempts?.[0]?.timestamp || '';
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    });
   if (!stepChildren.length) return '';
 
-  const stepsHtml = stepChildren.map(step => {
-    const icon = step.status === 'done' ? '✓' : step.status === 'failed' ? '✗' : '…';
-    const iconColor = step.status === 'done' ? 'var(--s-done)' : step.status === 'failed' ? 'var(--s-failed)' : 'var(--s-running)';
+  // Compute max total duration for proportional bar widths (cap at 80px)
+  const MAX_BAR_PX = 80;
+  const totals = stepChildren.map(s =>
+    (s.metadata?.attempts || []).reduce((sum, a) => sum + (a.duration_ms || 0), 0)
+  );
+  const maxMs = Math.max(1, ...totals);
+
+  const stepsHtml = stepChildren.map((step, i) => {
+    const attempts   = step.metadata?.attempts || [];
+    const totalMs    = totals[i];
+    const barWidth   = Math.round((totalMs / maxMs) * MAX_BAR_PX);
+
+    // Status icon and colour
+    const isRunning  = step.status === 'running';
+    const isDone     = step.status === 'done';
+    const isFailed   = step.status === 'failed';
+    const icon       = isDone ? '●' : isFailed ? '✗' : isRunning ? '↻' : '·';
+    const iconColor  = isDone    ? 'var(--s-done)'
+                     : isFailed  ? 'var(--s-failed)'
+                     : isRunning ? 'var(--s-running)'
+                     : 'var(--text-muted)';
+    const iconClass  = isRunning ? ' class="step-running"' : '';
+
+    // Tool name and args from metadata (set by on_tool_start)
+    const toolName   = step.metadata?.tool_name || '';
+    const lastAttempt = attempts[attempts.length - 1] || {};
+    const rawArgs    = lastAttempt.args || step.metadata?.tool_args || {};
+    const argsStr    = Object.entries(rawArgs)
+      .filter(([k]) => k !== '_cwd')
+      .map(([k, v]) => `${k}=${String(v).slice(0, 35)}`)
+      .join('  ');
+
+    // Duration badge and proportional bar
+    const durLabel   = totalMs > 0
+      ? (totalMs < 1000 ? Math.round(totalMs) + 'ms' : (totalMs / 1000).toFixed(1) + 's')
+      : '';
+    const durHtml    = durLabel
+      ? `<span class="step-dur">${esc(durLabel)}</span>` +
+        (barWidth > 2 ? `<span class="step-dur-bar" style="width:${barWidth}px"></span>` : '')
+      : '';
+
+    // Retry note when there were multiple attempts
+    const retryHtml  = attempts.length > 1
+      ? `<div class="step-retry">↺ ${attempts.length} attempts</div>` : '';
+
+    // Last result preview (truncated)
+    const resultText = (lastAttempt.result || step.result || '').trim();
+    const resultHtml = resultText
+      ? `<div class="step-result">${esc(trunc(resultText, 120))}</div>` : '';
+
     return `<div class="step-item">
-      <span class="step-icon" style="color:${iconColor}">${icon}</span>
-      <div>
-        <div class="step-desc">${esc(step.metadata?.description || step.id)}</div>
-        ${step.result ? `<div class="step-result">${esc(trunc(step.result, 120))}</div>` : ''}
+      <span class="step-icon" style="color:${iconColor}"${iconClass}>${icon}</span>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:baseline;gap:4px;flex-wrap:wrap">
+          <span class="step-tool-name">${esc(toolName)}</span>
+          <span class="step-args" style="flex:1">${esc(argsStr)}</span>
+          ${durHtml}
+        </div>
+        ${retryHtml}${resultHtml}
       </div>
     </div>`;
   }).join('');
-  return row('Execution Steps', `<div style="margin-top:2px">${stepsHtml}</div>`);
+
+  return row('Tool calls', `<div style="margin-top:2px">${stepsHtml}</div>`);
 }
 
 // ── Clarification node editing ────────────────────────────────────────────────

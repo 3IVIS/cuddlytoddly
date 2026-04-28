@@ -1,5 +1,6 @@
 # engine/execution_step_reporter.py
 
+import time as _time
 from datetime import datetime, timezone
 
 from toddly.core.events import (
@@ -34,11 +35,16 @@ class ExecutionStepReporter:
       - expose_all()     called after parent fails — ensures steps are visible
     """
 
-    def __init__(self, parent_node_id: str, apply_fn, graph_lock, graph):
+    def __init__(self, parent_node_id: str, apply_fn, graph_lock, graph, activity_setter=None):
         self.parent_node_id = parent_node_id
         self._apply = apply_fn
         self._graph_lock = graph_lock
         self._graph = graph
+
+        # Optional callback used to push richer activity strings to the
+        # orchestrator's current_activity field from inside executor threads.
+        # Signature: (text: str) -> None.  May be None (e.g. in tests).
+        self._activity_setter = activity_setter
 
         # tool_name -> list[node_id]  (list because the same tool may be called
         # multiple times in a single execution, e.g. write_file for two files).
@@ -205,12 +211,20 @@ class ExecutionStepReporter:
         tool_args: dict,
         result: str,
         error: bool = False,
+        *,
+        duration_ms: float = 0.0,
     ):
         """
         Called after a tool returns.
 
         Appends this attempt to the node's history and marks done/failed.
         Truncates the result so it doesn't blow up metadata storage.
+
+        Parameters
+        ----------
+        duration_ms : Wall-clock milliseconds from tool dispatch to return.
+                      Stored in the attempt record so the UI can render a
+                      duration badge and proportional bar in the timeline.
         """
 
         attempt = {
@@ -219,6 +233,7 @@ class ExecutionStepReporter:
             "result": result,
             "status": "error" if error else "ok",
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "duration_ms": round(duration_ms, 1),
         }
 
         with self._graph_lock:
@@ -321,7 +336,126 @@ class ExecutionStepReporter:
                 )
             )
 
+    # ── Live progress ─────────────────────────────────────────────────────────
+
+    def on_progress(
+        self, turn: int, tool_name: str, tool_result: str, tool_args: dict | None = None
+    ) -> None:
+        """Write live execution status to the parent node's metadata.
+
+        Uses direct graph mutation instead of _apply() so this transient state
+        is never persisted to events.jsonl / the WAL.  On replay the node is
+        reset to pending anyway, so there is no loss of correctness.
+
+        Bumps graph.execution_version so the WebSocket pushes the update to
+        the browser within its next 250 ms poll cycle.
+        """
+        with self._graph_lock:
+            node = self._graph.nodes.get(self.parent_node_id)
+            if node and node.status == "running":
+                node.metadata["_live_status"] = {
+                    "turn": turn + 1,
+                    "tool": tool_name,
+                    "preview": tool_result[:200],
+                    "args": tool_args or {},
+                }
+                self._graph.execution_version += 1
+
+        # Update the orchestrator's current_activity string so the status
+        # panel header shows the current tool and turn number.  Called outside
+        # graph_lock — simple attribute write is GIL-safe in CPython.
+        if self._activity_setter:
+            self._activity_setter(
+                f"Executing: {self.parent_node_id} · {tool_name} (turn {turn + 1})"
+            )
+
     # ── Post-execution visibility ─────────────────────────────────────────────
+
+    def make_token_cb(self):
+        """Return a per-call on_token callback for streaming display.
+
+        Immediately initialises ``_live_status`` on the parent node so the
+        status-panel body becomes visible as soon as the LLM call starts —
+        even before any tokens arrive (e.g. for constrained local inference
+        where only heartbeats fire, the panel body is still shown so the user
+        sees the tool/turn context from the previous tool call).
+
+        Incoming token chunks are accumulated in memory and throttle-flushed
+        to ``_live_status["streaming"]`` at most every 200 ms (≈ 5 Hz).
+        The callback is safe to call from any thread.
+        """
+        # Pre-initialize _live_status so the liveBlock filter
+        # ``n.metadata?._live_status`` evaluates truthy in the UI immediately,
+        # without waiting for the first token flush (which may never come for
+        # constrained / heartbeat-only inference paths).
+        with self._graph_lock:
+            node = self._graph.nodes.get(self.parent_node_id)
+            if node and node.status == "running":
+                if not node.metadata.get("_live_status"):
+                    node.metadata["_live_status"] = {}
+                self._graph.execution_version += 1
+
+        _buf: list[str] = []
+        _last: list[float] = [_time.monotonic()]
+        _INTERVAL = 0.2  # seconds between metadata writes
+
+        def _on_token(chunk: str) -> None:
+            _buf.append(chunk)
+            now = _time.monotonic()
+            if now - _last[0] < _INTERVAL:
+                return
+            _last[0] = now
+            accumulated = "".join(_buf)
+            with self._graph_lock:
+                node = self._graph.nodes.get(self.parent_node_id)
+                if node and node.status == "running":
+                    ls = node.metadata.get("_live_status") or {}
+                    ls["streaming"] = accumulated
+                    node.metadata["_live_status"] = ls
+                    self._graph.execution_version += 1
+
+        return _on_token
+
+    def make_heartbeat_cb(self):
+        """Return an on_heartbeat callback that updates current_activity with elapsed time.
+
+        Fires every 2 s from the LLM backend's watchdog thread during inference,
+        giving the status panel header live elapsed-time feedback even when no
+        real tokens are being emitted (e.g. constrained / outlines generation).
+        Only does anything when activity_setter was wired up (suggestion A).
+        """
+
+        def _on_heartbeat(elapsed: float) -> None:
+            if self._activity_setter:
+                self._activity_setter(
+                    f"Executing: {self.parent_node_id} · generating… {int(elapsed)}s"
+                )
+
+        return _on_heartbeat
+
+    def clear_streaming(self) -> None:
+        """Remove the streaming buffer from _live_status after an LLM turn.
+
+        Called in the executor's finally block so the streaming preview is
+        always cleared whether the turn succeeds, fails, or is interrupted.
+        """
+        with self._graph_lock:
+            node = self._graph.nodes.get(self.parent_node_id)
+            if node:
+                ls = node.metadata.get("_live_status")
+                if ls and "streaming" in ls:
+                    del ls["streaming"]
+                    self._graph.execution_version += 1
+
+    def _clear_live_status(self) -> None:
+        """Remove _live_status from the parent node.
+
+        Must be called with graph_lock already held (used by hide_all / expose_all).
+        """
+        node = self._graph.nodes.get(self.parent_node_id)
+        if node and "_live_status" in node.metadata:
+            del node.metadata["_live_status"]
+            self._graph.execution_version += 1
 
     def hide_all(self):
         with self._graph_lock:
@@ -335,6 +469,8 @@ class ExecutionStepReporter:
                         },
                     )
                 )
+            # Clear live status now that the node has completed successfully.
+            self._clear_live_status()
 
     def expose_all(self):
         with self._graph_lock:
@@ -348,6 +484,8 @@ class ExecutionStepReporter:
                         },
                     )
                 )
+            # Clear live status when the node is being exposed after failure.
+            self._clear_live_status()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

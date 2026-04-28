@@ -831,6 +831,12 @@ class LLMExecutor:
             for name in self.tools.tools:
                 if name == "web_search":
                     native.add("search_web")
+                    # Also accept the tool name itself as an execution_type alias.
+                    # The LLM occasionally copies the registered tool name verbatim
+                    # into execution_type (e.g. "web_search" instead of "search_web"),
+                    # which previously caused the step to be misclassified as requiring
+                    # user action and the node to stall in awaiting_user immediately.
+                    native.add("web_search")
                 elif name == "fetch_url":
                     native.add("fetch_url")
                 else:
@@ -982,6 +988,7 @@ class LLMExecutor:
         # record always contains the complete tool output.  _cwd is stripped
         # from args since it's an internal routing detail, not part of the
         # logical call.
+        _duration_ms = (_time.time() - t0) * 1000
         if self.tool_call_log is not None:
             clean_args = {k: v for k, v in tool_args.items() if k != "_cwd"}
             self.tool_call_log.record(
@@ -989,12 +996,19 @@ class LLMExecutor:
                 tool_name=tool_name,
                 args=clean_args,
                 result=tool_result_str,
-                duration_ms=(_time.time() - t0) * 1000,
+                duration_ms=_duration_ms,
                 error=error,
             )
 
         if reporter and step_id:
-            reporter.on_tool_done(step_id, tool_name, tool_args, tool_result_str, error=error)
+            reporter.on_tool_done(
+                step_id,
+                tool_name,
+                tool_args,
+                tool_result_str,
+                error=error,
+                duration_ms=_duration_ms,
+            )
 
         if len(tool_result_str) > self.max_tool_result_chars:
             tool_result_str = (
@@ -1274,7 +1288,16 @@ class LLMExecutor:
             )
 
             try:
-                raw = self.llm.ask(prompt, schema=EXECUTION_TURN_SCHEMA)
+                _streaming = reporter and getattr(self.llm, "supports_streaming", False)
+                _sk = {}
+                if _streaming:
+                    _sk["on_token"] = reporter.make_token_cb()
+                    _sk["on_heartbeat"] = reporter.make_heartbeat_cb()
+                try:
+                    raw = self.llm.ask(prompt, schema=EXECUTION_TURN_SCHEMA, **_sk)
+                finally:
+                    if _streaming:
+                        reporter.clear_streaming()
             except LLMStoppedError:
                 logger.warning("[EXECUTOR] LLM stopped during execution of %s", node.id)
                 return None
@@ -1467,6 +1490,7 @@ class LLMExecutor:
                         tool_args,
                         f"ERROR: tool '{tool_name}' not found",
                         error=True,
+                        duration_ms=0.0,
                     )
                 history = self._append_to_history(
                     history,
@@ -1561,6 +1585,9 @@ class LLMExecutor:
                 history,
                 {"name": tool_name, "args": tool_args, "result": tool_result_str},
             )
+            # ── Live progress update ──────────────────────────────────────────
+            if reporter:
+                reporter.on_progress(turn, tool_name, tool_result_str, tool_args=tool_args)
 
         logger.error(
             "[EXECUTOR] Node %s did not complete: %d/%d successful turns, %d/%d unsuccessful turns used",
@@ -1792,11 +1819,20 @@ class LLMExecutor:
             # prompt as plain text without any tool scaffolding, so the model
             # is forced to produce a text answer.
             try:
-                if is_final_turn:
-                    final_text = self.llm.generate(current_prompt)
-                    response = NativeToolResponse(kind="text", text=final_text)
-                else:
-                    response = self.llm.ask_with_tools(current_prompt, tools, history)
+                _streaming = reporter and getattr(self.llm, "supports_streaming", False)
+                _sk = {}
+                if _streaming:
+                    _sk["on_token"] = reporter.make_token_cb()
+                    _sk["on_heartbeat"] = reporter.make_heartbeat_cb()
+                try:
+                    if is_final_turn:
+                        final_text = self.llm.generate(current_prompt, **_sk)
+                        response = NativeToolResponse(kind="text", text=final_text)
+                    else:
+                        response = self.llm.ask_with_tools(current_prompt, tools, history, **_sk)
+                finally:
+                    if _streaming:
+                        reporter.clear_streaming()
             except LLMStoppedError:
                 logger.warning("[EXECUTOR] LLM stopped during native execution of %s", node.id)
                 return None
@@ -1955,6 +1991,7 @@ class LLMExecutor:
                         tool_args,
                         f"ERROR: tool '{tool_name}' not found",
                         error=True,
+                        duration_ms=0.0,
                     )
                 history = self._append_to_history(
                     history,
@@ -2057,6 +2094,9 @@ class LLMExecutor:
                     "tool_use_id": tool_use_id,
                 },
             )
+            # ── Live progress update ──────────────────────────────────────────
+            if reporter:
+                reporter.on_progress(turn, tool_name, tool_result_str, tool_args=tool_args)
 
         logger.error(
             "[EXECUTOR] Node %s did not complete (native): %d/%d successful turns, %d/%d unsuccessful turns used",

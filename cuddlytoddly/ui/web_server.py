@@ -90,16 +90,27 @@ def _serialize_snapshot(snapshot: dict, config: UIConfig | None = None) -> dict:
 
 def _build_payload(orchestrator, config: UIConfig | None = None) -> dict:
     snapshot = orchestrator.get_snapshot()
-    elapsed = None
-    if orchestrator.activity_started:
-        elapsed = round(time.time() - orchestrator.activity_started, 1)
+    # Send the raw start timestamp (ms since epoch) instead of a pre-computed
+    # elapsed value.  The client runs its own setInterval and computes elapsed
+    # locally so the display ticks every second without waiting for a push.
+    activity_started_ms = (
+        int(orchestrator.activity_started * 1000) if orchestrator.activity_started else None
+    )
+    # Drain the status-event queue so every llm_loading / llm_ready /
+    # llm_load_failed event reaches the client exactly once.  Each event is
+    # stamped with the current server time so the client can display a
+    # wall-clock timestamp without relying on round-trip timing.
+    now_ms = int(time.time() * 1000)
+    raw_events = orchestrator.get_status_events()
+    status_events = [{"kind": e.kind, "payload": e.payload, "ts": now_ms} for e in raw_events]
     return {
         "type": "snapshot",
         "nodes": _serialize_snapshot(snapshot, config),
         "status": orchestrator.get_status(),
         "paused": orchestrator.llm_stopped,
         "activity": orchestrator.current_activity,
-        "elapsed": elapsed,
+        "activity_started_ms": activity_started_ms,
+        "status_events": status_events,
         "tokens": orchestrator.token_counts,
     }
 
@@ -191,16 +202,20 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
 
     def _build_payload_with_config() -> dict:
         snapshot = orchestrator.get_snapshot()
-        elapsed = None
-        if orchestrator.activity_started:
-            elapsed = round(time.time() - orchestrator.activity_started, 1)
+        activity_started_ms = (
+            int(orchestrator.activity_started * 1000) if orchestrator.activity_started else None
+        )
+        now_ms = int(time.time() * 1000)
+        raw_events = orchestrator.get_status_events()
+        status_events = [{"kind": e.kind, "payload": e.payload, "ts": now_ms} for e in raw_events]
         return {
             "type": "snapshot",
             "nodes": _serialize_snapshot(snapshot, config),
             "status": orchestrator.get_status(),
             "paused": orchestrator.llm_stopped,
             "activity": orchestrator.current_activity,
-            "elapsed": elapsed,
+            "activity_started_ms": activity_started_ms,
+            "status_events": status_events,
             "tokens": orchestrator.token_counts,
         }
 
@@ -612,6 +627,7 @@ def _create_unified_app(
         "ready": False,
         "loading": False,
         "error": "",
+        "message": "",  # current load-progress message from LLM backend
     }
     # Fix #5: protect compound check-and-set operations on `state` from race
     # conditions between concurrent FastAPI handler coroutines (which run on
@@ -641,10 +657,16 @@ def _create_unified_app(
 
     @app.get("/api/status")
     async def api_status():
+        # Prefer the live current_activity from the orchestrator (set by
+        # llm_loading StatusEvents) over the static state["message"] so the
+        # startup screen reflects real-time progress during model loading.
+        orch = state.get("orchestrator")
+        live_msg = (getattr(orch, "current_activity", None) or "") if orch else ""
         return {
             "initialized": state["ready"],
             "loading": state["loading"],
             "error": state["error"],
+            "message": live_msg or state["message"],
         }
 
     @app.get("/api/runs")
@@ -1206,3 +1228,6 @@ def _create_unified_app(
             raise HTTPException(500, str(e))
 
     return app
+
+
+# --- FILE: tests/conftest.py ---
