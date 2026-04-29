@@ -27,6 +27,7 @@ from toddly.core.events import UPDATE_METADATA, Event
 from toddly.infra.logging import get_logger
 from toddly.planning.llm_interface import LLMStoppedError, NativeToolResponse
 from toddly.planning.schemas import (
+    CORRECTION_TURN_SCHEMA,
     EXECUTION_TURN_SCHEMA,
 )
 
@@ -391,11 +392,18 @@ class LLMExecutor:
         if history:
             parts = []
             for entry in history:
-                parts.append(
-                    f"  Tool: {entry['name']}\n"
-                    f"  Args: {json.dumps(entry['args'])}\n"
-                    f"  Result: {entry['result']}"
-                )
+                if entry.get("kind") == "correction":
+                    # Render executor directives as a distinct [SYSTEM] block so
+                    # the model cannot mistake them for failed tool calls.
+                    parts.append(
+                        f"  [SYSTEM DIRECTIVE]: {entry.get('content') or entry.get('result', '')}"
+                    )
+                else:
+                    parts.append(
+                        f"  Tool: {entry['name']}\n"
+                        f"  Args: {json.dumps(entry['args'])}\n"
+                        f"  Result: {entry['result']}"
+                    )
             history_text = "Previous tool calls this turn:\n" + "\n\n".join(parts)
 
         tools_text = self._tool_schema_summary()
@@ -1194,6 +1202,7 @@ class LLMExecutor:
 
         successful_turn_count = 0
         unsuccessful_turn_count = 0
+        consecutive_correction_count = 0  # Fix C: fail-fast on stuck correction loop
 
         for turn in range(self.max_successful_turns + self.max_unsuccessful_turns):
             remaining_successful = max(0, self.max_successful_turns - successful_turn_count)
@@ -1208,6 +1217,10 @@ class LLMExecutor:
             is_final_turn = remaining_successful == 1 or remaining_unsuccessful == 1
             turns_remaining = turns_left
             extra_reminder = ""
+            # Fix A: schema to use for this turn's llm.ask() call — set to
+            # CORRECTION_TURN_SCHEMA when the previous turn was rejected for
+            # having all searches fail, reset to EXECUTION_TURN_SCHEMA otherwise.
+            _next_schema = EXECUTION_TURN_SCHEMA
 
             if expected_files and "write_file" not in {h["name"] for h in history}:
                 extra_reminder += build_executor_file_reminder(expected_files, turns_remaining)
@@ -1294,7 +1307,7 @@ class LLMExecutor:
                     _sk["on_token"] = reporter.make_token_cb()
                     _sk["on_heartbeat"] = reporter.make_heartbeat_cb()
                 try:
-                    raw = self.llm.ask(prompt, schema=EXECUTION_TURN_SCHEMA, **_sk)
+                    raw = self.llm.ask(prompt, schema=_next_schema, **_sk)
                 finally:
                     if _streaming:
                         reporter.clear_streaming()
@@ -1333,29 +1346,56 @@ class LLMExecutor:
                         and "no results" not in h.get("result", "").lower()
                     ]
                     if not successful_searches:
+                        consecutive_correction_count += 1
+                        # Fix C: if the model has ignored two consecutive
+                        # correction turns without calling any tool, it is
+                        # stuck.  Fail fast rather than burning all remaining
+                        # turns on identical useless inference.
+                        if consecutive_correction_count >= 2:
+                            logger.error(
+                                "[EXECUTOR] Node %s: model ignored %d consecutive "
+                                "correction turns without calling a tool — aborting",
+                                node.id,
+                                consecutive_correction_count,
+                            )
+                            return None
                         logger.warning(
                             "[EXECUTOR] Node %s set done=true but all search tool "
-                            "calls failed — injecting correction turn",
+                            "calls failed — injecting correction turn %d",
                             node.id,
+                            consecutive_correction_count,
                         )
+                        # Fix B: inject as kind="correction" so the legacy
+                        # history renderer emits a [SYSTEM DIRECTIVE] block
+                        # rather than a fake failed tool call, making it
+                        # unambiguous to the model.
                         history = self._append_to_history(
                             history,
                             {
-                                "name": "web_search",
-                                "args": {},
-                                "result": (
-                                    "ERROR: You cannot set done=true because every "
+                                "kind": "correction",
+                                "content": (
+                                    "You cannot set done=true because every "
                                     "web_search call returned an error or no results. "
-                                    "You MUST retrieve real data from the web before "
-                                    "completing this task. Try a completely different "
-                                    "search query — use different keywords, broaden or "
-                                    "narrow the terms, or break the search into smaller "
-                                    "parts. Do NOT fabricate results."
+                                    "You MUST call web_search with a completely "
+                                    "different query before finishing — use different "
+                                    "keywords, broaden or narrow the terms, or break "
+                                    "the search into smaller parts. "
+                                    "Do NOT fabricate results. Do NOT set done=true."
                                 ),
+                                # Legacy fallback fields (history_text loop):
+                                "name": "[correction]",
+                                "args": {},
+                                "result": "",
                             },
                         )
+                        # Fix A: on the NEXT turn use CORRECTION_TURN_SCHEMA so
+                        # constrained generation is physically forced to emit a
+                        # tool_call and cannot output done=true.
+                        _next_schema = CORRECTION_TURN_SCHEMA
                         unsuccessful_turn_count += 1
                         continue
+                    else:
+                        consecutive_correction_count = 0
 
                 if expected_files and "write_file" not in tool_names_used:
                     logger.warning(
@@ -1725,6 +1765,7 @@ class LLMExecutor:
 
         successful_turn_count = 0
         unsuccessful_turn_count = 0
+        consecutive_correction_count = 0  # Fix C: fail-fast on stuck correction loop
 
         for turn in range(self.max_successful_turns + self.max_unsuccessful_turns):
             remaining_successful = max(0, self.max_successful_turns - successful_turn_count)
@@ -1877,10 +1918,20 @@ class LLMExecutor:
                         and "no results" not in h.get("result", "").lower()
                     ]
                     if not successful_searches:
+                        consecutive_correction_count += 1
+                        if consecutive_correction_count >= 2:
+                            logger.error(
+                                "[EXECUTOR] Node %s (native): model ignored %d consecutive "
+                                "correction turns without calling a tool — aborting",
+                                node.id,
+                                consecutive_correction_count,
+                            )
+                            return None
                         logger.warning(
                             "[EXECUTOR] Node %s gave final answer but all search tool "
-                            "calls failed — injecting correction turn (native)",
+                            "calls failed — injecting correction turn %d (native)",
                             node.id,
+                            consecutive_correction_count,
                         )
                         history = self._append_to_history(
                             history,
@@ -1889,16 +1940,17 @@ class LLMExecutor:
                                 "content": (
                                     "Your answer cannot be accepted because every "
                                     "web_search call returned an error or no results. "
-                                    "You MUST successfully retrieve real data from the "
-                                    "web before finishing. Try a completely different "
-                                    "search query — use different keywords, broaden or "
-                                    "narrow the terms, or break the search into smaller "
-                                    "parts. Do NOT fabricate results."
+                                    "You MUST call web_search with a completely different "
+                                    "query before finishing — use different keywords, "
+                                    "broaden or narrow the terms, or break the search "
+                                    "into smaller parts. Do NOT fabricate results."
                                 ),
                             },
                         )
                         unsuccessful_turn_count += 1
                         continue
+                    else:
+                        consecutive_correction_count = 0
 
                 # ── Surface awaiting_user steps ───────────────────────────────
                 if awaiting_steps:

@@ -71,6 +71,13 @@ class ExecutionStepReporter:
     def on_llm_turn(self, turn: int):
         """Called at the top of each executor loop iteration."""
         self._turn = turn
+        # Immediately stamp the activity with the turn number so the status
+        # panel creates a new row for every turn — including correction turns
+        # that have no tool call and would otherwise be invisible.
+        if self._activity_setter:
+            self._activity_setter(
+                f"Executing: {self.parent_node_id} · turn {turn + 1} · generating…"
+            )
 
     def on_tool_start(self, tool_name: str, tool_args: dict) -> str:
         # A tool may legitimately be called more than once per execution
@@ -155,6 +162,30 @@ class ExecutionStepReporter:
 
         self._tool_nodes.setdefault(tool_name, []).append(step_id)
         self._all_step_ids.append(step_id)
+
+        # Update _live_status immediately so the status panel shows which tool
+        # is currently running — not just after it returns.  Without this the
+        # panel is silent for the entire duration of a tool call (potentially
+        # minutes when web_search is retrying with exponential backoff).
+        # We clear any stale preview/streaming from the previous turn so the
+        # JS rendering path knows we're mid-call rather than showing a result.
+        with self._graph_lock:
+            node = self._graph.nodes.get(self.parent_node_id)
+            if node and node.status == "running":
+                ls = node.metadata.get("_live_status") or {}
+                ls["tool"] = tool_name
+                ls["args"] = tool_args
+                ls.pop("preview", None)  # not yet available
+                ls.pop("streaming", None)  # clear any stale LLM stream
+                node.metadata["_live_status"] = ls
+                self._graph.execution_version += 1
+
+        # Update the activity header outside the lock — GIL-safe attribute write.
+        if self._activity_setter:
+            self._activity_setter(
+                f"Executing: {self.parent_node_id} · turn {self._turn + 1} · {tool_name}…"
+            )
+
         return step_id
 
     def on_synthesis(self, result: str):
@@ -428,7 +459,8 @@ class ExecutionStepReporter:
         def _on_heartbeat(elapsed: float) -> None:
             if self._activity_setter:
                 self._activity_setter(
-                    f"Executing: {self.parent_node_id} · generating… {int(elapsed)}s"
+                    f"Executing: {self.parent_node_id}"
+                    f" · turn {self._turn + 1} · generating… {int(elapsed)}s"
                 )
 
         return _on_heartbeat

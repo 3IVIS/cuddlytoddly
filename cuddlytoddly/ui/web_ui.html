@@ -1238,6 +1238,12 @@ const _msgLog = [];          // {ts, kind, text} — in-memory mirror
 let   _lastActivity    = null;   // last data.activity value seen
 let   _lastActivityBase = null;  // base activity (stripped of heartbeat suffix)
 let   _currentActivityEl = null; // DOM row for the current in-progress activity
+// Set to true when an error event (e.g. llm_load_failed) is received so the
+// panel stays visible even after activity clears and the run is not paused.
+let   _panelPinned = false;
+// Tracks node IDs whose failure reason has already been appended to the log
+// so we don't repeat the same message on every subsequent poll tick.
+const _failuresLogged = new Set();
 // Execution fold state — tracks which node/turn we've last persisted so we
 // only create a new result fold when a tool call actually completes.
 let   _execState = { nodeId: null, turn: null };
@@ -1247,7 +1253,14 @@ let   _execState = { nodeId: null, turn: null };
 // compare equal to the base ("Executing: X").
 function _activityBase(s) {
   if (!s) return null;
-  return s.replace(/\s·.*$/, '').trim();
+  // Strip only the variable elapsed-time counter at the end of heartbeat
+  // strings (e.g. "… 4s" → "…", "… 30s" → "…") so that:
+  //   - Repeated heartbeat ticks for the same phase update a single row in place
+  //   - Distinct phases (different tool names, turn numbers, tool→generating
+  //     transitions) create new rows rather than all collapsing to "Executing: X"
+  // The old regex stripped everything from " ·" onwards which made every
+  // "Executing: X · <anything>" map to the same base.
+  return s.replace(/\s+\d+s$/, '').trim();
 }
 
 function _classifyActivity(activity) {
@@ -1297,7 +1310,15 @@ function _appendMsg(ts, kind, icon, text) {
   row.appendChild(tsSpan);
   row.appendChild(iconSpan);
   row.appendChild(textSpan);
-  spBody.appendChild(row);
+  // Insert before the live fold section (stream / planning output) if one
+  // exists, so that log messages always sit above the live generation box
+  // rather than being pushed below it when they arrive in the same tick.
+  const liveSection = spBody.querySelector('.sp-fold-section[data-live="1"]');
+  if (liveSection) {
+    spBody.insertBefore(row, liveSection);
+  } else {
+    spBody.appendChild(row);
+  }
 
   // Trim oldest .sp-msg rows (never remove fold sections)
   const msgs = spBody.querySelectorAll('.sp-msg');
@@ -1458,6 +1479,9 @@ function updateStatusPanel(data) {
     const msg =
       ev.payload?.message || ev.payload?.error ||
       ev.kind.replace(/_/g, ' ');
+    // Pin the panel open whenever an error event arrives (e.g. llm_load_failed)
+    // so the user can read what went wrong even after activity clears.
+    if (kind === 'error') _panelPinned = true;
     // llm_loading events arrive every 2s — update the last loading row in
     // place rather than appending a fresh one on every tick.
     if (ev.kind === 'llm_loading' && _currentActivityEl?.dataset.kind === 'loading') {
@@ -1485,7 +1509,20 @@ function updateStatusPanel(data) {
     }
     if (data.activity) {
       const { kind, icon } = _classifyActivity(data.activity);
-      _currentActivityEl = _appendMsg(now, kind, icon, data.activity);
+      // Only reuse the current row when the status-events loop already created
+      // a row of the SAME kind in this tick — this prevents double-rows for
+      // llm_loading / llm_ready / llm_load_failed events which fire both as
+      // a StatusEvent AND as a data.activity change in the same poll.
+      // Critically: do NOT apply this for 'exec' / 'planning' / 'verify' /
+      // 'info' kinds — those must always create a new row when the base
+      // changes, otherwise phase transitions (e.g. web_search→generating→
+      // web_search again) silently overwrite a single row in place.
+      const DEDUP_KINDS = new Set(['loading', 'ready', 'error']);
+      if (DEDUP_KINDS.has(kind) && _currentActivityEl?.dataset.kind === kind) {
+        _updateMsg(_currentActivityEl, data.activity);
+      } else {
+        _currentActivityEl = _appendMsg(now, kind, icon, data.activity);
+      }
     }
     _lastActivityBase = newBase;
   } else if (newBase && data.activity !== _lastActivity) {
@@ -1506,9 +1543,35 @@ function updateStatusPanel(data) {
     actEl.textContent = 'Paused';
     _stopTimer();
   } else {
-    panel.classList.add('hidden');
-    spinner.style.display = 'none';
-    _stopTimer();
+    // Keep the panel visible if any nodes failed or a fatal error event
+    // (e.g. llm_load_failed) was received — the user needs to see why
+    // the run stopped rather than having the panel disappear on them.
+    const hasFailed = (data.status?.by_status?.failed ?? 0) > 0;
+    if (hasFailed || _panelPinned) {
+      panel.classList.remove('hidden');
+      spinner.style.display = 'none';
+      actEl.textContent = hasFailed ? 'Run stopped — errors occurred' : 'Load error';
+      _stopTimer();
+      // Append verification_failure reasons once per failed node so the user
+      // can see exactly what went wrong without opening the node detail panel.
+      // Step nodes (hidden: true when healthy, but exposed on failure) are
+      // skipped — only nodes that carry a verification_failure message are shown.
+      if (hasFailed) {
+        for (const n of Object.values(nodes)) {
+          if (n.status === 'failed' && !_failuresLogged.has(n.id)) {
+            _failuresLogged.add(n.id);
+            const reason = n.metadata?.verification_failure;
+            if (reason) {
+              _appendMsg(Date.now(), 'error', '✕', `${n.id}: ${reason}`);
+            }
+          }
+        }
+      }
+    } else {
+      panel.classList.add('hidden');
+      spinner.style.display = 'none';
+      _stopTimer();
+    }
   }
 
   // ── Execution live status (running node with _live_status) ─────────────
@@ -1586,6 +1649,15 @@ function updateStatusPanel(data) {
       spBody.appendChild(streamSection);
       _scrollIfNearBottom(spBody);
     }
+    // Update the summary on every poll so it reflects whether we're waiting
+    // on a tool call or generating — not just when the section is first created.
+    {
+      const streamSummary = streamSection.querySelector('.sp-fold-summary');
+      if (streamSummary) {
+        const toolRunning = ls.tool && !ls.preview;
+        streamSummary.textContent = toolRunning ? `Running: ${ls.tool}…` : 'Generating…';
+      }
+    }
     const streamBody = document.getElementById(`${streamSectionId}-body`);
     if (streamBody) {
       const newText = ls.streaming || '';
@@ -1601,7 +1673,14 @@ function updateStatusPanel(data) {
   } else {
     // No running node — finalize any live execution sections.
     spBody.querySelectorAll('.sp-fold-section[data-live="1"]').forEach(el => {
-      if (el.id?.startsWith('sp-exec-')) {
+      if (!el.id?.startsWith('sp-exec-')) return;
+      const body = el.querySelector('.sp-fold-body');
+      const hasContent = body && body.textContent.trim().length > 0;
+      if (!hasContent) {
+        // No streaming content was ever written (e.g. constrained inference).
+        // Remove the empty "Generating…" stub rather than leaving it in history.
+        el.remove();
+      } else {
         el.dataset.live = '0';
         el.classList.add('sp-fold-history');
         el.open = false;

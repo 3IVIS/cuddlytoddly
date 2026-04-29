@@ -294,6 +294,36 @@ EXECUTION_TURN_SCHEMA = {
     "required": ["done"],
 }
 
+# Schema used exclusively for correction turns — when the executor has
+# rejected a done=true response because all searches failed.  Forces the
+# constrained generator to emit a tool_call; done=false is the only valid
+# value so the model physically cannot short-circuit back to done=true.
+CORRECTION_TURN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "done": {
+            # const forces constrained inference to always emit false here —
+            # the grammar has no branch that produces true, so the model
+            # cannot skip the required tool call.
+            "const": False,
+            "description": "Must be false — you are required to call a tool.",
+        },
+        "tool_call": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "args": {
+                    "type": "object",
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["name", "args"],
+            "description": "The tool to call. Required.",
+        },
+    },
+    "required": ["done", "tool_call"],
+}
+
 # ---------------------------------------------------------------------------
 # Quality-gate schemas
 # ---------------------------------------------------------------------------
