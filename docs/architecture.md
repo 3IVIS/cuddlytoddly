@@ -37,7 +37,7 @@ User goal (string)
 
 **No hardcoded parameters.** Every numeric limit — character budgets, turn counts, retry thresholds, polling intervals — is read from `config.toml` at startup and passed down through constructors. Changing behaviour requires only a config edit, not a code change.
 
-**Skills are data-driven.** Drop a folder with a `SKILL.md` and optional `tools.py` into `cuddlytoddly/skills/` — the `SkillLoader` discovers and registers them automatically at startup with no code changes required.
+**Skills are data-driven.** Drop a folder with a `SKILL.md` and optional `tools.py` into `toddly/skills/` — the `SkillLoader` discovers and registers them automatically at startup with no code changes required.
 
 **Planning is a pipeline, not a single call.** Every goal expansion involves up to four LLM calls and three deterministic stages before any event reaches the graph: a clarification generation call (Call 1), a decomposition call (Call 2), an optional scrutiny call (Call 3), structural validation (`LLMOutputValidator`), and deterministic constraint enforcement (`PlanConstraintChecker`). Each stage has a clearly scoped responsibility so failures in one don't cascade into another.
 

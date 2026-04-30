@@ -21,8 +21,10 @@ All JSON schemas used for structured LLM output are defined here and imported by
 | `CLARIFICATION_GENERATION_SCHEMA` | `LLMPlanner` clarification field generation (Call 1) |
 | `AWAITING_INPUT_CHECK_SCHEMA` | Executor pre-flight check (determines whether to use broadened description) |
 | `BROADENED_DESCRIPTION_SCHEMA` | Executor fallback call (generates broadened description when primary call returns empty) |
+| `CORRECTION_TURN_SCHEMA` | Executor correction turn — used instead of `EXECUTION_TURN_SCHEMA` when the previous turn was rejected by the quality gate |
+| `STEP_EXECUTION_REPORT_SCHEMA` | `ExecutionStepReporter` — structured report for individual tool-call steps within a task |
 
-All schemas from this module are also re-exported by `agent_core.planning.llm_interface` for backward compatibility.
+All schemas from this module are also re-exported by `toddly.planning.llm_interface` for backward compatibility.
 
 ---
 
@@ -46,7 +48,8 @@ Assembles the full prompt for one executor turn. Called by `LLMExecutor._build_p
 ```python
 build_planner_prompt(
     *, pruned_view_json, goals_repr_json, existing_ids_note,
-    skills_block, min_tasks=3, max_tasks=8, clarification_block=""
+    skills_block, min_tasks=3, max_tasks=8, clarification_block="",
+    root_goal_text: str = "", is_replan: bool = False
 ) -> str
 ```
 
@@ -61,7 +64,10 @@ build_plan_scrutinizer_prompt(
 Assembles the scrutinizer prompt used to self-review a draft plan. The full original planning prompt is embedded verbatim so every constraint (DAG snapshot, existing node IDs, task-count limits, dependency semantics, format rules) remains in context during the second call. Called by `LLMPlanner._scrutinize()` when `scrutinize_plan=True`.
 
 ```python
-build_clarification_prompt(goal_text: str, skills_summary: str = "") -> str
+build_clarification_prompt(
+    goal_text: str, skills_summary: str = "",
+    min_fields: int = 3, max_fields: int = 8
+) -> str
 ```
 
 Generates the prompt for Call 1 — the dedicated LLM call that produces the clarification node fields before planning begins.
@@ -189,7 +195,7 @@ def generate(self, prompt: str) -> str:
 
 ### `TokenCounter`
 
-Module-level singleton (`token_counter`) that tracks tokens consumed across all LLM calls in the current process. Imported from `agent_core.planning.llm_interface`.
+Module-level singleton (`token_counter`) that tracks tokens consumed across all LLM calls in the current process. Imported from `toddly.planning.llm_interface`.
 
 ```python
 from toddly.planning.llm_interface import token_counter
@@ -475,7 +481,7 @@ For nodes with declared file-type outputs, `verify_result` checks disk existence
 
 ### `SkillLoader(skills_dir=None)`
 
-Discovers and loads skills from `cuddlytoddly/skills/` (or a custom path).
+Discovers and loads skills from `toddly/skills/` (or a custom path).
 
 ```python
 skills = SkillLoader()
