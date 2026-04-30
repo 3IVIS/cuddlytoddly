@@ -416,6 +416,12 @@ class LlamaCppLLM(BaseLLM):
 
         fingerprint = json.dumps(schema, sort_keys=True)
         if fingerprint not in self._generators:
+            # _load_outlines is guarded by a lock and a double-checked flag so
+            # its status events (llm_loading / llm_ready) fire at most once per
+            # process lifetime — for the initial outlines model build only.
+            # Subsequent schema compilations (e.g. CORRECTION_TURN_SCHEMA on
+            # the first correction turn) are fast (< 1s) and emit no events so
+            # the user does not see a spurious second "Initialising…" row.
             self._load_outlines()
             logger.info(
                 "[LLAMACPP] Building constrained generator for schema %s...",
@@ -423,7 +429,7 @@ class LlamaCppLLM(BaseLLM):
             )
             output_type = outlines.json_schema(fingerprint)
             self._generators[fingerprint] = outlines.Generator(self._outlines_model, output_type)
-            logger.info("[LLAMACPP] Constrained generator ready")
+            logger.info("[LLAMACPP] Constrained generator ready for schema %s", fingerprint[:40])
         return self._generators[fingerprint]
 
     # ── Chat template ─────────────────────────────────────────────────────────
@@ -871,6 +877,3 @@ class LlamaCppLLM(BaseLLM):
             logger.info("[LLAMACPP] Cache cleared")
         else:
             logger.info("[LLAMACPP] Cache is disabled -- nothing to clear")
-
-
-# --- FILE: toddly/planning/llm_base.py ---

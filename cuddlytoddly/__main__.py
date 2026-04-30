@@ -24,7 +24,7 @@ from cuddlytoddly.ui.curses_ui import run_ui
 from cuddlytoddly.ui.startup import StartupChoice, run_startup_curses
 from cuddlytoddly.ui.ui_config import make_cuddlytoddly_config
 from cuddlytoddly.ui.web_server import run_web_ui
-from toddly.core.events import ADD_NODE, Event
+from toddly.core.events import ADD_NODE, DETACH_NODE, RESET_NODE, UPDATE_METADATA, Event
 from toddly.core.id_generator import StableIDGenerator
 from toddly.core.reducer import apply_event
 from toddly.core.task_graph import TaskGraph
@@ -375,7 +375,13 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
 
         for step_id in [n.id for n in graph.nodes.values() if n.node_type == "execution_step"]:
             if step_id in graph.nodes:
-                graph.detach_node(step_id)
+                # Route through apply_event (with the live event_log) so:
+                #   1. The detach is written to events.jsonl — a second restart
+                #      after this one will replay DETACH_NODE rather than finding
+                #      stale execution_step nodes in the log.
+                #   2. structure_version is incremented so the WS client sees the
+                #      structural change on first push.
+                apply_event(graph, Event(DETACH_NODE, {"node_id": step_id}), event_log)
 
         for node_id in {
             n.id
@@ -384,62 +390,78 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
         }:
             n = graph.nodes.get(node_id)
             if n:
-                n.status = "pending"
-                n.result = None
-                n.metadata.pop("retry_count", None)
-                n.metadata.pop("verification_failure", None)
-                n.metadata.pop("verified", None)
-                # Also clear retry_after so a node that crashed while
-                # inside an exponential-backoff window is not silently skipped
-                # by _execution_pass() after restart.  Without this, the node
-                # would sit in "ready" status but never be launched until the
-                # stale timestamp expires (up to 60 s after the crash).
-                n.metadata.pop("retry_after", None)
+                # Route through apply_event so restart-resets are persisted to
+                # events.jsonl.  Without this, a second crash before any new work
+                # is done would replay the old MARK_RUNNING/MARK_FAILED without
+                # seeing the reset, leaving the node stuck in its crash-time status.
+                apply_event(graph, Event(RESET_NODE, {"node_id": node_id}), event_log)
+                # RESET_NODE (via node.reset()) clears status/result/retry metadata,
+                # but does NOT clear retry_after or gap_fill_attempts — clear them
+                # separately so that:
+                #   - a node that crashed inside an exponential-backoff window isn't
+                #     silently skipped by _execution_pass() on restart.
+                #   - a node whose quality-gate attempt counter reached the maximum
+                #     before the crash gets a fresh gap-fill check on restart.
+                #     Without this, if the counter hit max but the bridge ADD_NODE
+                #     event never made it to disk (crash between UPDATE_METADATA and
+                #     ADD_NODE), the node would permanently skip the quality gate and
+                #     execute with missing inputs.
+                apply_event(
+                    graph,
+                    Event(
+                        UPDATE_METADATA,
+                        {
+                            "node_id": node_id,
+                            "metadata": {"retry_after": None, "gap_fill_attempts": 0},
+                        },
+                    ),
+                    event_log,
+                )
 
         graph.recompute_readiness()
 
-        # ── Restore historical token counts ───────────────────────────────────
-        # Read llamacpp_cache.json (present for llama.cpp runs; absent for
-        # Anthropic/OpenAI runs — skipped silently in that case).
-        # The original code approximated token counts as len(text) // 4,
-        # which is an English-centric heuristic that can be off by 2-5× for
-        # non-English text.  We now use tiktoken (if available) for a much more
-        # accurate count, and fall back to the character-based approximation only
-        # when tiktoken is not installed.  A warning is logged on fallback so the
-        # discrepancy is visible in the run logs.
-        cache_path = run_dir / "llamacpp_cache.json"
-        if cache_path.exists():
+        # ── Restore historical token counts ─────────────────────────────────────────────────────
+        # Two cache formats exist depending on the backend:
+        #   llamacpp_cache.json — llama.cpp runs; entries are {key: {prompt, response}}
+        #                         so both prompt and completion token counts can be
+        #                         approximated from text length / tiktoken.
+        #   api_cache.json      — Claude / OpenAI runs; entries are {hash: response}
+        #                         (no prompt stored), so only completion tokens can be
+        #                         approximated.  We seed what we can so the toolbar is
+        #                         not permanently stuck at zero on API run reloads.
+        # tiktoken is used when available for a more accurate estimate; the len//4
+        # fallback is kept for environments where it is not installed.
+
+        def _make_token_counter_fn():
             try:
-                entries = json.loads(cache_path.read_text(encoding="utf-8"))
+                import tiktoken
+
+                enc = tiktoken.get_encoding("cl100k_base")
+                return lambda text: len(enc.encode(text))
+            except ImportError:
+                _logger.warning(
+                    "[STARTUP] tiktoken not installed — token counts seeded from cache "
+                    "will use the len//4 approximation which may be inaccurate for "
+                    "non-English text.  Install tiktoken for accurate counts."
+                )
+                return lambda text: len(text) // 4
+
+        llamacpp_cache = run_dir / "llamacpp_cache.json"
+        api_cache = run_dir / "api_cache.json"
+
+        if llamacpp_cache.exists():
+            try:
+                entries = json.loads(llamacpp_cache.read_text(encoding="utf-8"))
+                _count_tokens = _make_token_counter_fn()
                 prompt_total = 0
                 completion_total = 0
-
-                try:
-                    import tiktoken
-
-                    enc = tiktoken.get_encoding("cl100k_base")
-
-                    def _count_tokens(text: str) -> int:
-                        return len(enc.encode(text))
-
-                except ImportError:
-                    _logger.warning(
-                        "[STARTUP] tiktoken not installed — token counts seeded from cache "
-                        "will use the len//4 approximation which may be inaccurate for "
-                        "non-English text.  Install tiktoken for accurate counts."
-                    )
-
-                    def _count_tokens(text: str) -> int:  # type: ignore[misc]
-                        return len(text) // 4
-
                 for entry in entries.values():
                     prompt_total += _count_tokens(entry.get("prompt", ""))
                     completion_total += _count_tokens(entry.get("response", ""))
-
                 run_token_counter.seed(prompt_total, completion_total, calls=len(entries))
                 token_counter.seed(prompt_total, completion_total, calls=len(entries))
                 _logger.info(
-                    "[STARTUP] Seeded token counter from cache: "
+                    "[STARTUP] Seeded token counter from llamacpp cache: "
                     "%d prompt + %d completion = %d total (%d calls)",
                     prompt_total,
                     completion_total,
@@ -447,7 +469,31 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
                     len(entries),
                 )
             except Exception as exc:
-                _logger.warning("[STARTUP] Could not seed token counter from cache: %s", exc)
+                _logger.warning(
+                    "[STARTUP] Could not seed token counter from llamacpp cache: %s", exc
+                )
+
+        elif api_cache.exists():
+            # api_cache stores {hash: response_text} — no prompt is persisted,
+            # so we can only approximate completion tokens.  Prompt tokens are
+            # left at zero rather than guessing; the display will be conservative
+            # but at least completion volume is visible after a reload.
+            try:
+                entries = json.loads(api_cache.read_text(encoding="utf-8"))
+                _count_tokens = _make_token_counter_fn()
+                completion_total = sum(
+                    _count_tokens(v) for v in entries.values() if isinstance(v, str)
+                )
+                run_token_counter.seed(0, completion_total, calls=len(entries))
+                token_counter.seed(0, completion_total, calls=len(entries))
+                _logger.info(
+                    "[STARTUP] Seeded token counter from api cache (completion only): "
+                    "%d completion tokens (%d calls)",
+                    completion_total,
+                    len(entries),
+                )
+            except Exception as exc:
+                _logger.warning("[STARTUP] Could not seed token counter from api cache: %s", exc)
         # ─────────────────────────────────────────────────────────────────────
 
     else:

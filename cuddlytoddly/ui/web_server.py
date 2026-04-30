@@ -97,16 +97,18 @@ def _build_payload(orchestrator, config: UIConfig | None = None) -> dict:
         int(orchestrator.activity_started * 1000) if orchestrator.activity_started else None
     )
     # Drain the status-event queue so every llm_loading / llm_ready /
-    # llm_load_failed event reaches the client exactly once.  Each event is
-    # stamped with the current server time so the client can display a
-    # wall-clock timestamp without relying on round-trip timing.
-    now_ms = int(time.time() * 1000)
+    # llm_load_failed event reaches the client exactly once.  Use each
+    # event's own created_at_ms so that events created at different times
+    # but drained in the same poll tick display their real timestamps.
     raw_events = orchestrator.get_status_events()
-    status_events = [{"kind": e.kind, "payload": e.payload, "ts": now_ms} for e in raw_events]
+    status_events = [
+        {"kind": e.kind, "payload": e.payload, "ts": e.created_at_ms} for e in raw_events
+    ]
     return {
         "type": "snapshot",
         "nodes": _serialize_snapshot(snapshot, config),
         "status": orchestrator.get_status(),
+        "structure_version": orchestrator.graph.structure_version,
         "paused": orchestrator.llm_stopped,
         "activity": orchestrator.current_activity,
         "activity_started_ms": activity_started_ms,
@@ -205,13 +207,15 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
         activity_started_ms = (
             int(orchestrator.activity_started * 1000) if orchestrator.activity_started else None
         )
-        now_ms = int(time.time() * 1000)
         raw_events = orchestrator.get_status_events()
-        status_events = [{"kind": e.kind, "payload": e.payload, "ts": now_ms} for e in raw_events]
+        status_events = [
+            {"kind": e.kind, "payload": e.payload, "ts": e.created_at_ms} for e in raw_events
+        ]
         return {
             "type": "snapshot",
             "nodes": _serialize_snapshot(snapshot, config),
             "status": orchestrator.get_status(),
+            "structure_version": orchestrator.graph.structure_version,
             "paused": orchestrator.llm_stopped,
             "activity": orchestrator.current_activity,
             "activity_started_ms": activity_started_ms,
@@ -261,6 +265,15 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
     async def get_snapshot():
         return await asyncio.to_thread(_build_payload_with_config)
 
+    # ── Shared valid-status set ───────────────────────────────────────────────
+    # Use config when available; fall back to the full lifecycle set so that
+    # "ready" and "to_be_expanded" are never silently discarded.
+    _VALID_STATUSES = (
+        config.valid_status_values
+        if config
+        else ("pending", "ready", "running", "done", "failed", "to_be_expanded")
+    )
+
     # ── Node mutations ────────────────────────────────────────────────────────
 
     @app.post("/api/node")
@@ -270,12 +283,21 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
             raise HTTPException(400, "node_id is required")
         dependencies = body.get("dependencies", [])
         dependents = body.get("dependents", [])
+        node_type = body.get("node_type", "task")
+        logger.info(
+            "[USER] Add node: %s (type=%s deps=%s dependents=%s)",
+            node_id,
+            node_type,
+            dependencies,
+            dependents,
+        )
+        orchestrator.push_user_action_event(f"Added node: {node_id}")
         orchestrator.event_queue.put(
             Event(
                 ADD_NODE,
                 {
                     "node_id": node_id,
-                    "node_type": body.get("node_type", "task"),
+                    "node_type": node_type,
                     "dependencies": dependencies,
                     "origin": "user",
                     "metadata": {"description": body.get("description", "")},
@@ -284,13 +306,7 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
         )
         for dep_id in dependents:
             orchestrator.event_queue.put(
-                Event(
-                    ADD_DEPENDENCY,
-                    {
-                        "node_id": dep_id,
-                        "depends_on": node_id,
-                    },
-                )
+                Event(ADD_DEPENDENCY, {"node_id": dep_id, "depends_on": node_id})
             )
             orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": dep_id}))
         return {"ok": True}
@@ -309,48 +325,33 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
         orchestrator.event_queue.put(
             Event(
                 UPDATE_METADATA,
-                {
-                    "node_id": node_id,
-                    "origin": "user",
-                    "metadata": _meta_update,
-                },
+                {"node_id": node_id, "origin": "user", "metadata": _meta_update},
             )
         )
         st = body.get("status", "")
-        if st in (
-            config.valid_status_values if config else ("pending", "done", "running", "failed")
-        ):
-            orchestrator.event_queue.put(
-                Event(
-                    UPDATE_STATUS,
-                    {
-                        "node_id": node_id,
-                        "status": st,
-                    },
-                )
-            )
+        if st in _VALID_STATUSES:
+            logger.info("[USER] Edit node %s: status → %s", node_id, st)
+            orchestrator.push_user_action_event(f"Set {node_id} status → {st}")
+            orchestrator.event_queue.put(Event(UPDATE_STATUS, {"node_id": node_id, "status": st}))
         if "dependencies" in body:
             old = set(node.dependencies)
             new = set(body["dependencies"])
-            for removed in old - new:
-                orchestrator.event_queue.put(
-                    Event(
-                        REMOVE_DEPENDENCY,
-                        {
-                            "node_id": node_id,
-                            "depends_on": removed,
-                        },
-                    )
+            removed_deps = old - new
+            added_deps = new - old
+            if removed_deps or added_deps:
+                logger.info(
+                    "[USER] Edit node %s: deps removed=%s added=%s",
+                    node_id,
+                    sorted(removed_deps),
+                    sorted(added_deps),
                 )
-            for added in new - old:
+            for removed in removed_deps:
                 orchestrator.event_queue.put(
-                    Event(
-                        ADD_DEPENDENCY,
-                        {
-                            "node_id": node_id,
-                            "depends_on": added,
-                        },
-                    )
+                    Event(REMOVE_DEPENDENCY, {"node_id": node_id, "depends_on": removed})
+                )
+            for added in added_deps:
+                orchestrator.event_queue.put(
+                    Event(ADD_DEPENDENCY, {"node_id": node_id, "depends_on": added})
                 )
         if "dependents" in body:
             # Reuse the snapshot captured at the top of this handler
@@ -362,26 +363,23 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
             # ADD_DEPENDENCY events for the dependents edit.
             old_deps = {nid for nid, n in snap.items() if node_id in n.dependencies}
             new_deps = {d for d in body["dependents"] if d in snap and d != node_id}
-            for removed in old_deps - new_deps:
+            removed_dep = old_deps - new_deps
+            added_dep = new_deps - old_deps
+            if removed_dep or added_dep:
+                logger.info(
+                    "[USER] Edit node %s: dependents removed=%s added=%s",
+                    node_id,
+                    sorted(removed_dep),
+                    sorted(added_dep),
+                )
+            for removed in removed_dep:
                 orchestrator.event_queue.put(
-                    Event(
-                        REMOVE_DEPENDENCY,
-                        {
-                            "node_id": removed,
-                            "depends_on": node_id,
-                        },
-                    )
+                    Event(REMOVE_DEPENDENCY, {"node_id": removed, "depends_on": node_id})
                 )
                 orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": removed}))
-            for added in new_deps - old_deps:
+            for added in added_dep:
                 orchestrator.event_queue.put(
-                    Event(
-                        ADD_DEPENDENCY,
-                        {
-                            "node_id": added,
-                            "depends_on": node_id,
-                        },
-                    )
+                    Event(ADD_DEPENDENCY, {"node_id": added, "depends_on": node_id})
                 )
                 orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": added}))
 
@@ -397,13 +395,12 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
         )
 
         if result_changed:
+            logger.info("[USER] Edit node %s: result updated", node_id)
+            orchestrator.push_user_action_event(f"Updated result: {node_id}")
             orchestrator.event_queue.put(
                 Event(
                     SET_RESULT,
-                    {
-                        "node_id": node_id,
-                        "result": body["result"] if body["result"] else None,
-                    },
+                    {"node_id": node_id, "result": body["result"] if body["result"] else None},
                 )
             )
             for child_id in node.children:
@@ -411,6 +408,16 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
                 if child and child.status == "done":
                     orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
         elif desc_changed or deps_changed or steps_changed:
+            changed = [
+                k
+                for k, v in [
+                    ("description", desc_changed),
+                    ("dependencies", deps_changed),
+                    ("execution_steps", steps_changed),
+                ]
+                if v
+            ]
+            logger.info("[USER] Edit node %s: %s changed — resetting", node_id, changed)
             orchestrator.event_queue.put(Event(RESET_NODE, {"node_id": node_id}))
 
         return {"ok": True}
@@ -423,6 +430,13 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
             raise HTTPException(404, "node not found")
         parents = list(node.dependencies)
         children = list(node.children)
+        logger.info(
+            "[USER] Remove node: %s (mode=%s children=%s)",
+            node_id,
+            mode,
+            children,
+        )
+        orchestrator.push_user_action_event(f"Removed node: {node_id} ({mode})")
         q = orchestrator.event_queue
         if mode == "rewire":
             for child in children:
@@ -444,6 +458,8 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
 
     @app.post("/api/node/{node_id:path}/retry")
     async def retry_node(node_id: str):
+        logger.info("[USER] Retry node: %s", node_id)
+        orchestrator.push_user_action_event(f"Retry scheduled: {node_id}")
         orchestrator.retry_node(node_id)
         return {"ok": True}
 
@@ -477,6 +493,8 @@ def create_app(orchestrator, run_dir: Path, config: UIConfig | None = None) -> F
         awaiting_user node, transitioning it to done and unblocking downstream
         dependents.
         """
+        logger.info("[USER] Confirm node: %s", node_id)
+        orchestrator.push_user_action_event(f"Confirmed done: {node_id}")
         confirmed = orchestrator.confirm_node(node_id)
         if not confirmed:
             snap = orchestrator.get_snapshot()
@@ -977,6 +995,9 @@ def _create_unified_app(
     async def get_snapshot():
         return await asyncio.to_thread(_build_payload, _orch(), _ui_config)
 
+    # ── Shared valid-status set ───────────────────────────────────────────────
+    _VALID_STATUSES = ("pending", "ready", "running", "done", "failed", "to_be_expanded")
+
     @app.post("/api/node")
     async def add_node(body: dict):
         orch = _orch()
@@ -985,12 +1006,21 @@ def _create_unified_app(
             raise HTTPException(400, "node_id is required")
         dependencies = body.get("dependencies", [])
         dependents = body.get("dependents", [])
+        node_type = body.get("node_type", "task")
+        logger.info(
+            "[USER] Add node: %s (type=%s deps=%s dependents=%s)",
+            node_id,
+            node_type,
+            dependencies,
+            dependents,
+        )
+        orch.push_user_action_event(f"Added node: {node_id}")
         orch.event_queue.put(
             Event(
                 ADD_NODE,
                 {
                     "node_id": node_id,
-                    "node_type": body.get("node_type", "task"),
+                    "node_type": node_type,
                     "dependencies": dependencies,
                     "origin": "user",
                     "metadata": {"description": body.get("description", "")},
@@ -998,15 +1028,7 @@ def _create_unified_app(
             )
         )
         for dep_id in dependents:
-            orch.event_queue.put(
-                Event(
-                    ADD_DEPENDENCY,
-                    {
-                        "node_id": dep_id,
-                        "depends_on": node_id,
-                    },
-                )
-            )
+            orch.event_queue.put(Event(ADD_DEPENDENCY, {"node_id": dep_id, "depends_on": node_id}))
             orch.event_queue.put(Event(RESET_NODE, {"node_id": dep_id}))
         return {"ok": True}
 
@@ -1025,24 +1047,31 @@ def _create_unified_app(
         orch.event_queue.put(
             Event(
                 UPDATE_METADATA,
-                {
-                    "node_id": node_id,
-                    "origin": "user",
-                    "metadata": _meta_update,
-                },
+                {"node_id": node_id, "origin": "user", "metadata": _meta_update},
             )
         )
         st = body.get("status", "")
-        if st in ("pending", "done", "running", "failed", "to_be_expanded"):
+        if st in _VALID_STATUSES:
+            logger.info("[USER] Edit node %s: status → %s", node_id, st)
+            orch.push_user_action_event(f"Set {node_id} status → {st}")
             orch.event_queue.put(Event(UPDATE_STATUS, {"node_id": node_id, "status": st}))
         if "dependencies" in body:
             old = set(node.dependencies)
             new = set(body["dependencies"])
-            for removed in old - new:
+            removed_deps = old - new
+            added_deps = new - old
+            if removed_deps or added_deps:
+                logger.info(
+                    "[USER] Edit node %s: deps removed=%s added=%s",
+                    node_id,
+                    sorted(removed_deps),
+                    sorted(added_deps),
+                )
+            for removed in removed_deps:
                 orch.event_queue.put(
                     Event(REMOVE_DEPENDENCY, {"node_id": node_id, "depends_on": removed})
                 )
-            for added in new - old:
+            for added in added_deps:
                 orch.event_queue.put(
                     Event(ADD_DEPENDENCY, {"node_id": node_id, "depends_on": added})
                 )
@@ -1065,13 +1094,12 @@ def _create_unified_app(
         )
 
         if result_changed:
+            logger.info("[USER] Edit node %s: result updated", node_id)
+            orch.push_user_action_event(f"Updated result: {node_id}")
             orch.event_queue.put(
                 Event(
                     SET_RESULT,
-                    {
-                        "node_id": node_id,
-                        "result": body["result"] if body["result"] else None,
-                    },
+                    {"node_id": node_id, "result": body["result"] if body["result"] else None},
                 )
             )
             for child_id in node.children:
@@ -1079,6 +1107,16 @@ def _create_unified_app(
                 if child and child.status == "done":
                     orch.event_queue.put(Event(RESET_NODE, {"node_id": child_id}))
         elif desc_changed or deps_changed or steps_changed:
+            changed = [
+                k
+                for k, v in [
+                    ("description", desc_changed),
+                    ("dependencies", deps_changed),
+                    ("execution_steps", steps_changed),
+                ]
+                if v
+            ]
+            logger.info("[USER] Edit node %s: %s changed — resetting", node_id, changed)
             orch.event_queue.put(Event(RESET_NODE, {"node_id": node_id}))
 
         return {"ok": True}
@@ -1092,6 +1130,13 @@ def _create_unified_app(
             raise HTTPException(404, "node not found")
         parents = list(node.dependencies)
         children = list(node.children)
+        logger.info(
+            "[USER] Remove node: %s (mode=%s children=%s)",
+            node_id,
+            mode,
+            children,
+        )
+        orch.push_user_action_event(f"Removed node: {node_id} ({mode})")
         q = orch.event_queue
         if mode == "rewire":
             for child in children:
@@ -1113,7 +1158,30 @@ def _create_unified_app(
 
     @app.post("/api/node/{node_id:path}/retry")
     async def retry_node(node_id: str):
+        logger.info("[USER] Retry node: %s", node_id)
+        _orch().push_user_action_event(f"Retry scheduled: {node_id}")
         _orch().retry_node(node_id)
+        return {"ok": True}
+
+    @app.post("/api/node/{node_id:path}/resume")
+    async def resume_node(node_id: str):
+        """
+        Explicitly resume an awaiting_input node from the UI.
+
+        Normally resumption happens automatically via _resume_unblocked_pass
+        when the user fills in the required clarification fields.  This
+        endpoint allows the UI to trigger an immediate manual resume.
+        """
+        resumed = _orch().resume_node(node_id)
+        if not resumed:
+            snap = _orch().get_snapshot()
+            node = snap.get(node_id)
+            if not node:
+                raise HTTPException(404, f"node '{node_id}' not found")
+            raise HTTPException(
+                400,
+                f"node '{node_id}' is not awaiting_input (status={node.status})",
+            )
         return {"ok": True}
 
     @app.post("/api/node/{node_id:path}/confirm")
@@ -1123,6 +1191,8 @@ def _create_unified_app(
         awaiting_user node, transitioning it to done and unblocking downstream
         dependents.
         """
+        logger.info("[USER] Confirm node: %s", node_id)
+        _orch().push_user_action_event(f"Confirmed done: {node_id}")
         confirmed = _orch().confirm_node(node_id)
         if not confirmed:
             snap = _orch().get_snapshot()
@@ -1150,6 +1220,14 @@ def _create_unified_app(
         import json as _json
 
         new_result = _json.dumps(updated_fields, ensure_ascii=False)
+        logger.info(
+            "[USER] Clarification confirmed: %s (%d field(s))",
+            node_id,
+            len(updated_fields),
+        )
+        orch.push_user_action_event(
+            f"Clarification confirmed: {node_id} ({len(updated_fields)} field(s))"
+        )
 
         q = orch.event_queue
         q.put(
@@ -1186,6 +1264,8 @@ def _create_unified_app(
 
     @app.post("/api/goal/{goal_id:path}/replan")
     async def replan_goal(goal_id: str):
+        logger.info("[USER] Replan goal: %s", goal_id)
+        _orch().push_user_action_event(f"Replan scheduled: {goal_id}")
         _orch().replan_goal(goal_id)
         return {"ok": True}
 
@@ -1228,6 +1308,3 @@ def _create_unified_app(
             raise HTTPException(500, str(e))
 
     return app
-
-
-# --- FILE: tests/conftest.py ---

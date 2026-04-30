@@ -380,16 +380,34 @@ class ExecutionStepReporter:
 
         Bumps graph.execution_version so the WebSocket pushes the update to
         the browser within its next 250 ms poll cycle.
+
+        completed_calls is a growing list — never overwritten — so that even
+        when on_llm_turn() fires within the same poll window (fast-failing
+        tools, short tools on long-inference turns) the JS still sees the
+        completed record and can create the result fold on the next tick.
         """
+        completed_entry = {
+            "turn": turn + 1,
+            "tool": tool_name,
+            "preview": tool_result[:200],
+            "args": tool_args or {},
+        }
         with self._graph_lock:
             node = self._graph.nodes.get(self.parent_node_id)
             if node and node.status == "running":
-                node.metadata["_live_status"] = {
-                    "turn": turn + 1,
-                    "tool": tool_name,
-                    "preview": tool_result[:200],
-                    "args": tool_args or {},
-                }
+                ls = node.metadata.get("_live_status") or {}
+                # Append to completed_calls — never clear this list so calls
+                # that complete faster than the 2s poll are not lost.
+                completed = ls.get("completed_calls") or []
+                completed.append(completed_entry)
+                ls["completed_calls"] = completed
+                # Also keep the flat fields for backwards compat with any other
+                # consumers that read _live_status.turn / .tool / .preview.
+                ls["turn"] = turn + 1
+                ls["tool"] = tool_name
+                ls["preview"] = tool_result[:200]
+                ls["args"] = tool_args or {}
+                node.metadata["_live_status"] = ls
                 self._graph.execution_version += 1
 
         # Update the orchestrator's current_activity string so the status

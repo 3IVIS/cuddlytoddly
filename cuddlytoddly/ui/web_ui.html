@@ -32,6 +32,7 @@
   --s-failed:     #d35a5a;
   --s-expanded:   #8b5cf6;
   --s-awaiting:   #e879f9;
+  --s-awaiting-user: #f97316;
   --border-subtle:#e2e4e8;
   --bg-card:      #f8f9fb;
   --bg-code:      #1e2533;
@@ -185,6 +186,20 @@ body {
 }
 #sp-toggle-btn:hover { color: var(--text); }
 
+#sp-copy-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+#sp-copy-btn:hover { color: var(--text); }
+#sp-copy-btn.copied { color: var(--s-done); }
+
 #sp-body {
   padding: 10px;
   display: flex;
@@ -228,6 +243,7 @@ body {
 .sp-msg[data-kind="verify"]   .sp-msg-icon { color: #fbbf24; }
 .sp-msg[data-kind="done"]     .sp-msg-icon { color: #94a3b8; }
 .sp-msg[data-kind="info"]     .sp-msg-icon { color: #94a3b8; }
+.sp-msg[data-kind="user"]     .sp-msg-icon { color: #f97316; }
 /* ── Planning live: folded input/output sections ────────────────────── */
 .sp-fold-section {
   border: 1px solid var(--border);
@@ -415,6 +431,7 @@ details[open] > .sp-fold-summary::before { content: '▼'; }
 .dot-ready    { background: var(--s-ready); }
 .dot-running  { background: var(--s-running); }
 .dot-awaiting { background: var(--s-awaiting); }
+.dot-awaiting-user { background: var(--s-awaiting-user); }
 .dot-done     { background: var(--s-done); }
 .dot-failed   { background: var(--s-failed); }
 .dot-accent   { background: var(--accent); }
@@ -1018,6 +1035,10 @@ details[open] > .sp-fold-summary::before { content: '▼'; }
       <div class="dot dot-awaiting"></div>
       <span id="cnt-awaiting">0</span> awaiting
     </div>
+    <div class="count-pill pill-init-hidden" id="pill-awaiting-user">
+      <div class="dot dot-awaiting-user"></div>
+      <span id="cnt-awaiting_user">0</span> awaiting user
+    </div>
     <div class="count-pill" id="pill-done">
       <div class="dot dot-done"></div>
       <span id="cnt-done">0</span> done
@@ -1065,6 +1086,7 @@ details[open] > .sp-fold-summary::before { content: '▼'; }
       <span id="sp-activity">idle</span>
       <span id="sp-elapsed"></span>
       <button id="sp-toggle-btn" onclick="toggleStatusPanel()" title="Minimise">−</button>
+      <button id="sp-copy-btn" onclick="copyStatusPanel()" title="Copy all status messages">⎘</button>
     </div>
     <div id="sp-body">
     </div>
@@ -1161,6 +1183,10 @@ let modalSubmitFn = null;
 let modalMode = null;
 let _stepsDraft = [];  // mutable copy of execution_steps while the edit modal is open
 
+// Tracks the last-seen structure_version to detect orchestrator replacement
+// (server resets it to 0 when /api/switch starts a new run).
+let _lastKnownSv = -1;
+
 // ── WebSocket ────────────────────────────────────────────────────────────────
 
 function connect() {
@@ -1177,8 +1203,32 @@ function connect() {
   ws.onerror = () => ws.close();
 }
 
+function _resetPanelState() {
+  // Clear all per-session status panel state so a new run starts fresh.
+  // Called whenever the server signals an orchestrator replacement.
+  _panelPinned       = false;
+  _failuresLogged.clear();
+  _lastActivity      = null;
+  _lastActivityBase  = null;
+  _currentActivityEl = null;
+  Object.keys(_lastNodeActivities).forEach(k => delete _lastNodeActivities[k]);
+  _execState = { nodeId: null, turn: null, renderedCalls: new Set() };
+  const spBody = document.getElementById('sp-body');
+  if (spBody) spBody.replaceChildren();
+}
+
 function handleMessage(data) {
   if (data.type !== 'snapshot') return;
+
+  // Detect orchestrator replacement: structure_version resets to 0 on /api/switch.
+  // A decrease (or a jump from -1 to a value lower than our last-seen) means the
+  // server is running a brand-new orchestrator — wipe all per-session panel state
+  // so stale errors, pinned banners, and old fold sections don't bleed into the new run.
+  const sv = data.structure_version ?? _lastKnownSv;
+  if (sv < _lastKnownSv) {
+    _resetPanelState();
+  }
+  _lastKnownSv = sv;
 
   nodes = data.nodes || {};
   paused = data.paused || false;
@@ -1197,13 +1247,16 @@ function handleMessage(data) {
 
   // Toolbar counts
   const counts = (data.status && data.status.by_status) || {};
-  for (const st of ['pending','ready','running','awaiting_input','done','failed']) {
+  for (const st of ['pending','ready','running','awaiting_input','awaiting_user','done','failed']) {
     const el = document.getElementById(`cnt-${st === 'awaiting_input' ? 'awaiting' : st}`);
     if (el) el.textContent = counts[st] || 0;
   }
   // Show/hide the awaiting pill — only relevant when nodes are waiting for input
   const awaitingPill = document.getElementById('pill-awaiting');
   if (awaitingPill) awaitingPill.style.display = (counts.awaiting_input || 0) > 0 ? '' : 'none';
+  // Show/hide the awaiting-user pill — only relevant when nodes require manual action
+  const awaitingUserPill = document.getElementById('pill-awaiting-user');
+  if (awaitingUserPill) awaitingUserPill.style.display = (counts.awaiting_user || 0) > 0 ? '' : 'none';
 
   // Goal description in toolbar (now a button)
   const goal = Object.values(nodes).find(n => n.node_type === GOAL_NODE_TYPE);
@@ -1234,9 +1287,11 @@ function handleMessage(data) {
 // stream.  There is no separate container that would push folds to the bottom.
 
 const _MSG_LOG_MAX = 300;
-const _msgLog = [];          // {ts, kind, text} — in-memory mirror
 let   _lastActivity    = null;   // last data.activity value seen
 let   _lastActivityBase = null;  // base activity (stripped of heartbeat suffix)
+// Per-node activity state for parallel execution — maps node_id → {base, el}
+// so each parallel node gets its own log row that updates independently.
+const _lastNodeActivities = {};
 let   _currentActivityEl = null; // DOM row for the current in-progress activity
 // Set to true when an error event (e.g. llm_load_failed) is received so the
 // panel stays visible even after activity clears and the run is not paused.
@@ -1281,15 +1336,15 @@ function _classifyEvent(kind) {
     case 'llm_loading':    return { kind: 'loading', icon: '⟳' };
     case 'llm_ready':      return { kind: 'ready',   icon: '✓' };
     case 'llm_load_failed':return { kind: 'error',   icon: '✕' };
-    default:               return { kind: 'info',    icon: '·' };
+    case 'user_action':    return { kind: 'user',    icon: '✎' };
+    default:
+      console.warn('[status panel] unrecognised StatusEvent kind:', kind);
+      return { kind: 'info', icon: '·' };
   }
 }
 
 // Append a new log row to #sp-body and return the created element.
 function _appendMsg(ts, kind, icon, text) {
-  _msgLog.push({ ts, kind, text });
-  if (_msgLog.length > _MSG_LOG_MAX) _msgLog.shift();
-
   const spBody = document.getElementById('sp-body');
   if (!spBody) return null;
 
@@ -1487,11 +1542,169 @@ function updateStatusPanel(data) {
     if (ev.kind === 'llm_loading' && _currentActivityEl?.dataset.kind === 'loading') {
       _updateMsg(_currentActivityEl, msg);
     } else {
+      // llm_ready: before appending the ready row, retrospectively mark the
+      // last loading row as done so it shows ✓ rather than keeping its ⟳ icon.
+      // Without this the activity-transition path (below) marks the wrong row
+      // because _currentActivityEl has already been replaced by the ready row.
+      if (ev.kind === 'llm_ready' && _currentActivityEl?.dataset.kind === 'loading') {
+        _currentActivityEl.dataset.kind = 'done';
+        const loadingIcon = _currentActivityEl.querySelector('.sp-msg-icon');
+        if (loadingIcon) loadingIcon.textContent = '✓';
+      }
       _currentActivityEl = _appendMsg(ev.ts || now, kind, icon, msg);
     }
   }
 
+  // ── Execution live status (running node with _live_status) ─────────────
+  // Processed BEFORE activity transitions so that completed tool-call result
+  // folds are inserted before streamSection first — then the next-turn
+  // activity row is inserted before streamSection too, landing between the
+  // fold and the stream in correct chronological order.
+  // Each completed tool call is persisted as a collapsed fold section so the
+  // full history of tool calls stays visible as the user scrolls up.
+  // The live LLM streaming section updates in place (one per node, reused
+  // across turns) so only the current generation is "live".
+  const runningNode = Object.values(nodes).find(
+    n => n.status === 'running' && n.metadata?._live_status
+  );
+
+  if (runningNode) {
+    const ls      = runningNode.metadata._live_status;
+    const nodeId  = runningNode.id;
+    // Sanitise node ID for use in element IDs (replace non-alphanumeric with -)
+    const safeId  = nodeId.replace(/[^a-zA-Z0-9]/g, '-');
+    const turn    = ls.turn ?? 0;
+
+    // ── New execution node or retry of the same node ─────────────────────
+    // When nodeId changes: different node running — always reset state.
+    // When nodeId is the same but completed_calls is empty while renderedCalls
+    // is non-empty: the server cleared _live_status (expose_all on retry),
+    // meaning this is a fresh run of the same node — reset so stale keys from
+    // the previous attempt don't silently swallow the new tool-result folds.
+    if (nodeId !== _execState.nodeId) {
+      _execState = { nodeId, turn: null, renderedCalls: new Set() };
+    } else if (
+      _execState.renderedCalls.size > 0 &&
+      (ls.completed_calls || []).length === 0
+    ) {
+      // completed_calls reset to [] while renderedCalls is non-empty →
+      // server cleared _live_status for a retry of the same node.
+      _execState = { nodeId, turn: null, renderedCalls: new Set() };
+    }
+    if (!_execState.renderedCalls) _execState.renderedCalls = new Set();
+
+    // ── Persist completed tool-call results ──────────────────────────────
+    // Iterate ls.completed_calls (a server-side append-only list) and create
+    // a collapsed fold for every entry not yet rendered.  Using a list instead
+    // of a single turn field means calls that complete faster than the 2s poll
+    // (fast-failing tools, short tools after long inference) are never lost —
+    // they stay in the list until the JS catches them on the next tick.
+    const completedCalls = ls.completed_calls || [];
+    completedCalls.forEach((call, idx) => {
+      const callKey = `${call.turn}-${call.tool}-${idx}`;
+      if (_execState.renderedCalls.has(callKey)) return;
+      _execState.renderedCalls.add(callKey);
+
+      const resultId = `sp-exec-${safeId}-call${idx}`;
+      if (!document.getElementById(resultId)) {
+        const section = document.createElement('details');
+        section.id = resultId;
+        section.className = 'sp-fold-section sp-fold-history';
+        section.dataset.live = '0';
+        section.open = false;
+        const summary = document.createElement('summary');
+        summary.className = 'sp-fold-summary';
+        summary.textContent = `Turn ${call.turn} · ${call.tool}`;
+        const body = document.createElement('pre');
+        body.className = 'sp-fold-body';
+        _setPreContent(body, call.preview);
+        section.appendChild(summary);
+        section.appendChild(body);
+        // Insert BEFORE the live streaming section so results appear above
+        // the next generation, maintaining chronological order.
+        const streamSection = document.getElementById(`sp-exec-${safeId}-stream`);
+        if (streamSection) {
+          spBody.insertBefore(section, streamSection);
+        } else {
+          spBody.appendChild(section);
+        }
+        _scrollIfNearBottom(spBody);
+      }
+    });
+
+    // ── Live streaming section (one per node, reused across turns) ───────
+    const streamSectionId = `sp-exec-${safeId}-stream`;
+    let streamSection = document.getElementById(streamSectionId);
+    if (!streamSection) {
+      streamSection = document.createElement('details');
+      streamSection.id = streamSectionId;
+      streamSection.appendChild(document.createElement('summary')).className = 'sp-fold-summary';
+      streamSection.querySelector('.sp-fold-summary').textContent = 'Generating…';
+      const body = document.createElement('pre');
+      body.className = 'sp-fold-body';
+      body.id = `${streamSectionId}-body`;
+      streamSection.appendChild(body);
+      spBody.appendChild(streamSection);
+    }
+    // Reopen and re-activate if previously closed (e.g. node was retried).
+    // data-live must be '1' for auto-scroll to fire; the section must be open
+    // so the live generation is visible without manual expansion.
+    if (streamSection.dataset.live !== '1') {
+      streamSection.dataset.live = '1';
+      streamSection.open = true;
+      streamSection.classList.remove('sp-fold-history');
+      const body = streamSection.querySelector('.sp-fold-body');
+      if (body) { body.textContent = ''; body.dataset.lastText = ''; }
+      _scrollIfNearBottom(spBody);
+    }
+    streamSection.className = 'sp-fold-section';
+    // Update the summary on every poll so it reflects whether we're waiting
+    // on a tool call or generating — not just when the section is first created.
+    // ls.tool is set by on_tool_start and cleared when the next LLM turn starts
+    // (make_token_cb resets _live_status). If tool is set but no matching entry
+    // exists yet in completed_calls, the tool is still in-flight.
+    {
+      const streamSummary = streamSection.querySelector('.sp-fold-summary');
+      if (streamSummary) {
+        const toolInFlight   = ls.tool && (ls.completed_calls || []).every(c => c.tool !== ls.tool || c.turn !== (ls.turn ?? 0));
+        streamSummary.textContent = toolInFlight ? `Running: ${ls.tool}…` : 'Generating…';
+      }
+    }
+    const streamBody = document.getElementById(`${streamSectionId}-body`);
+    if (streamBody) {
+      const newText = ls.streaming || '';
+      if (streamBody.dataset.lastText !== newText) {
+        streamBody.dataset.lastText = newText;
+        _setPreContent(streamBody, newText);
+        if (streamSection.dataset.live === '1') {
+          streamBody.scrollTop = streamBody.scrollHeight;
+        }
+      }
+    }
+
+  } else {
+    // No running node — finalize any live execution sections.
+    spBody.querySelectorAll('.sp-fold-section[data-live="1"]').forEach(el => {
+      if (!el.id?.startsWith('sp-exec-')) return;
+      const body = el.querySelector('.sp-fold-body');
+      const hasContent = body && body.textContent.trim().length > 0;
+      if (!hasContent) {
+        // No streaming content was ever written (e.g. constrained inference).
+        // Remove the empty "Generating…" stub rather than leaving it in history.
+        el.remove();
+      } else {
+        el.dataset.live = '0';
+        el.classList.add('sp-fold-history');
+        el.open = false;
+      }
+    });
+    if (_execState.nodeId) _execState = { nodeId: null, turn: null, renderedCalls: new Set() };
+  }
+
   // ── Message log: activity transitions (detected client-side) ────────────
+  // Strip the variable heartbeat suffix ("· generating… 4s", "· web_search
+  // (turn 2)") before comparing so ticks on the same activity update the
+  // existing row instead of spawning a new one every 2 seconds.
   // Strip the variable heartbeat suffix ("· generating… 4s", "· web_search
   // (turn 2)") before comparing so ticks on the same activity update the
   // existing row instead of spawning a new one every 2 seconds.
@@ -1531,6 +1744,45 @@ function updateStatusPanel(data) {
   }
 
   _lastActivity = data.activity;
+
+  // ── Parallel node activities ─────────────────────────────────────────────
+  // data.status.node_activities is a dict of {node_id: activity_string} for
+  // every node currently running.  Each parallel node gets its own log row
+  // that updates independently — no node tramples another's display.
+  const nodeActivities = data.status?.node_activities || {};
+
+  // Mark any node that has disappeared (finished) as done.
+  for (const [nid, state] of Object.entries(_lastNodeActivities)) {
+    if (!(nid in nodeActivities)) {
+      if (state.el) {
+        state.el.dataset.kind = 'done';
+        const iconSpan = state.el.querySelector('.sp-msg-icon');
+        if (iconSpan) iconSpan.textContent = '✓';
+      }
+      delete _lastNodeActivities[nid];
+    }
+  }
+
+  // Update or create a row for each currently active node.
+  for (const [nid, actText] of Object.entries(nodeActivities)) {
+    // Skip the node that is already handled by the single-activity path above
+    // (the "dominant" node whose activity === data.activity) to avoid duplicates.
+    if (actText === data.activity) continue;
+
+    const base = _activityBase(actText);
+    const state = _lastNodeActivities[nid];
+
+    if (!state || base !== state.base) {
+      // New node or phase change — create a new row.
+      const { kind, icon } = _classifyActivity(actText);
+      const el = _appendMsg(now, kind, icon, actText);
+      _lastNodeActivities[nid] = { base, el };
+    } else if (actText !== state.lastText) {
+      // Same base, heartbeat tick — update in place.
+      _updateMsg(state.el, actText);
+      state.lastText = actText;
+    }
+  }
 
   if (data.activity) {
     panel.classList.remove('hidden');
@@ -1572,121 +1824,6 @@ function updateStatusPanel(data) {
       spinner.style.display = 'none';
       _stopTimer();
     }
-  }
-
-  // ── Execution live status (running node with _live_status) ─────────────
-  // Each completed tool call is persisted as a collapsed fold section so the
-  // full history of tool calls stays visible as the user scrolls up.
-  // The live LLM streaming section updates in place (one per node, reused
-  // across turns) so only the current generation is "live".
-  const runningNode = Object.values(nodes).find(
-    n => n.status === 'running' && n.metadata?._live_status
-  );
-
-  if (runningNode) {
-    const ls      = runningNode.metadata._live_status;
-    const nodeId  = runningNode.id;
-    // Sanitise node ID for use in element IDs (replace non-alphanumeric with -)
-    const safeId  = nodeId.replace(/[^a-zA-Z0-9]/g, '-');
-    const turn    = ls.turn ?? 0;
-
-    // ── New execution node: clean up any stale exec sections from a previous
-    //    run so they don't appear at the top of a fresh execution.
-    if (nodeId !== _execState.nodeId) {
-      _execState = { nodeId, turn: null };
-    }
-
-    // ── Persist completed tool-call result ───────────────────────────────
-    // When turn advances (a tool just returned), create a collapsed fold for
-    // the result if we haven't already done so for this turn.
-    if (ls.tool && ls.preview && turn !== _execState.turn) {
-      const resultId = `sp-exec-${safeId}-turn${turn}`;
-      if (!document.getElementById(resultId)) {
-        const section = document.createElement('details');
-        section.id = resultId;
-        section.className = 'sp-fold-section sp-fold-history';
-        section.dataset.live = '0';
-        // Start collapsed — user can expand to review any past tool result.
-        section.open = false;
-        const summary = document.createElement('summary');
-        summary.className = 'sp-fold-summary';
-        summary.textContent = `Turn ${turn} · ${ls.tool}`;
-        const body = document.createElement('pre');
-        body.className = 'sp-fold-body';
-        _setPreContent(body, ls.preview);
-        section.appendChild(summary);
-        section.appendChild(body);
-        // Insert BEFORE the live streaming section so the result appears
-        // above the next generation, maintaining chronological order.
-        const streamSection = document.getElementById(`sp-exec-${safeId}-stream`);
-        if (streamSection) {
-          spBody.insertBefore(section, streamSection);
-        } else {
-          spBody.appendChild(section);
-        }
-        _scrollIfNearBottom(spBody);
-      }
-      _execState.turn = turn;
-    }
-
-    // ── Live streaming section (one per node, reused across turns) ───────
-    const streamSectionId = `sp-exec-${safeId}-stream`;
-    let streamSection = document.getElementById(streamSectionId);
-    if (!streamSection) {
-      streamSection = document.createElement('details');
-      streamSection.id = streamSectionId;
-      streamSection.open = true;
-      streamSection.className = 'sp-fold-section';
-      streamSection.dataset.live = '1';
-      const summary = document.createElement('summary');
-      summary.className = 'sp-fold-summary';
-      summary.textContent = 'Generating…';
-      const body = document.createElement('pre');
-      body.className = 'sp-fold-body';
-      body.id = `${streamSectionId}-body`;
-      streamSection.appendChild(summary);
-      streamSection.appendChild(body);
-      spBody.appendChild(streamSection);
-      _scrollIfNearBottom(spBody);
-    }
-    // Update the summary on every poll so it reflects whether we're waiting
-    // on a tool call or generating — not just when the section is first created.
-    {
-      const streamSummary = streamSection.querySelector('.sp-fold-summary');
-      if (streamSummary) {
-        const toolRunning = ls.tool && !ls.preview;
-        streamSummary.textContent = toolRunning ? `Running: ${ls.tool}…` : 'Generating…';
-      }
-    }
-    const streamBody = document.getElementById(`${streamSectionId}-body`);
-    if (streamBody) {
-      const newText = ls.streaming || '';
-      if (streamBody.dataset.lastText !== newText) {
-        streamBody.dataset.lastText = newText;
-        _setPreContent(streamBody, newText);
-        if (streamSection.dataset.live === '1') {
-          streamBody.scrollTop = streamBody.scrollHeight;
-        }
-      }
-    }
-
-  } else {
-    // No running node — finalize any live execution sections.
-    spBody.querySelectorAll('.sp-fold-section[data-live="1"]').forEach(el => {
-      if (!el.id?.startsWith('sp-exec-')) return;
-      const body = el.querySelector('.sp-fold-body');
-      const hasContent = body && body.textContent.trim().length > 0;
-      if (!hasContent) {
-        // No streaming content was ever written (e.g. constrained inference).
-        // Remove the empty "Generating…" stub rather than leaving it in history.
-        el.remove();
-      } else {
-        el.dataset.live = '0';
-        el.classList.add('sp-fold-history');
-        el.open = false;
-      }
-    });
-    if (_execState.nodeId) _execState = { nodeId: null, turn: null };
   }
 
   // ── Planning live status (_planning_live_status on the goal node) ────────
@@ -1779,6 +1916,55 @@ function updateStatusPanel(data) {
       el.open = false;
     });
   }
+}
+
+function copyStatusPanel() {
+  const spBody = document.getElementById('sp-body');
+  const btn    = document.getElementById('sp-copy-btn');
+  if (!spBody) return;
+
+  // Collect text from every visible row and fold section in DOM order.
+  const lines = [];
+  spBody.querySelectorAll('.sp-msg, .sp-fold-section').forEach(el => {
+    if (el.classList.contains('sp-msg')) {
+      const ts   = el.querySelector('.sp-msg-ts')?.textContent  || '';
+      const icon = el.querySelector('.sp-msg-icon')?.textContent || '';
+      const text = el.querySelector('.sp-msg-text')?.textContent || '';
+      lines.push(`${ts} ${icon} ${text}`.trim());
+    } else {
+      // Fold section (tool result or stream)
+      const summary = el.querySelector('.sp-fold-summary')?.textContent || '';
+      const body    = el.querySelector('.sp-fold-body')?.textContent    || '';
+      lines.push(`[${summary.trim()}]`);
+      if (body.trim()) lines.push(body.trim());
+    }
+  });
+
+  const text = lines.join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '✓';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = '⎘';
+      btn.classList.remove('copied');
+    }, 1500);
+  }).catch(() => {
+    // Fallback for browsers that block clipboard without user gesture focus
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity  = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = '✓';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = '⎘';
+      btn.classList.remove('copied');
+    }, 1500);
+  });
 }
 
 function toggleStatusPanel() {
@@ -2154,7 +2340,7 @@ function updatePanel() {
         <div style="font-size:10px;color:#f97316;font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">🙋 Waiting for you to act</div>
         ${stepsHtml}${artifactHtml}
         <button
-          onclick="api('POST', '/api/node/' + encodeURIComponent(selectedId) + '/confirm').then(() => {})"
+          onclick="api('POST', '/api/node/' + encodeURIComponent(selectedId) + '/confirm').then(d => { if (d.ok) toast('Confirmed done'); })"
           style="margin-top:8px;padding:4px 12px;font-size:11px;background:#f97316;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">
           ✓ Mark as done
         </button>
@@ -2402,7 +2588,7 @@ function submitEdit() {
   api('PUT', `/api/node/${encodeURIComponent(selectedId)}`, {
     description: desc, status, dependencies: deps, dependents, result,
     execution_steps: steps,
-  });
+  }).then(d => { if (d.ok) toast(`Saved: ${selectedId}`); });
   closeModal();
 }
 
@@ -2454,7 +2640,8 @@ function submitRemove() {
   const id = selectedId;
   closeModal();
   closePanel();
-  api('DELETE', `/api/node/${encodeURIComponent(id)}?mode=${mode}`);
+  api('DELETE', `/api/node/${encodeURIComponent(id)}?mode=${mode}`)
+    .then(d => { if (d.ok) toast(`Removed: ${id}`); });
 }
 // Replacements for addNodePrompt() and submitAdd() in web_ui.html
 
@@ -2521,7 +2708,7 @@ function submitAdd() {
     description:  desc,
     dependencies: deps,
     dependents,
-  });
+  }).then(d => { if (d.ok) toast(`Added: ${nodeId}`); });
   closeModal();
 }
 
@@ -2616,7 +2803,16 @@ async function api(method, path, body) {
   if (body) opts.body = JSON.stringify(body);
   try {
     const r = await fetch(path, opts);
-    return await r.json();
+    const data = await r.json();
+    if (!r.ok) {
+      // FastAPI error responses carry the message in data.detail
+      const msg = (typeof data.detail === 'string' ? data.detail : null)
+        || data.error
+        || `${method} ${path} failed (${r.status})`;
+      toast(`Error: ${msg}`);
+      return { ok: false, error: msg };
+    }
+    return data;
   } catch (e) {
     toast('Request failed: ' + e.message);
     return { ok: false };
@@ -3263,7 +3459,7 @@ function domainPanelBottom(node, { row, esc, trunc }) {
   const stepChildren = Object.values(nodes)
     .filter(n =>
       n.node_type === 'execution_step' &&
-      n.dependencies.includes(selectedId) &&
+      n.id.startsWith(selectedId + '__step_') &&
       !n.metadata?.hidden
     )
     .sort((a, b) => {
@@ -3408,7 +3604,7 @@ function confirmClarification() {
 
   api('POST', `/api/node/${encodeURIComponent(selectedId)}/clarification/confirm`, {
     updated_fields: fields,
-  });
+  }).then(d => { if (d.ok) toast(`Clarification confirmed`); });
 
   // Reset draft so the next open starts fresh from server state
   _clarificationDraft = [];

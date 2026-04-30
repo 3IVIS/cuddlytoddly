@@ -10,6 +10,7 @@ from toddly.core.events import (
     ADD_DEPENDENCY,
     ADD_NODE,
     CONFIRM_USER_DONE,
+    DETACH_NODE,
     MARK_AWAITING_USER,
     MARK_DONE,
     MARK_FAILED,
@@ -133,6 +134,9 @@ class BaseOrchestrator:
             self.planner._graph_lock = self.graph_lock
         self.current_activity: str | None = None
         self.activity_started: float | None = None
+        # Per-node activity dict — keeps each parallel node's activity string
+        # independently so that parallel execution doesn't trample the display.
+        self._node_activities: dict[str, str] = {}
         # Tracks which node_id currently owns current_activity so _on_node_done
         # can clear it correctly without parsing the (now richer) display string.
         self._activity_node_id: str | None = None
@@ -156,18 +160,27 @@ class BaseOrchestrator:
         # but no downstream nodes depended on a prior result → no invalidation).
         self._reset_node_ids: set[str] = set()
 
-        # Fix #6: register LLM clients using duck typing so that _DeferredLLM
-        # (which wraps a real client but is not a BaseLLM subclass) is also
-        # included.  We detect real LLM clients by requiring is_stopped to be
-        # a genuine @property defined on the class — MagicMock/stub objects in
-        # tests auto-create attributes on demand, so their class-level
-        # descriptor is a MagicMock, not a property, and they are excluded.
+        # Register real LLM clients for pause/resume and llm_stopped tracking.
+        # Detection uses duck typing: we require is_stopped to be a genuine
+        # @property on the class so that MagicMock/stub objects (whose class-level
+        # attribute is a MagicMock, not a property) are excluded in tests.
+        #
+        # _DeferredLLM is deliberately excluded: it acts as a loading gate and
+        # returns is_stopped=True while the real model loads, which would make
+        # llm_stopped report True (and the UI show "▶ Resume") during background
+        # loading even though the user never pressed pause.  _DeferredLLM.is_stopped
+        # reflects the real client once attach() is called, so execution is already
+        # gated correctly without it being in _llm_clients.
         self._llm_clients = []
         self._reporters: dict[str, ExecutionStepReporter] = {}
 
         for component in (planner, executor, quality_gate):
             client = getattr(component, "llm", None)
             if client is None:
+                continue
+            # Guard: _DeferredLLM is identified by its class name to avoid a
+            # circular import from toddly.engine into cuddlytoddly.__main__.
+            if type(client).__name__ == "_DeferredLLM":
                 continue
             is_real_llm = isinstance(client, BaseLLM) or isinstance(
                 getattr(type(client), "is_stopped", None), property
@@ -337,16 +350,15 @@ class BaseOrchestrator:
         """
         Dispatch out-of-band status signals that are not graph mutations.
 
-        Currently recognised kinds:
-          llm_load_failed — background LLM loader failed; payload has "error".
+        Recognised kinds
+        ----------------
+        llm_loading     — progress heartbeat from LlamaCppLLM._load_model();
+                          payload has "message". Fires every ~2 s.
+        llm_ready       — model finished loading.
+        llm_load_failed — loader failed; payload has "error".
 
-        Unknown kinds are logged and stored so the UI can surface them.
+        Unknown kinds are logged at WARNING and forwarded to the UI unchanged.
         """
-        logger.warning(
-            "[ORCHESTRATOR] StatusEvent received: kind=%s payload=%s",
-            event.kind,
-            event.payload,
-        )
         with self._status_events_lock:
             self._status_events.append(event)
 
@@ -361,6 +373,12 @@ class BaseOrchestrator:
         elif event.kind == "llm_loading":
             # Progressive load feedback from LlamaCppLLM._load_model().
             # Fires once at start, then every ~2s from the watchdog thread.
+            # Logged at DEBUG — these are high-frequency heartbeats and should
+            # not flood dag.log with WARNING entries.
+            logger.debug(
+                "[ORCHESTRATOR] LLM loading: %s",
+                event.payload.get("message", ""),
+            )
             self.current_activity = event.payload.get("message", "Loading model…")
             # Record when loading started on the very first event so elapsed
             # time shown in the panel header is meaningful.
@@ -368,6 +386,7 @@ class BaseOrchestrator:
                 self.activity_started = time.time()
 
         elif event.kind == "llm_ready":
+            logger.info("[ORCHESTRATOR] LLM ready")
             # Model finished loading — clear the loading banner.  The
             # orchestrator loop will set a new current_activity string as
             # soon as planning or execution begins, so the panel won't stay
@@ -375,6 +394,13 @@ class BaseOrchestrator:
             if self.current_activity and "oad" in self.current_activity:
                 self.current_activity = None
                 self.activity_started = None
+
+        else:
+            logger.warning(
+                "[ORCHESTRATOR] Unknown StatusEvent: kind=%s payload=%s",
+                event.kind,
+                event.payload,
+            )
 
     def get_status_events(self) -> list:
         """
@@ -385,6 +411,19 @@ class BaseOrchestrator:
             events = list(self._status_events)
             self._status_events.clear()
         return events
+
+    def push_user_action_event(self, message: str) -> None:
+        """
+        Queue a ``user_action`` StatusEvent so the web UI status panel shows
+        feedback for user-initiated mutations (add, edit, delete, retry, etc.).
+
+        The message should be a short, human-readable description of what was
+        done, e.g. ``"Added node: Research_Market"``.
+        """
+        with self._status_events_lock:
+            self._status_events.append(
+                StatusEvent(kind="user_action", payload={"message": message})
+            )
 
     def _reset_subtree_impl(self, root_id: str):
         with self.graph_lock:
@@ -631,6 +670,9 @@ class BaseOrchestrator:
                     self._activity_node_id = None
                     self.current_activity = None
                     self.activity_started = None
+            # Always remove the finished node from the per-node dict so its
+            # activity row doesn't linger after the node completes.
+            self._node_activities.pop(node_id, None)
 
         try:
             result = future.result()
@@ -654,12 +696,14 @@ class BaseOrchestrator:
                     if reporter:
                         for step_id in list(reporter._all_step_ids):
                             if step_id in self.graph.nodes:
-                                self.graph.detach_node(step_id)
+                                self._apply(Event(DETACH_NODE, {"node_id": step_id}))
                     self._apply(Event(RESET_NODE, {"node_id": node_id}))
             return
         except Exception as exc:
             logger.warning("[EXEC] Node %s raised: %s", node_id, exc)
             result = None
+        else:
+            exc = None  # type: ignore[assignment]
 
         # ── Hard failure ──────────────────────────────────────────────────────
         if result is None:
@@ -680,7 +724,7 @@ class BaseOrchestrator:
                     if reporter:
                         for step_id in list(reporter._all_step_ids):
                             if step_id in self.graph.nodes:
-                                self.graph.detach_node(step_id)
+                                self._apply(Event(DETACH_NODE, {"node_id": step_id}))
                     self._apply(Event(RESET_NODE, {"node_id": node_id}))
                     return
 
@@ -689,24 +733,29 @@ class BaseOrchestrator:
                     reporter.expose_all()
                 # Persist the failure reason so the UI can display it.  We write
                 # it before MARK_FAILED because MARK_FAILED only sets status and
-                # does not carry a reason payload.
+                # does not carry a reason payload.  When the future raised an
+                # exception, surface its message directly so the user can see the
+                # real cause in the info panel without consulting dag.log.
+                failure_reason = (
+                    f"{type(exc).__name__}: {exc}"
+                    if exc is not None
+                    else (
+                        "Executor returned no result — likely caused by an "
+                        "LLM error, JSON parse failure, or the tool-use "
+                        "turn limit being reached with no successful result."
+                    )
+                )
                 self._apply(
                     Event(
                         UPDATE_METADATA,
                         {
                             "node_id": node_id,
-                            "metadata": {
-                                "verification_failure": (
-                                    "Executor returned no result — likely caused by an "
-                                    "LLM error, JSON parse failure, or the tool-use "
-                                    "turn limit being reached with no successful result."
-                                ),
-                            },
+                            "metadata": {"verification_failure": failure_reason},
                         },
                     )
                 )
                 self._apply(Event(MARK_FAILED, {"node_id": node_id}))
-                logger.warning("[EXEC] Failed: %s", node_id)
+                logger.error("[EXEC] Failed: %s", node_id)
             return
 
         # ── Awaiting-user: executor completed its steps but some require user action
@@ -1393,23 +1442,25 @@ class BaseOrchestrator:
             node = self.graph.nodes.get(node_id)
             if not node or node_id in self._running_futures:
                 return
+            logger.info("[USER] Retry node: %s (prev status=%s)", node_id, node.status)
             self._apply(Event(RESET_NODE, {"node_id": node_id}))
-            # Node.reset() clears retry_count and all retry metadata, so
-            # the next execution builds a prompt identical to the original run,
-            # causing the LLM client to return a cached result instead of
-            # re-running the model.  We stamp a _retry_nonce timestamp that
-            # reset() does NOT clear; _build_prompt() appends it to the prompt
-            # as a comment, making the cache key unique for every manual retry.
-            #
-            # A plain counter is NOT used here because the counter resets to 0
-            # when the session restarts (the nonce is not persisted via an
-            # event), so retry #1 in a new session produces nonce=1 — which
-            # collides with the nonce=1 cache entry written in the previous
-            # session.  A wall-clock timestamp is unique per call regardless
-            # of how many times the session has been restarted.
-            node = self.graph.nodes.get(node_id)
-            if node is not None:
-                node.metadata["_retry_nonce"] = time.time()
+            # Stamp a _retry_nonce timestamp that RESET_NODE does NOT clear.
+            # _build_prompt() appends it as a comment, making the cache key
+            # unique for every manual retry so the LLM re-runs instead of
+            # returning a cached result.
+            # We route this through UPDATE_METADATA (via _apply) rather than
+            # writing to node.metadata directly so the structure stays consistent
+            # with all other metadata mutations going through the reducer.
+            # The nonce is intentionally NOT idempotent on replay — replaying a
+            # RESET_NODE followed by UPDATE_METADATA with a timestamp nonce is
+            # harmless because the nonce is only consulted by _build_prompt()
+            # at execution time, not during graph reconstruction.
+            self._apply(
+                Event(
+                    UPDATE_METADATA,
+                    {"node_id": node_id, "metadata": {"_retry_nonce": time.time()}},
+                )
+            )
 
     def resume_node(self, node_id: str) -> bool:
         """
@@ -1490,6 +1541,8 @@ class BaseOrchestrator:
             "total": len(nodes),
             "by_status": counts,
             "running_nodes": list(self._running_futures.keys()),
+            # Per-node activity strings for parallel execution visibility.
+            "node_activities": dict(self._node_activities),
         }
 
     # ── Internals ────────────────────────────────────────────────────────────
@@ -1514,8 +1567,26 @@ class BaseOrchestrator:
         graph_lock is NOT held by the caller — a simple attribute write is
         GIL-safe in CPython, and current_activity is a display-only string
         with no structural invariants that require lock protection.
+
+        Also writes to _node_activities keyed by node_id so parallel nodes
+        each maintain their own visible activity row.
         """
+        if text:
+            logger.debug("[EXEC] Activity: %s", text)
         self.current_activity = text
+        # Extract node_id from the known activity string prefixes.
+        if text and text.startswith("Executing: "):
+            node_id = text[len("Executing: ") :].split(" · ", 1)[0].strip()
+        elif text and text.startswith("Planning: "):
+            node_id = text[len("Planning: ") :].strip()
+        elif text and text.startswith("Verifying: "):
+            node_id = text[len("Verifying: ") :].strip()
+        else:
+            node_id = "_"
+        if text:
+            self._node_activities[node_id] = text
+        else:
+            self._node_activities.pop(node_id, None)
 
     def _is_fully_done(self) -> bool:
         # Guard against empty graph.  all() over an empty iterable returns

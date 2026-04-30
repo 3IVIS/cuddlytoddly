@@ -1512,7 +1512,7 @@ function domainPanelBottom(node, { row, esc, trunc }) {
   const _panelSrc = (replayMode ? replayState : nodes);
   const stepChildren = Object.values(_panelSrc).filter(n =>
     n.node_type === 'execution_step' &&
-    n.dependencies.includes(selectedId) &&
+    n.id.startsWith(selectedId + '__step_') &&
     !n.metadata?.hidden
   );
   if (!stepChildren.length) return '';

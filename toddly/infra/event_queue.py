@@ -4,6 +4,7 @@ Event Queue
 Thread-safe queue for all mutations and interactions.
 """
 
+import time as _time
 from dataclasses import dataclass, field
 from queue import Queue
 
@@ -33,9 +34,14 @@ class StatusEvent:
 
     Attributes
     ----------
-    kind    : Short identifier, e.g. ``"llm_load_failed"``.
-    payload : Arbitrary key/value context, e.g. ``{"error": "..."}``.
+    kind           : Short identifier, e.g. ``"llm_load_failed"``.
+    payload        : Arbitrary key/value context, e.g. ``{"error": "..."}``.
+    created_at_ms  : Wall-clock milliseconds at creation time (epoch ms).
+                     Stamped automatically so that batches of events drained
+                     in the same poll tick retain their original timestamps
+                     rather than all sharing the drain time.
     """
 
     kind: str
     payload: dict = field(default_factory=dict)
+    created_at_ms: int = field(default_factory=lambda: int(_time.time() * 1000))

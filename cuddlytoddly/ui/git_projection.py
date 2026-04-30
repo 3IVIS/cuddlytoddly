@@ -195,6 +195,10 @@ class GitProjection:
                 f"{label} [{node.status}]", parent_commits=parent_commits
             )
             self._node_to_commit[node_id] = commit_obj.hexsha
+            # These writes annotate the SNAPSHOT node (shallow-copied metadata),
+            # not the live graph node.  _commit_node_incremental receives `node`
+            # from snapshot[node_id], so this mutation is local to the projection's
+            # own snapshot and never flows back into the graph or the event log.
             node.metadata["last_commit_status"] = node.status
             node.metadata["last_commit_parents"] = sorted(parents)
             return True
@@ -338,11 +342,19 @@ class GitProjection:
                 logger.error("[GIT] Full rebuild also failed: %s", e2)
 
     def delete_node(self, node_id, graph):
-        """Soft-delete a node by marking it deleted and committing."""
-        if node_id in graph.nodes:
-            node = graph.nodes[node_id]
-            node.metadata["deleted"] = True
-            self._commit_node_incremental(node_id, node, graph.get_snapshot())
+        """Soft-delete a node by marking it deleted and committing.
+
+        Takes a snapshot of the node before committing so the live graph node
+        is never mutated directly.  The 'deleted' flag is purely a git-projection
+        concern and must not propagate back into the graph or the event log.
+        """
+        if node_id not in graph.nodes:
+            return
+        snapshot = graph.get_snapshot()
+        snap_node = snapshot.get(node_id)
+        if snap_node:
+            snap_node.metadata["deleted"] = True
+            self._commit_node_incremental(node_id, snap_node, snapshot)
 
 
 # ---------------------------------------------------------------------------
