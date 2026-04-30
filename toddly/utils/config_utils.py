@@ -147,6 +147,17 @@ def get_file_llm_cfg(cfg: dict) -> dict:
     }
 
 
+def get_web_research_cfg(cfg: dict) -> dict:
+    """Return the [web_research] section with defaults filled in."""
+    c = cfg.get("web_research", {})
+    return {
+        "search_engine": c.get("search_engine", "duckduckgo"),
+        "google_api_key": c.get("google_api_key", ""),
+        "google_cx": c.get("google_cx", ""),
+        "max_results": int(c.get("max_results", 5)),
+    }
+
+
 # ── Model resolution ──────────────────────────────────────────────────────────
 
 

@@ -8,11 +8,13 @@ from pathlib import Path
 
 import cuddlytoddly.ui.git_projection as git_proj
 import toddly.skills.file_ops.tools as file_ops_tools
+import toddly.skills.web_research.tools as web_research_tools
 from cuddlytoddly.config import (
     DATA_DIR,
     get_executor_cfg,
     get_orchestrator_cfg,
     get_planner_cfg,
+    get_web_research_cfg,
     load_config,
     preflight_check,
 )
@@ -342,6 +344,7 @@ def _init_system(choice: "StartupChoice", use_web: bool, cfg: dict, on_graph_rea
     # ValueError and fail the tool call cleanly rather than silently
     # reading or writing arbitrary files on the host filesystem.
     file_ops_tools.configure(working_dir)
+    web_research_tools.configure(get_web_research_cfg(cfg))
 
     # Create the StableIDGenerator per-run and pass it directly to the
     # LLM client rather than replacing a shared module-level global.  This

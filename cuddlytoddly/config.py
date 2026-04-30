@@ -34,6 +34,7 @@ from toddly.utils.config_utils import (
 from toddly.utils.config_utils import get_executor_cfg as get_executor_cfg
 from toddly.utils.config_utils import get_orchestrator_cfg as get_orchestrator_cfg
 from toddly.utils.config_utils import get_planner_cfg as get_planner_cfg
+from toddly.utils.config_utils import get_web_research_cfg as get_web_research_cfg
 from toddly.utils.config_utils import (
     llama_has_gpu_support as _llama_has_gpu_support,
 )

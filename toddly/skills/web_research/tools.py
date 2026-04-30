@@ -154,7 +154,78 @@ def _results_are_relevant(query: str, results_text: str, min_hits: int = 2) -> b
     return hits >= threshold
 
 
+# ── Search-engine configuration (set by configure() in _init_system) ─────────
+# Defaults to DuckDuckGo so the skill works out-of-the-box with no API keys.
+# Call configure(cfg) once per run to switch to Google Custom Search.
+
+_SEARCH_ENGINE: str = "duckduckgo"  # "duckduckgo" | "google"
+_GOOGLE_API_KEY: str = ""
+_GOOGLE_CX: str = ""  # Custom Search Engine ID
+_MAX_RESULTS: int = 5
+
+
+def configure(cfg: dict) -> None:
+    """
+    Apply [web_research] config settings to this module.
+
+    Must be called once per run from _init_system, after SkillLoader has
+    registered the tools and before the orchestrator loop starts.
+
+    Parameters
+    ----------
+    cfg : dict
+        The parsed [web_research] config section (e.g. from
+        get_web_research_cfg(full_cfg)).  Keys:
+          search_engine   "duckduckgo" (default) or "google"
+          google_api_key  required when search_engine = "google"
+          google_cx       Custom Search Engine ID, required for Google
+          max_results     number of results to request (default 5)
+    """
+    global _SEARCH_ENGINE, _GOOGLE_API_KEY, _GOOGLE_CX, _MAX_RESULTS
+
+    engine = cfg.get("search_engine", "duckduckgo").lower().strip()
+    if engine not in ("duckduckgo", "google"):
+        logger.warning(
+            "[WEB_SEARCH] Unknown search_engine %r in config — falling back to duckduckgo",
+            engine,
+        )
+        engine = "duckduckgo"
+
+    _SEARCH_ENGINE = engine
+    _GOOGLE_API_KEY = cfg.get("google_api_key", "").strip()
+    _GOOGLE_CX = cfg.get("google_cx", "").strip()
+    _MAX_RESULTS = int(cfg.get("max_results", 5))
+
+    if engine == "google":
+        missing = [
+            k for k, v in [("google_api_key", _GOOGLE_API_KEY), ("google_cx", _GOOGLE_CX)] if not v
+        ]
+        if missing:
+            logger.error(
+                "[WEB_SEARCH] search_engine=google but missing config key(s): %s — "
+                "searches will fail until these are set in [web_research]",
+                ", ".join(missing),
+            )
+        else:
+            logger.info("[WEB_SEARCH] Configured to use Google Custom Search (cx=%s)", _GOOGLE_CX)
+    else:
+        logger.info("[WEB_SEARCH] Configured to use DuckDuckGo")
+
+
 def _web_search(args: dict) -> str:
+    """
+    Dispatch to the configured search backend (DuckDuckGo or Google).
+
+    The backend is selected by configure() at startup via [web_research]
+    search_engine in config.toml.  Defaults to DuckDuckGo so the skill
+    works out-of-the-box with no API keys.
+    """
+    if _SEARCH_ENGINE == "google":
+        return _web_search_google(args)
+    return _web_search_duckduckgo(args)
+
+
+def _web_search_duckduckgo(args: dict) -> str:
     """
     Search the web using DuckDuckGo (no API key required).
 
@@ -166,23 +237,16 @@ def _web_search(args: dict) -> str:
     After results are returned, a lightweight relevance check confirms
     that the result titles and snippets share at least two signal words
     with the query.  Results that fail this check are treated as errors
-    so the executor marks them as failed tool calls (setting error=True),
-    adds the query to failed_queries, and prompts the model to try a
-    different query — rather than letting the model proceed with
-    fabricated or off-topic information.
+    so the executor marks them as failed tool calls.
 
     Requires:  pip install duckduckgo-search
     """
     raw_query = args.get("query", "").strip()
-    # Fix 3: max_results is fixed at the tool level — callers cannot override it.
-    # Passing max_results=10 to DuckDuckGo's API consistently triggers empty-result
-    # responses; capping at 5 keeps behaviour stable across all callers.
-    max_results = 5
+    max_results = _MAX_RESULTS
 
     if not raw_query:
         return "ERROR: query is required"
 
-    # ── Fix 1: sanitise placeholder tokens ───────────────────────────────────
     query, removed = _sanitise_query(raw_query)
 
     if removed:
@@ -192,11 +256,10 @@ def _web_search(args: dict) -> str:
             query,
         )
 
-    # If nothing substantive remains, abort rather than search for noise
     meaningful_words = [w for w in query.split() if len(w) > 2]
     if len(meaningful_words) < 2:
         return (
-            f"SEARCH SKIPPED: query '{raw_query}' contained only placeholder "
+            f"SEARCH SKIPPED: query {raw_query!r} contained only placeholder "
             f"values ({removed}) with no specific searchable terms. "
             "Use your own knowledge to answer this task, or request more "
             "specific information from the user via the clarification node."
@@ -212,9 +275,6 @@ def _web_search(args: dict) -> str:
     last_error = None
     for attempt in range(5):
         if attempt > 0:
-            # Longer backoff with jitter to give DDG rate-limit windows time to
-            # clear.  Formula: 5s * 2^(attempt-1) ± up to 2s jitter.
-            # Sequence: ~5s, ~10s, ~20s, ~40s (attempts 1-4).
             sleep_secs = 5 * (2 ** (attempt - 1)) + random.uniform(0, 2)
             logger.info(
                 "[WEB_SEARCH] Backing off %.1fs before attempt %d for: %r",
@@ -229,7 +289,7 @@ def _web_search(args: dict) -> str:
                 for r in ddgs.text(
                     query,
                     max_results=max_results,
-                    region="wt-wt",  # worldwide — prevents geo-biased results
+                    region="wt-wt",
                 ):
                     results.append(
                         f"Title: {r.get('title', '')}\n"
@@ -239,30 +299,11 @@ def _web_search(args: dict) -> str:
             if results:
                 combined = "\n\n---\n\n".join(results)
 
-                # ── Relevance check ───────────────────────────────────────────
-                # DuckDuckGo occasionally returns results that are syntactically
-                # non-empty but semantically unrelated to the query (e.g. a page
-                # about Python's @ decorator returned for a "Python package
-                # management" query).  Without this check those results pass the
-                # executor's successful_searches guard (which only tests for
-                # "ERROR:" prefix), causing the model to proceed with wrong data
-                # and the fetch_url turn to be wasted on an irrelevant URL.
-                #
-                # When the check fails we return an ERROR:-prefixed string.
-                # This has two effects:
-                #   1. _dispatch_tool sets error=True → failed_queries updated.
-                #   2. successful_searches in the executor counts zero hits →
-                #      correction turn injected if the model tries to finish.
-                #
-                # Since we now pass region="wt-wt" globally, geo-biased results
-                # should be rare.  We allow one retry after a relevance failure
-                # (DDG may serve a different result set on a fresh connection)
-                # before giving up and asking the model to rephrase.
                 if not _results_are_relevant(query, combined):
                     first_title = results[0].split("\n")[0] if results else "(unknown)"
                     logger.warning(
                         "[WEB_SEARCH] Query %r → %d result(s) but content appears "
-                        "irrelevant to the query (top result: %s)",
+                        "irrelevant (top result: %s)",
                         query,
                         len(results),
                         first_title,
@@ -270,13 +311,8 @@ def _web_search(args: dict) -> str:
                     last_error = (
                         f'ERROR: results for "{query}" appear unrelated to the query '
                         f"(top result: {first_title}). "
-                        "Try a different search query with more specific or "
-                        "different keywords."
+                        "Try a different search query with more specific or different keywords."
                     )
-                    # Allow one retry on relevance failure — a fresh DDG
-                    # connection after a short pause sometimes returns a better
-                    # result set.  If the second attempt is also irrelevant, stop
-                    # here so the model tries a different query instead.
                     if attempt == 0:
                         logger.info("[WEB_SEARCH] Relevance failure on attempt 1 — retrying once")
                         continue
@@ -290,20 +326,158 @@ def _web_search(args: dict) -> str:
                 )
                 return combined
 
-            # Return an ERROR:-prefixed string so _dispatch_tool sets
-            # error=True and the executor treats this as a failed tool call
-            # rather than a successful (but empty) result.  Without the prefix
-            # the model sees a clean result, assumes the search worked, and
-            # proceeds to fabricate specific URLs and names.
             logger.warning("[WEB_SEARCH] No results on attempt %d for: %r", attempt + 1, query)
             last_error = f'ERROR: no results found for "{query}" (attempt {attempt + 1}/5)'
         except Exception as e:
             logger.error("[WEB_SEARCH] Attempt %d failed: %s", attempt + 1, e)
             last_error = f"ERROR: web search failed — {e}"
 
-    # All attempts exhausted — tell the model explicitly to try a different query.
     return (
         last_error or f'ERROR: no results found for "{query}"'
+    ) + " — try a different search query with different keywords or synonyms."
+
+
+def _web_search_google(args: dict) -> str:
+    """
+    Search the web using Google Custom Search API.
+
+    Requires a Google API key and a Custom Search Engine ID (cx), both
+    set via [web_research] google_api_key and google_cx in config.toml.
+    The free tier allows 100 queries/day; paid tiers are available from
+    Google Cloud Console.
+
+    Results are formatted identically to the DuckDuckGo backend so the
+    rest of the executor pipeline is unaffected by which backend is active.
+
+    Requires:  pip install requests
+    API docs:  https://developers.google.com/custom-search/v1/overview
+    """
+    raw_query = args.get("query", "").strip()
+    max_results = min(_MAX_RESULTS, 10)  # Google CSE caps at 10 per request
+
+    if not raw_query:
+        return "ERROR: query is required"
+
+    if not _GOOGLE_API_KEY or not _GOOGLE_CX:
+        return (
+            "ERROR: Google Custom Search is not configured. "
+            "Set google_api_key and google_cx under [web_research] in config.toml."
+        )
+
+    query, removed = _sanitise_query(raw_query)
+
+    if removed:
+        logger.info(
+            "[WEB_SEARCH] Stripped placeholder token(s) from query: %s → %r",
+            removed,
+            query,
+        )
+
+    meaningful_words = [w for w in query.split() if len(w) > 2]
+    if len(meaningful_words) < 2:
+        return (
+            f"SEARCH SKIPPED: query {raw_query!r} contained only placeholder "
+            f"values ({removed}) with no specific searchable terms. "
+            "Use your own knowledge to answer this task, or request more "
+            "specific information from the user via the clarification node."
+        )
+
+    try:
+        import requests
+    except ImportError:
+        return "ERROR: requests is not installed. Run: pip install requests"
+
+    import time
+
+    last_error = None
+    for attempt in range(3):
+        if attempt > 0:
+            sleep_secs = 2 * attempt + random.uniform(0, 1)
+            logger.info(
+                "[WEB_SEARCH] Google: backing off %.1fs before attempt %d for: %r",
+                sleep_secs,
+                attempt + 1,
+                query,
+            )
+            time.sleep(sleep_secs)
+        try:
+            resp = requests.get(
+                "https://www.googleapis.com/customsearch/v1",
+                params={
+                    "key": _GOOGLE_API_KEY,
+                    "cx": _GOOGLE_CX,
+                    "q": query,
+                    "num": max_results,
+                },
+                timeout=15,
+            )
+
+            if resp.status_code == 429:
+                last_error = "ERROR: Google Custom Search rate limit exceeded — try again later"
+                continue
+
+            if resp.status_code == 403:
+                return (
+                    "ERROR: Google Custom Search API key is invalid or the daily quota "
+                    "has been exceeded. Check your API key and billing in Google Cloud Console."
+                )
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            items = data.get("items", [])
+            if not items:
+                logger.warning(
+                    "[WEB_SEARCH] Google: no results on attempt %d for: %r", attempt + 1, query
+                )
+                last_error = (
+                    f'ERROR: no results found for "{query}" (Google, attempt {attempt + 1}/3)'
+                )
+                continue
+
+            results = [
+                f"Title: {item.get('title', '')}\n"
+                f"URL:   {item.get('link', '')}\n"
+                f"Snippet: {item.get('snippet', '')}"
+                for item in items
+            ]
+            combined = "\n\n---\n\n".join(results)
+
+            if not _results_are_relevant(query, combined):
+                first_title = results[0].split("\n")[0] if results else "(unknown)"
+                logger.warning(
+                    "[WEB_SEARCH] Google query %r → %d result(s) but content appears "
+                    "irrelevant (top result: %s)",
+                    query,
+                    len(results),
+                    first_title,
+                )
+                last_error = (
+                    f'ERROR: results for "{query}" appear unrelated to the query '
+                    f"(top result: {first_title}). "
+                    "Try a different search query with more specific or different keywords."
+                )
+                if attempt == 0:
+                    logger.info(
+                        "[WEB_SEARCH] Google: relevance failure on attempt 1 — retrying once"
+                    )
+                    continue
+                break
+
+            logger.info(
+                "[WEB_SEARCH] Google query: %r → %d result(s) (attempt %d)",
+                query,
+                len(results),
+                attempt + 1,
+            )
+            return combined
+
+        except Exception as e:
+            logger.error("[WEB_SEARCH] Google attempt %d failed: %s", attempt + 1, e)
+            last_error = f"ERROR: Google web search failed — {e}"
+
+    return (
+        last_error or f'ERROR: no results found for "{query}" via Google'
     ) + " — try a different search query with different keywords or synonyms."
 
 
